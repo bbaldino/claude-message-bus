@@ -317,14 +317,29 @@ Two incidental results worth carrying forward:
   behind an approval prompt for 98 seconds. This is precisely why all eight bus tools are
   allowlisted rather than a subset.
 
-**POC 2 — Rust port. REMAINING.** The only open unknown: whether `rmcp` can express an
-experimental capability and an arbitrary outbound notification method, or whether we
-hand-roll the stdio JSON-RPC. The needed surface is small — `initialize`, `tools/list`,
-`tools/call`, plus outbound notifications — call it 300 lines if the SDK fights us. POC 1
-confirmed there is no client-side magic to replicate: the capability is plain JSON in the
-`initialize` result, verified on the wire as
-`{"experimental":{"claude/channel":{}},"tools":{}}`. Because POC 1 passed in the
-reference stack, any POC 2 failure isolates cleanly to our own implementation.
+**POC 2 — Rust port. PASSED** (`poc/rust-probe/`). No hand-rolled JSON-RPC needed:
+`rmcp` 2.2.0 expresses both required pieces natively.
+
+| Need | rmcp 2.2.0 |
+| --- | --- |
+| `claude/channel` under `experimental` | `ServerCapabilities.experimental: BTreeMap<String, JsonObject>`, set via `ServerCapabilities::builder().enable_experimental_with(..)` |
+| Arbitrary outbound notification method | `ServerNotification::CustomNotification::new(method, params)`, sent with `Peer::send_notification` |
+
+Verified on the wire, without involving Claude Code:
+
+- `initialize` emits `{"experimental":{"claude/channel":{}},"tools":{}}` — byte-identical
+  to the Node probe that passed POC 1.
+- A POST produces a well-formed `notifications/claude/channel` carrying the right
+  `content` and `meta` (`test-notify.mjs` asserts this).
+
+Two implementation notes for the real binary: rmcp's model types are `#[non_exhaustive]`,
+so they are built via builders or field assignment rather than struct literals; and
+`Implementation::from_build_env()` reports *rmcp's* version, so set `name` and `version`
+explicitly.
+
+A live-session confirmation script is at `poc/rust-probe/run-test.sh`. Given the wire
+bytes are identical to the already-passing Node probe, it confirms rather than
+discovers.
 
 **POC 3 — two-session round trip. REMAINING.** Two real sessions and a trivial relay: A
 sends while B is idle, B replies, A receives. Proves the full premise and lets us observe
