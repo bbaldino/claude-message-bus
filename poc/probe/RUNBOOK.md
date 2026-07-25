@@ -5,6 +5,16 @@ This is the authoritative test. Takes about two minutes.
 
 ## Run it
 
+```bash
+/home/bbaldino/work/claude-message-bus/poc/probe/run-test.sh
+```
+
+One terminal. The script preflights, launches the session, and pushes a message from the
+background about 8 seconds after the probe binds — so you only have to clear the dialogs
+and watch. On exit it prints `probe.log` and a verdict.
+
+The rest of this document is the manual equivalent, if you'd rather drive it yourself.
+
 **Terminal 1** — start a session in this repo with the probe armed as a development
 channel:
 
