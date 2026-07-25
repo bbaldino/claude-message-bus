@@ -3,3 +3,6 @@ target/
 *.db-shm
 *.db-wal
 blobs/
+node_modules/
+poc/probe/probe.log
+poc/probe/diagnostics.json
