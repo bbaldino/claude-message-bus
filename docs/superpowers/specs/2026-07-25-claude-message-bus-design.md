@@ -27,7 +27,28 @@ makes Claude Code register a notification listener. The server may then emit
 event lands in Claude's context as a `<channel>` tag, Claude reads it and acts, and a
 `reply`-style tool lets it respond.
 
-This is the mechanism the whole design rests on. Its limits:
+**This mechanism is verified working on this account** (POC 1, 2026-07-25 — see
+`poc/probe/`). A session sitting idle received a pushed message, read its `meta`
+attributes, and replied through a tool. Observed details:
+
+- The startup banner confirms registration: `Channels (experimental) messages from
+  server:probe inject directly in this session`.
+- The event is injected **as a `user`-role message**, not a system reminder:
+
+  ```
+  <channel source="probe" probe_id="1" sent_at="1785012528480">
+  PROBE_HELLO_MARKER — this arrived over the channel while the session was idle...
+  </channel>
+  ```
+
+  This matters. Text from another agent arrives carrying the same authority as the
+  human's own input. Instruction-based restraint would be asking the model to discount
+  something indistinguishable from its user; the permission allowlist below is therefore
+  the load-bearing control, not a secondary one.
+- `meta` keys become tag attributes and are legible to the model — it echoed
+  `probe_id=1` back through a tool, a value it could only have read off the tag.
+
+Its limits:
 
 - **Research preview.** Custom channels are not on the Anthropic-curated allowlist, so
   sessions must launch with `--dangerously-load-development-channels server:msgbus` and
@@ -111,10 +132,18 @@ order, first match wins:
 The result is sanitized: lowercased, non-alphanumerics collapsed to `-`. Names appear
 inside `<channel from="...">` attributes and inside DM room keys, so they must stay tame.
 
-Rule 4 depends on the MCP subprocess inheriting Claude Code's launch directory. The
-channels documentation uses a relative path in its `.mcp.json` example, which implies it
-does. Prefer `CLAUDE_PROJECT_DIR` when set; that variable is confirmed for hooks but not
-for MCP servers. **The spike resolves this.** Rules 1–3 are unaffected either way.
+**Verified in POC 1.** The MCP subprocess receives `cwd` = the project directory, so rule
+4 works. Better, Claude Code exports these to the subprocess:
+
+| Variable | Observed value |
+| --- | --- |
+| `CLAUDE_PROJECT_DIR` | `/home/bbaldino/work/claude-message-bus` |
+| `CLAUDE_CODE_SESSION_ID` | the session's uuid |
+| `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_PID`, `CLAUDECODE` | present |
+
+So prefer `CLAUDE_PROJECT_DIR` over `cwd` for the `{dir}` substitution — it is explicit
+and immune to any later working-directory change. And `CLAUDE_CODE_SESSION_ID` gives the
+`agents.session_id` column a real value rather than a synthesized one.
 
 Typical user-scope config:
 
@@ -150,11 +179,20 @@ Typical user-scope config:
 | `get_file(room, key)` | Retrieve an artifact |
 | `list_files(room)` | List artifacts in a room |
 
-`send` returns the full text it sent as its tool result. Claude Code deliberately hides
-outbound channel reply text from the terminal, so without this echo the human watches
-only half the conversation. *(That tool results render in the terminal is an inference
-from normal tool-call display, not from the channels documentation — verify in the
-spike.)*
+`send` returns the full text it sent as its tool result, so the outbound half of a
+conversation is recoverable rather than invisible.
+
+**POC 1 refined what this buys us.** The echoed text does reach the model — it appeared
+verbatim in the tool result and the model quoted it back. But the terminal collapsed the
+call to a one-line `Called probe`, so the echo is *not* rendered on screen by default.
+Local visibility of outbound messages therefore comes from two things, neither of which
+is raw tool-result display:
+
+1. The `instructions` string directs the agent to state what it sent in its own visible
+   prose. Model output always renders. In POC 1 this worked unprompted by design.
+2. `claude-bus tail <room>` remains the authoritative interleaved view of both halves.
+
+Keep the echo anyway: it costs nothing and makes the transcript self-contained on replay.
 
 ## Message flow
 
@@ -260,30 +298,38 @@ other's channel. Overnight that is real money.
 - **End-to-end** — two real Claude Code sessions, launched with the development-channels
   flag, verifying injection while idle. Not automatable; a scripted manual checklist.
 
-## Milestone 0: the spike
+## Milestone 0: POC status
 
-Everything above except channel registration is ordinary CRUD. Channel registration is a
-research-preview feature validated only against documentation. Before building a bus on
-top of it, prove the premise:
+**POC 1 — channel connectivity. PASSED** (2026-07-25, `poc/probe/`). A Node MCP server
+declaring `experimental['claude/channel']`, pushed into an idle interactive session,
+which read the tag and replied through a tool. Resolved unknowns #1, #3, and #4; see the
+verified findings inline above.
 
-A throwaway Rust stdio server that registers as a channel and injects one hardcoded
-string into an idle session, launched with
-`claude --dangerously-load-development-channels server:msgbus`.
+Two incidental results worth carrying forward:
 
-It answers four questions:
+- **Channels do not engage in headless `-p` mode.** The flag parses without error, but
+  Claude Code never probes for the capability — the debug log enumerates the server as
+  `{hasTools, hasPrompts, hasResources, hasResourceSubscribe}` and nothing more, and
+  pushed notifications are silently discarded. Interactive sessions only. This is fine
+  for the intended use, but it means no automated end-to-end test is possible; the
+  end-to-end checklist stays manual.
+- **The permission stall is real and easy to miss.** In POC 1 the reply sat unnoticed
+  behind an approval prompt for 98 seconds. This is precisely why all eight bus tools are
+  allowlisted rather than a subset.
 
-1. Does the account's org policy permit channels at all?
-2. Can `rmcp` express an experimental capability and an arbitrary outbound notification
-   method — or do we hand-roll the stdio JSON-RPC? (The needed surface is small:
-   `initialize`, `tools/list`, `tools/call`, plus outbound notifications. Roughly 300
-   lines if the SDK fights us. The channels docs describe the MCP SDK as a requirement of
-   their *examples*, not of the protocol; the wire format is plain JSON-RPC over stdio.)
-3. Does the MCP subprocess inherit the project directory as its cwd, and is
-   `CLAUDE_PROJECT_DIR` set for MCP servers?
-4. Does a tool's return value render in the terminal, making the `send` echo work?
+**POC 2 — Rust port. REMAINING.** The only open unknown: whether `rmcp` can express an
+experimental capability and an arbitrary outbound notification method, or whether we
+hand-roll the stdio JSON-RPC. The needed surface is small — `initialize`, `tools/list`,
+`tools/call`, plus outbound notifications — call it 300 lines if the SDK fights us. POC 1
+confirmed there is no client-side magic to replicate: the capability is plain JSON in the
+`initialize` result, verified on the wire as
+`{"experimental":{"claude/channel":{}},"tools":{}}`. Because POC 1 passed in the
+reference stack, any POC 2 failure isolates cleanly to our own implementation.
 
-If channels turn out to be unavailable, the design changes fundamentally — back to
-hooks, with no ability to reach an idle session — so this gate comes first.
+**POC 3 — two-session round trip. REMAINING.** Two real sessions and a trivial relay: A
+sends while B is idle, B replies, A receives. Proves the full premise and lets us observe
+ping-pong dynamics before fixing the exchange-cap default at 20. Worth building as the
+walking skeleton of the real `agent` binary rather than as throwaway.
 
 ## Out of scope
 
