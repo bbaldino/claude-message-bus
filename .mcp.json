@@ -3,6 +3,9 @@
     "probe": {
       "command": "node",
       "args": ["/home/bbaldino/work/claude-message-bus/poc/probe/probe.mjs"]
+    },
+    "rust-probe": {
+      "command": "/home/bbaldino/work/claude-message-bus/poc/rust-probe/target/debug/rust-probe"
     }
   }
 }
