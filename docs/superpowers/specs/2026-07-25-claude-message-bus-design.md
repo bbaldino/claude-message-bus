@@ -182,6 +182,14 @@ Typical user-scope config:
 `send` returns the full text it sent as its tool result, so the outbound half of a
 conversation is recoverable rather than invisible.
 
+**`send` must wait for a bus ack before returning.** POC 3 exposed this: with a
+fire-and-forget send, the tool result reads `sent → gamma: …` even when gamma is offline
+and the message was merely queued. The bus's "offline; queued" notice arrives
+asynchronously, after the tool has already returned. Telling the model a message was
+delivered when it was only queued is the kind of quiet lie that makes an agent wait
+forever for a reply that was never coming. The real `send` issues a request and waits for
+the bus to confirm `delivered` or `queued`, and says which.
+
 **POC 1 refined what this buys us.** The echoed text does reach the model — it appeared
 verbatim in the tool result and the model quoted it back. But the terminal collapsed the
 call to a one-line `Called probe`, so the echo is *not* rendered on screen by default.
@@ -341,10 +349,26 @@ A live-session confirmation script is at `poc/rust-probe/run-test.sh`. Given the
 bytes are identical to the already-passing Node probe, it confirms rather than
 discovers.
 
-**POC 3 — two-session round trip. REMAINING.** Two real sessions and a trivial relay: A
-sends while B is idle, B replies, A receives. Proves the full premise and lets us observe
-ping-pong dynamics before fixing the exchange-cap default at 20. Worth building as the
-walking skeleton of the real `agent` binary rather than as throwaway.
+**POC 3 — two-session round trip. BUILT, automated tests pass; live run pending**
+(`poc/round-trip/`). One binary, two subcommands — `serve` and `agent` — as the real
+design specifies, in-memory only. `test-roundtrip.mjs` drives a bus and three agent
+processes over stdio and asserts the whole loop: registration and roster, a message
+surfacing on another agent as a `notifications/claude/channel` with correct `content` and
+`meta`, replies flowing back, and messages for an absent agent being held and delivered
+on connect. All twelve checks pass.
+
+It produced one design correction, already folded into the tools section above: `send`
+must wait for a bus ack, or it reports delivery for messages that were only queued.
+
+`demo.sh` runs the live two-session version, with two throwaway project directories that
+demonstrate directory-based auto-naming and ship a `.claude/settings.json` allowlisting
+the bus tools. What the live run is for, beyond confirmation:
+
+- Do the two agents converge and stop, or ping-pong indefinitely? This is the only
+  evidence that would justify the exchange-cap default of 20, which is currently a
+  guess.
+- Does either agent try to edit files despite the instructions? A permission stall there
+  is the fence working as designed.
 
 ## Out of scope
 

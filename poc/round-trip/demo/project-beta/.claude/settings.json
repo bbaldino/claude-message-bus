@@ -1,0 +1,5 @@
+{
+  "permissions": {
+    "allow": ["mcp__msgbus__send", "mcp__msgbus__agents"]
+  }
+}
