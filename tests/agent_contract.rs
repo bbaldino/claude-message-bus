@@ -252,3 +252,78 @@ fn injects_bus_messages_as_channel_notifications() {
         "done must be the string \"false\", not a bare bool"
     );
 }
+
+fn call_tool(a: &mut Agent, id: u64, name: &str, args: serde_json::Value) -> String {
+    a.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": { "name": name, "arguments": args }
+    }));
+    for _ in 0..50 {
+        let v = a.next_json();
+        if v["id"] == id {
+            return v["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+        }
+    }
+    panic!("no tool result for id {id}");
+}
+
+#[test]
+fn send_reports_queued_when_the_recipient_is_offline() {
+    // The POC 3 correction, asserted at the tool boundary the model actually sees.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (_dir, port) = rt.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { claude_bus::bus::serve_on(listener, path).await.unwrap() });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        (dir, port)
+    });
+
+    let mut a = Agent::start_with_bus(port, "lonely");
+    initialize(&mut a);
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    let text = call_tool(
+        &mut a,
+        10,
+        "send",
+        serde_json::json!({ "to": "nobody", "text": "hello?" }),
+    );
+    assert!(
+        text.contains("queued"),
+        "must say queued, not claim delivery: {text}"
+    );
+    assert!(text.contains("hello?"), "must echo the text sent: {text}");
+}
+
+#[test]
+fn tools_fail_clearly_when_the_bus_is_unreachable() {
+    let mut a = Agent::start(); // points at ws://127.0.0.1:1
+    initialize(&mut a);
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    let text = call_tool(&mut a, 11, "agents", serde_json::json!({}));
+    assert!(
+        text.to_lowercase().contains("bus"),
+        "error should mention the bus: {text}"
+    );
+}
+
+#[test]
+fn send_requires_exactly_one_destination() {
+    let mut a = Agent::start();
+    initialize(&mut a);
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    let text = call_tool(&mut a, 12, "send", serde_json::json!({ "text": "orphan" }));
+    assert!(
+        text.contains("to") && text.contains("room"),
+        "should explain the two options: {text}"
+    );
+}
