@@ -7,3 +7,8 @@ node_modules/
 poc/probe/probe.log
 poc/probe/diagnostics.json
 .superpowers/
+
+
+# Added by cargo
+
+/target
