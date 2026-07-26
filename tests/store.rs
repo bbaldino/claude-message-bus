@@ -173,6 +173,22 @@ async fn unread_counts_only_messages_past_the_cursor() {
         store.unread_count("protocol", "dashboard").await.unwrap(),
         2
     );
+
+    // dashboard's own message must not inflate its own unread count — only
+    // caas's later message should count.
+    store
+        .append_message("protocol", "dashboard", "self-sent", false)
+        .await
+        .unwrap();
+    store
+        .append_message("protocol", "caas", "four", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.unread_count("protocol", "dashboard").await.unwrap(),
+        3,
+        "dashboard's own message must be excluded from its own unread count"
+    );
 }
 
 #[tokio::test]
@@ -194,6 +210,23 @@ async fn undelivered_returns_exactly_the_messages_past_the_cursor() {
     let pending = store.undelivered("protocol", "dashboard").await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].body, "two");
+
+    // dashboard's own message must not be delivered back to itself, even
+    // though it is past dashboard's cursor.
+    store
+        .append_message("protocol", "dashboard", "self-sent", false)
+        .await
+        .unwrap();
+    store
+        .append_message("protocol", "caas", "three", false)
+        .await
+        .unwrap();
+    let pending = store.undelivered("protocol", "dashboard").await.unwrap();
+    assert_eq!(
+        pending.iter().map(|m| m.body.as_str()).collect::<Vec<_>>(),
+        vec!["two", "three"],
+        "dashboard's own message must be excluded from what is delivered to it"
+    );
 }
 
 #[tokio::test]
