@@ -13,17 +13,20 @@ pub async fn run(bus_url: String, room: Option<String>) -> anyhow::Result<()> {
     let (ws, _) = tokio_tungstenite::connect_async(&bus_url).await?;
     let (mut sink, mut stream) = ws.split();
 
+    // `Observe`, not `Register`: a viewer is not a participant. This gives
+    // the connection an identity for its lifetime — satisfying the bus's
+    // "register before sending commands" gate — without ever creating an
+    // `agents` row or a `room_members` row. See `ToBus::Observe`.
     let observer = format!("tail-{}", std::process::id());
-    sink.send(Message::text(serde_json::to_string(&ToBus::Register {
+    sink.send(Message::text(serde_json::to_string(&ToBus::Observe {
         name: observer.clone(),
-        host: "observer".into(),
-        cwd: ".".into(),
-        session_id: None,
     })?))
     .await?;
 
     if let Some(room) = &room {
-        sink.send(Message::text(serde_json::to_string(&ToBus::Join {
+        // `Watch`, not `Join`: this room's live traffic reaches us without
+        // ever making us a member of it.
+        sink.send(Message::text(serde_json::to_string(&ToBus::Watch {
             req_id: 1,
             room: room.clone(),
         })?))

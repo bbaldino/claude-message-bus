@@ -27,6 +27,23 @@ pub enum ToBus {
         req_id: u64,
         room: String,
     },
+    /// Identify a connection as an observer for its lifetime, the way
+    /// `Register` identifies an agent. Unlike `Register`, this creates no row
+    /// in `agents` and grants no membership anywhere — an observer is a
+    /// spectator, not a participant. `name` is a display label only (used in
+    /// bus-side diagnostics); it is never persisted and never contends with
+    /// agent names for `Registry::attach`'s collision handling.
+    Observe {
+        name: String,
+    },
+    /// Start receiving `FromBus::Message` fan-out for `room`, without joining
+    /// it: no `room_members` row is created, so the room's membership and any
+    /// future `send`'s `delivered_to`/`queued_for` are unaffected. Valid only
+    /// on a connection that identified via `Observe`.
+    Watch {
+        req_id: u64,
+        room: String,
+    },
     Send {
         req_id: u64,
         target: Target,
@@ -124,6 +141,9 @@ pub enum ReplyResult {
         room: String,
         members: Vec<String>,
     },
+    Watching {
+        room: String,
+    },
     History {
         messages: Vec<HistoryItem>,
     },
@@ -156,6 +176,11 @@ pub enum ReplyResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromBus {
     Registered {
+        name: String,
+    },
+    /// Acknowledges an `Observe`. The counterpart to `Registered`, on the
+    /// same control channel — see `Observe`.
+    Observing {
         name: String,
     },
     Reply {
@@ -250,6 +275,30 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn observe_and_watch_round_trip_through_json() {
+        let observe = ToBus::Observe {
+            name: "tail-1234".into(),
+        };
+        let json = serde_json::to_string(&observe).unwrap();
+        assert!(
+            json.contains("\"type\":\"observe\""),
+            "tagged by type: {json}"
+        );
+        assert_eq!(serde_json::from_str::<ToBus>(&json).unwrap(), observe);
+
+        let watch = ToBus::Watch {
+            req_id: 1,
+            room: "protocol".into(),
+        };
+        let json = serde_json::to_string(&watch).unwrap();
+        assert!(
+            json.contains("\"type\":\"watch\""),
+            "tagged by type: {json}"
+        );
+        assert_eq!(serde_json::from_str::<ToBus>(&json).unwrap(), watch);
     }
 
     #[test]

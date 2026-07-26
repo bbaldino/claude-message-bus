@@ -98,6 +98,19 @@ async fn connect(port: u16, name: &str) -> Ws {
     ws
 }
 
+/// Like `connect`, but identifies via `Observe` instead of `Register` — a
+/// viewer, not a participant. See `ToBus::Observe`.
+async fn connect_observer(port: u16, name: &str) -> Ws {
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
+        .await
+        .unwrap();
+    let obs = ToBus::Observe { name: name.into() };
+    ws.send(Message::text(serde_json::to_string(&obs).unwrap()))
+        .await
+        .unwrap();
+    ws
+}
+
 async fn next_event(ws: &mut Ws) -> FromBus {
     loop {
         let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
@@ -1176,4 +1189,326 @@ async fn a_full_routing_queue_does_not_swallow_the_pause_notification_or_its_res
 
     active.store(false, std::sync::atomic::Ordering::Relaxed);
     let _ = flooder.await;
+}
+
+// --- observer mode: a viewer is not a participant ---
+//
+// `claude-bus tail` used to register as a genuine agent and `Join` the room
+// it watched, which permanently polluted `agents`/`room_members` with every
+// dead `tail-<pid>` that ever ran, and made every future `send` to that room
+// report the (probably long-gone) tail process as `queued_for`. These tests
+// pin the fix: an observer identifies via `Observe`/watches via `Watch`,
+// never touches `Store`, and is invisible to every place a real member would
+// show up.
+
+#[tokio::test]
+async fn an_observer_receives_room_traffic_without_being_a_recipient() {
+    let (_d, port) = start_bus().await;
+
+    let mut sender = connect(port, "caas").await;
+    next_event(&mut sender).await; // Registered
+    send(
+        &mut sender,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut sender).await; // Joined
+
+    let mut watcher = connect_observer(port, "tail-1").await;
+    next_event(&mut watcher).await; // Observing
+    send(
+        &mut watcher,
+        &ToBus::Watch {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    match next_event(&mut watcher).await {
+        FromBus::Reply {
+            result: ReplyResult::Watching { room },
+            ..
+        } => assert_eq!(room, "protocol"),
+        other => panic!("expected a Reply to Watch, got {other:?}"),
+    }
+
+    send(
+        &mut sender,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "hello".into(),
+            done: false,
+        },
+    )
+    .await;
+
+    // `caas` is the only *member* of the room — the observer must not be
+    // counted as a recipient at all, in either column. Sabotage: with the
+    // old tail.rs (which sent `Register` + `Join`), the observer would be a
+    // real member and would show up in `delivered_to`, failing this.
+    match next_event(&mut sender).await {
+        FromBus::Reply {
+            result:
+                ReplyResult::Sent {
+                    delivered_to,
+                    queued_for,
+                    ..
+                },
+            ..
+        } => {
+            assert!(
+                delivered_to.is_empty(),
+                "the observer must never appear in delivered_to: {delivered_to:?}"
+            );
+            assert!(
+                queued_for.is_empty(),
+                "the observer must never appear in queued_for: {queued_for:?}"
+            );
+        }
+        other => panic!("expected a Reply to Send, got {other:?}"),
+    }
+
+    // The observer still gets the live traffic, despite not being a member.
+    match next_event(&mut watcher).await {
+        FromBus::Message {
+            room, from, text, ..
+        } => {
+            assert_eq!(room, "protocol");
+            assert_eq!(from, "caas");
+            assert_eq!(text, "hello");
+        }
+        other => panic!("expected a live Message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_observer_leaves_no_trace_after_disconnecting() {
+    let (_d, port) = start_bus().await;
+
+    let mut caas = connect(port, "caas").await;
+    next_event(&mut caas).await; // Registered
+    send(
+        &mut caas,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut caas).await; // Joined
+
+    let mut watcher = connect_observer(port, "tail-99").await;
+    next_event(&mut watcher).await; // Observing
+    send(
+        &mut watcher,
+        &ToBus::Watch {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut watcher).await; // Reply
+
+    drop(watcher);
+    // Give the bus's connection-teardown path time to run before asserting.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Sabotage: with the old implementation, `tail-99` would still be in
+    // `agents` (an `upsert_agent` row is never removed, only marked
+    // offline) and in `protocol`'s member list (never removed at all).
+    send(&mut caas, &ToBus::ListAgents { req_id: 2 }).await;
+    match next_event(&mut caas).await {
+        FromBus::Reply {
+            result: ReplyResult::Agents { agents },
+            ..
+        } => {
+            assert_eq!(
+                agents.len(),
+                1,
+                "the observer must never appear in agents(): {agents:?}"
+            );
+            assert_eq!(agents[0].name, "caas");
+        }
+        other => panic!("expected a Reply to ListAgents, got {other:?}"),
+    }
+
+    send(&mut caas, &ToBus::ListRooms { req_id: 3 }).await;
+    match next_event(&mut caas).await {
+        FromBus::Reply {
+            result: ReplyResult::Rooms { rooms },
+            ..
+        } => {
+            let protocol = rooms
+                .iter()
+                .find(|r| r.name == "protocol")
+                .expect("protocol room exists");
+            assert_eq!(
+                protocol.members,
+                vec!["caas".to_string()],
+                "the observer must leave no membership trace: {:?}",
+                protocol.members
+            );
+        }
+        other => panic!("expected a Reply to ListRooms, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_observer_can_read_history_and_list_rooms_without_membership() {
+    let (_d, port) = start_bus().await;
+
+    let mut caas = connect(port, "caas").await;
+    next_event(&mut caas).await; // Registered
+    send(
+        &mut caas,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut caas).await; // Joined
+    send(
+        &mut caas,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "hi".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut caas).await; // Reply to Send
+
+    let mut watcher = connect_observer(port, "tail-2").await;
+    next_event(&mut watcher).await; // Observing
+
+    send(
+        &mut watcher,
+        &ToBus::History {
+            req_id: 5,
+            room: "protocol".into(),
+            limit: 10,
+        },
+    )
+    .await;
+    match next_event(&mut watcher).await {
+        FromBus::Reply {
+            result: ReplyResult::History { messages },
+            ..
+        } => {
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].text, "hi");
+        }
+        other => panic!("expected a Reply to History, got {other:?}"),
+    }
+
+    send(&mut watcher, &ToBus::ListRooms { req_id: 6 }).await;
+    match next_event(&mut watcher).await {
+        FromBus::Reply {
+            result: ReplyResult::Rooms { rooms },
+            ..
+        } => {
+            assert!(rooms.iter().any(|r| r.name == "protocol"));
+        }
+        other => panic!("expected a Reply to ListRooms, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_observer_cannot_join_or_send() {
+    let (_d, port) = start_bus().await;
+    let mut watcher = connect_observer(port, "tail-3").await;
+    next_event(&mut watcher).await; // Observing
+
+    send(
+        &mut watcher,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    match next_event(&mut watcher).await {
+        FromBus::Error { .. } => {}
+        other => panic!("expected an Error rejecting join, got {other:?}"),
+    }
+
+    send(
+        &mut watcher,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "hi".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut watcher).await {
+        FromBus::Error { .. } => {}
+        other => panic!("expected an Error rejecting send, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_real_agents_registration_and_membership_are_unaffected_by_a_concurrent_observer() {
+    let (_d, port) = start_bus().await;
+
+    let mut watcher = connect_observer(port, "tail-4").await;
+    next_event(&mut watcher).await; // Observing
+    send(
+        &mut watcher,
+        &ToBus::Watch {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut watcher).await; // Reply
+
+    let mut caas = connect(port, "caas").await;
+    match next_event(&mut caas).await {
+        FromBus::Registered { name } => assert_eq!(name, "caas"),
+        other => panic!("expected Registered, got {other:?}"),
+    }
+    send(
+        &mut caas,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    match next_event(&mut caas).await {
+        FromBus::Reply {
+            result: ReplyResult::Joined { room, members },
+            ..
+        } => {
+            assert_eq!(room, "protocol");
+            assert_eq!(members, vec!["caas".to_string()]);
+        }
+        other => panic!("expected a Reply to Join, got {other:?}"),
+    }
+
+    send(&mut caas, &ToBus::ListAgents { req_id: 2 }).await;
+    match next_event(&mut caas).await {
+        FromBus::Reply {
+            result: ReplyResult::Agents { agents },
+            ..
+        } => {
+            assert_eq!(agents.len(), 1, "unexpected agents: {agents:?}");
+            assert_eq!(agents[0].name, "caas");
+        }
+        other => panic!("expected a Reply to ListAgents, got {other:?}"),
+    }
 }

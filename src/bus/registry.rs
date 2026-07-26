@@ -1,8 +1,9 @@
 //! Who is connected right now. Presence is connection lifetime: an agent is
 //! online exactly as long as its WebSocket is open.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::Mutex;
 
@@ -38,9 +39,28 @@ struct Conn {
     tx: Sender,
 }
 
+/// Identifies an observer connection for the lifetime of its socket. Never
+/// derived from or compared against agent names — deliberately a different
+/// type from the `String` keys `conns` uses, so an observer can never be
+/// looked up through `conns`, `online`, or `hosts_for`, and can never collide
+/// with (or be counted toward) `attach`'s name-suffixing logic.
+pub type ObserverId = u64;
+
+struct ObserverConn {
+    tx: Sender,
+    rooms: HashSet<String>,
+}
+
 #[derive(Clone)]
 pub struct Registry {
     conns: Arc<Mutex<HashMap<String, Conn>>>,
+    /// Deliberately a separate map from `conns`, guarded by its own `Mutex`.
+    /// An observer is not a named, addressable agent: it never appears in
+    /// `conns`, so `online`/`hosts_for`/`attach` cannot see it even by
+    /// accident, and no code path ever needs to hold both locks at once (each
+    /// method below takes at most one).
+    observers: Arc<Mutex<HashMap<ObserverId, ObserverConn>>>,
+    next_observer_id: Arc<AtomicU64>,
 }
 
 impl Default for Registry {
@@ -53,6 +73,8 @@ impl Registry {
     pub fn new() -> Self {
         Self {
             conns: Arc::new(Mutex::new(HashMap::new())),
+            observers: Arc::new(Mutex::new(HashMap::new())),
+            next_observer_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -171,6 +193,51 @@ impl Registry {
             .collect();
         out.sort();
         out
+    }
+
+    /// Register an observer connection and return its id. Unlike `attach`,
+    /// this never touches `conns`: an observer is not a named agent, never
+    /// participates in name-collision suffixing, and is structurally
+    /// invisible to `online`/`hosts_for`/`send_to`. It exists purely as a
+    /// fan-out target for the rooms it later `watch`es.
+    pub async fn attach_observer(&self, tx: Sender) -> ObserverId {
+        let id = self.next_observer_id.fetch_add(1, Ordering::Relaxed);
+        self.observers.lock().await.insert(
+            id,
+            ObserverConn {
+                tx,
+                rooms: HashSet::new(),
+            },
+        );
+        id
+    }
+
+    /// Drop an observer connection. No `Store` state was ever created for it
+    /// (see `attach_observer`), so unlike `detach` there is nothing else to
+    /// clean up: removing the in-memory entry is the entire teardown.
+    pub async fn detach_observer(&self, id: ObserverId) {
+        self.observers.lock().await.remove(&id);
+    }
+
+    /// Start fanning `room`'s `Message` events to this observer. Not
+    /// membership: no `Store` call, no persisted row, and the room need not
+    /// exist yet.
+    pub async fn watch(&self, id: ObserverId, room: &str) {
+        if let Some(o) = self.observers.lock().await.get_mut(&id) {
+            o.rooms.insert(room.to_string());
+        }
+    }
+
+    /// Fan a room event out to every observer currently watching it.
+    /// Observers are spectators, not recipients: unlike `send_to`, there is
+    /// no boolean result and no `delivered_to`/`queued_for` bookkeeping —
+    /// they were never a party to the `send`, so a full or missing queue here
+    /// is simply dropped, never reported to the sender.
+    pub async fn notify_watchers(&self, room: &str, msg: FromBus) {
+        let observers = self.observers.lock().await;
+        for o in observers.values().filter(|o| o.rooms.contains(room)) {
+            let _ = o.tx.try_send(msg.clone());
+        }
     }
 }
 
@@ -354,5 +421,89 @@ mod tests {
         reg.attach("dashboard", "lisa", tx1).await;
         reg.attach("caas", "lisa", tx2).await;
         assert_eq!(reg.online().await, vec!["caas", "dashboard"]);
+    }
+
+    #[tokio::test]
+    async fn attach_observer_never_appears_online() {
+        let reg = Registry::new();
+        let (tx, _rx) = channel();
+        reg.attach_observer(tx).await;
+        assert!(
+            reg.online().await.is_empty(),
+            "an observer must never show up in the agent roster"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watching_observer_receives_room_events() {
+        let reg = Registry::new();
+        let (tx, mut rx) = channel();
+        let id = reg.attach_observer(tx).await;
+        reg.watch(id, "protocol").await;
+
+        reg.notify_watchers(
+            "protocol",
+            FromBus::Message {
+                id: 1,
+                room: "protocol".into(),
+                from: "caas".into(),
+                text: "hi".into(),
+                done: false,
+            },
+        )
+        .await;
+
+        assert!(rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn notify_watchers_skips_a_room_the_observer_did_not_watch() {
+        let reg = Registry::new();
+        let (tx, mut rx) = channel();
+        let id = reg.attach_observer(tx).await;
+        reg.watch(id, "protocol").await;
+
+        reg.notify_watchers(
+            "other-room",
+            FromBus::Message {
+                id: 1,
+                room: "other-room".into(),
+                from: "caas".into(),
+                text: "hi".into(),
+                done: false,
+            },
+        )
+        .await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "an observer watching a different room must not receive this event"
+        );
+    }
+
+    #[tokio::test]
+    async fn detach_observer_stops_further_fan_out() {
+        let reg = Registry::new();
+        let (tx, mut rx) = channel();
+        let id = reg.attach_observer(tx).await;
+        reg.watch(id, "protocol").await;
+        reg.detach_observer(id).await;
+
+        reg.notify_watchers(
+            "protocol",
+            FromBus::Message {
+                id: 1,
+                room: "protocol".into(),
+                from: "caas".into(),
+                text: "hi".into(),
+                done: false,
+            },
+        )
+        .await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a detached observer must not receive further fan-out"
+        );
     }
 }

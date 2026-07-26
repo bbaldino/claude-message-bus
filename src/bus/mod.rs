@@ -92,9 +92,10 @@ impl Keepalive {
 /// is at most one outstanding reply per in-flight command, plus at most two
 /// events for a single `Send` that trips the pause guard (`Paused` then its
 /// resolving `Error`, sent back to back with nothing draining between
-/// them). 16 comfortably covers Register + Registered + a generous number
-/// of reconnect Unread summaries, plus several commands pipelined ahead of
-/// their replies, without ever growing unbounded — control traffic
+/// them). 16 comfortably covers Register + Registered, the single coalesced
+/// reconnect `Unread` summary (see `send_unread_summaries` — one event for
+/// the whole connection, not one per room), plus several commands pipelined
+/// ahead of their replies, without ever growing unbounded — control traffic
 /// originates from this connection's own actions, so it can't be driven
 /// past that by another agent the way the routing queue can.
 const CONTROL_CHANNEL_CAPACITY: usize = 16;
@@ -260,6 +261,13 @@ async fn connection(socket: WebSocket, app: App) {
     });
 
     let mut me: Option<String> = None;
+    // Set instead of `me` when this connection identified via `Observe`
+    // rather than `Register`. The two are mutually exclusive for the
+    // connection's whole lifetime — see the guards in the `Register` and
+    // `Observe` handling below. Kept as an opaque `ObserverId`, not a name:
+    // `handle_observer` never needs a display string, only the registry
+    // token that `watch`/`notify_watchers` key off of.
+    let mut observer: Option<registry::ObserverId> = None;
 
     // A peer that stops answering pings must not be allowed to keep the read
     // loop parked in `stream.next().await` forever — on a black-holed
@@ -318,6 +326,16 @@ async fn connection(socket: WebSocket, app: App) {
                         });
                         continue;
                     }
+                    if observer.is_some() {
+                        let _ = control_tx.try_send(FromBus::Error {
+                            req_id: None,
+                            message:
+                                "already identified as an observer; a connection may only \
+                                 identify once"
+                                    .into(),
+                        });
+                        continue;
+                    }
 
                     // `Registry` only ever needs the routing sender: it is
                     // what other connections use to fan messages in, never
@@ -335,7 +353,46 @@ async fn connection(socket: WebSocket, app: App) {
                     continue;
                 }
 
+                // A viewer is not a participant: `Observe` gives a connection
+                // an identity for its lifetime (satisfying "register before
+                // sending commands" below) without ever calling `Store` or
+                // `Registry::attach` — no `agents` row, no name that could
+                // collide with or consume a suffix meant for a real agent.
+                // See `ObserverId` and `Registry::attach_observer`.
+                if let ToBus::Observe { name } = &cmd {
+                    if let Some(existing) = &me {
+                        let _ = control_tx.try_send(FromBus::Error {
+                            req_id: None,
+                            message: format!(
+                                "already registered as {existing}; a connection may only \
+                                 identify once"
+                            ),
+                        });
+                        continue;
+                    }
+                    if observer.is_some() {
+                        let _ = control_tx.try_send(FromBus::Error {
+                            req_id: None,
+                            message:
+                                "already identified as an observer; a connection may only \
+                                 identify once"
+                                    .into(),
+                        });
+                        continue;
+                    }
+
+                    let id = app.registry.attach_observer(routing_tx.clone()).await;
+                    observer = Some(id);
+                    eprintln!("observer connected: {name}");
+                    let _ = control_tx.try_send(FromBus::Observing { name: name.clone() });
+                    continue;
+                }
+
                 let Some(name) = me.clone() else {
+                    if let Some(id) = observer {
+                        handle_observer(&app, id, cmd, &control_tx).await;
+                        continue;
+                    }
                     let _ = control_tx.try_send(FromBus::Error {
                         req_id: None,
                         message: "register before sending commands".into(),
@@ -363,6 +420,14 @@ async fn connection(socket: WebSocket, app: App) {
         app.registry.detach(&name).await;
         let _ = app.store.set_online(&name, false).await;
         eprintln!("disconnected: {name}");
+    } else if let Some(id) = observer {
+        // No `Store` state was ever created for an observer (see
+        // `Registry::attach_observer`), so unlike an agent's teardown above
+        // there is nothing to mark offline anywhere — dropping the in-memory
+        // registry entry is the whole story. Nothing in `agents` or
+        // `room_members` ever mentioned this connection to begin with.
+        app.registry.detach_observer(id).await;
+        eprintln!("observer disconnected");
     }
     writer.abort();
 }
@@ -412,6 +477,24 @@ async fn known_rooms(app: &App) -> String {
 async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registry::Sender) {
     match cmd {
         ToBus::Register { .. } => {}
+
+        // Both are observer-only, rejected here for a registered agent the
+        // same way `handle_observer` rejects agent-only commands for an
+        // observer — the two roles are disjoint by construction, not just by
+        // convention.
+        ToBus::Observe { .. } => {
+            let _ = control_tx.try_send(FromBus::Error {
+                req_id: None,
+                message: "already registered as an agent; a connection may only identify once"
+                    .into(),
+            });
+        }
+        ToBus::Watch { req_id, .. } => {
+            let _ = control_tx.try_send(FromBus::Error {
+                req_id: Some(req_id),
+                message: "watch is for observers; a registered agent should use join".into(),
+            });
+        }
 
         ToBus::Join { req_id, room } => {
             if let Err(e) = app.store.join_room(&room, me).await {
@@ -506,6 +589,25 @@ async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registry::Sender) 
                 }
             }
 
+            // Observers watching this room get the same event, but they are
+            // spectators: this is a separate fan-out from the member loop
+            // above and never touches `delivered_to`/`queued_for` — an
+            // observer was never a party to the `send`, so it must not be
+            // able to influence what the sender is told was delivered vs.
+            // queued.
+            app.registry
+                .notify_watchers(
+                    &room,
+                    FromBus::Message {
+                        id: msg_id,
+                        room: room.clone(),
+                        from: me.to_string(),
+                        text,
+                        done,
+                    },
+                )
+                .await;
+
             let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Sent {
@@ -521,56 +623,9 @@ async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registry::Sender) 
             req_id,
             room,
             limit,
-        } => {
-            let members = app.store.room_members(&room).await.unwrap_or_default();
-            if members.is_empty() {
-                let _ = control_tx.try_send(FromBus::Error {
-                    req_id: Some(req_id),
-                    message: format!(
-                        "no room named {room}. Known rooms: {}",
-                        known_rooms(app).await
-                    ),
-                });
-                return;
-            }
-            let messages = app
-                .store
-                .history(&room, limit)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|m| HistoryItem {
-                    id: m.id,
-                    from: m.from_agent,
-                    text: m.body,
-                    done: m.done,
-                    created_at: m.created_at,
-                })
-                .collect();
-            let _ = control_tx.try_send(FromBus::Reply {
-                req_id,
-                result: ReplyResult::History { messages },
-            });
-        }
+        } => reply_history(app, control_tx, req_id, &room, limit).await,
 
-        ToBus::ListRooms { req_id } => {
-            let rooms = app
-                .store
-                .rooms()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| RoomInfo {
-                    name: r.name,
-                    mode: r.mode,
-                    members: r.members,
-                })
-                .collect();
-            let _ = control_tx.try_send(FromBus::Reply {
-                req_id,
-                result: ReplyResult::Rooms { rooms },
-            });
-        }
+        ToBus::ListRooms { req_id } => reply_list_rooms(app, control_tx, req_id).await,
 
         ToBus::ListAgents { req_id } => {
             let online = app.registry.online().await;
@@ -708,5 +763,128 @@ async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registry::Sender) 
         } => {
             let _ = app.store.set_cursor(&room, me, last_delivered_id).await;
         }
+    }
+}
+
+/// Shared by a registered agent's `History` and an observer's — read paths
+/// carry no membership check today (that is deliberately separate work), so
+/// there is nothing agent-specific about this beyond who is allowed to call
+/// it.
+async fn reply_history(
+    app: &App,
+    control_tx: &registry::Sender,
+    req_id: u64,
+    room: &str,
+    limit: i64,
+) {
+    let members = app.store.room_members(room).await.unwrap_or_default();
+    if members.is_empty() {
+        let _ = control_tx.try_send(FromBus::Error {
+            req_id: Some(req_id),
+            message: format!(
+                "no room named {room}. Known rooms: {}",
+                known_rooms(app).await
+            ),
+        });
+        return;
+    }
+    let messages = app
+        .store
+        .history(room, limit)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| HistoryItem {
+            id: m.id,
+            from: m.from_agent,
+            text: m.body,
+            done: m.done,
+            created_at: m.created_at,
+        })
+        .collect();
+    let _ = control_tx.try_send(FromBus::Reply {
+        req_id,
+        result: ReplyResult::History { messages },
+    });
+}
+
+/// Shared by a registered agent's `ListRooms` and an observer's — see
+/// `reply_history`.
+async fn reply_list_rooms(app: &App, control_tx: &registry::Sender, req_id: u64) {
+    let rooms = app
+        .store
+        .rooms()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| RoomInfo {
+            name: r.name,
+            mode: r.mode,
+            members: r.members,
+        })
+        .collect();
+    let _ = control_tx.try_send(FromBus::Reply {
+        req_id,
+        result: ReplyResult::Rooms { rooms },
+    });
+}
+
+/// The observer counterpart to `handle`. Deliberately a much smaller surface:
+/// an observer may watch rooms and read (`History`, `ListRooms`) but cannot
+/// join, send, or do anything else that would create or imply membership —
+/// see the module doc on `Observe`/`Watch` for why. Every other `ToBus`
+/// variant is rejected here rather than silently accepted and ignored, so a
+/// future new command doesn't accidentally become observer-usable just by
+/// falling through.
+async fn handle_observer(
+    app: &App,
+    id: registry::ObserverId,
+    cmd: ToBus,
+    control_tx: &registry::Sender,
+) {
+    match cmd {
+        ToBus::Watch { req_id, room } => {
+            app.registry.watch(id, &room).await;
+            let _ = control_tx.try_send(FromBus::Reply {
+                req_id,
+                result: ReplyResult::Watching { room },
+            });
+        }
+
+        ToBus::History {
+            req_id,
+            room,
+            limit,
+        } => reply_history(app, control_tx, req_id, &room, limit).await,
+
+        ToBus::ListRooms { req_id } => reply_list_rooms(app, control_tx, req_id).await,
+
+        other => {
+            let _ = control_tx.try_send(FromBus::Error {
+                req_id: req_id_of(&other),
+                message: "observers may only watch, list_rooms, or history — a viewer is not \
+                          a participant"
+                    .into(),
+            });
+        }
+    }
+}
+
+/// Best-effort `req_id` extraction for commands an observer is not allowed to
+/// issue, purely so the rejection in `handle_observer` can still correlate
+/// back to the caller's request where the variant carries one.
+fn req_id_of(cmd: &ToBus) -> Option<u64> {
+    match cmd {
+        ToBus::Join { req_id, .. }
+        | ToBus::Send { req_id, .. }
+        | ToBus::History { req_id, .. }
+        | ToBus::ListRooms { req_id }
+        | ToBus::ListAgents { req_id }
+        | ToBus::PutFile { req_id, .. }
+        | ToBus::GetFile { req_id, .. }
+        | ToBus::ListFiles { req_id, .. }
+        | ToBus::Resume { req_id, .. }
+        | ToBus::Watch { req_id, .. } => Some(*req_id),
+        ToBus::Register { .. } | ToBus::Observe { .. } | ToBus::Ack { .. } => None,
     }
 }

@@ -180,6 +180,11 @@ async fn dispatch(
             .await;
         }
         FromBus::Registered { name } => eprintln!("[agent] registered as {name}"),
+        // The agent bridge always registers via `ToBus::Register`, never
+        // `ToBus::Observe` (that's `tail`'s path), so this never actually
+        // arrives here — kept only because `FromBus` must be matched
+        // exhaustively.
+        FromBus::Observing { .. } => {}
         FromBus::Reply { req_id, result } => {
             if let Some(tx) = pending.lock().await.remove(&req_id) {
                 let _ = tx.send(FromBus::Reply { req_id, result });
