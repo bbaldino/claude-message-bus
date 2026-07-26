@@ -41,7 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some("tail") => {
-            eprintln!("tail — not yet implemented");
+            let bus = flag(&args, "--bus").unwrap_or_else(|| "ws://127.0.0.1:7777/ws".to_string());
+            // The room is the first positional argument after "tail".
+            let room = args.get(2).filter(|a| !a.starts_with("--")).cloned();
+            claude_bus::tail::run(bus, room).await?;
             Ok(())
         }
         _ => usage(),
