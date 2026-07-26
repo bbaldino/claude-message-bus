@@ -70,8 +70,6 @@ impl Store {
         Ok(Self { pool, blobs_dir })
     }
 
-    // Consumed by Tasks 3 (messages/cursors) and 4 (file store); unused until then.
-    #[allow(dead_code)]
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -181,5 +179,116 @@ impl Store {
             });
         }
         Ok(out)
+    }
+
+    pub async fn append_message(
+        &self,
+        room: &str,
+        from: &str,
+        body: &str,
+        done: bool,
+    ) -> anyhow::Result<i64> {
+        self.ensure_room(room).await?;
+        let res = sqlx::query(
+            "INSERT INTO messages (room, from_agent, body, done, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(room)
+        .bind(from)
+        .bind(body)
+        .bind(done as i64)
+        .bind(now_ms())
+        .execute(self.pool())
+        .await?;
+        Ok(res.last_insert_rowid())
+    }
+
+    /// The most recent `limit` messages, returned oldest-first so the reader
+    /// sees them in conversational order.
+    pub async fn history(&self, room: &str, limit: i64) -> anyhow::Result<Vec<MessageRow>> {
+        let rows = sqlx::query(
+            "SELECT * FROM (
+               SELECT id, room, from_agent, body, done, created_at
+               FROM messages WHERE room = ?1 ORDER BY id DESC LIMIT ?2
+             ) ORDER BY id ASC",
+        )
+        .bind(room)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(message_row).collect())
+    }
+
+    pub async fn cursor(&self, room: &str, agent: &str) -> anyhow::Result<i64> {
+        let row = sqlx::query(
+            "SELECT last_delivered_id FROM cursors WHERE room = ?1 AND agent_name = ?2",
+        )
+        .bind(room)
+        .bind(agent)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(row.map(|r| r.get("last_delivered_id")).unwrap_or(0))
+    }
+
+    pub async fn set_cursor(&self, room: &str, agent: &str, id: i64) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO cursors (room, agent_name, last_delivered_id) VALUES (?1, ?2, ?3)
+             ON CONFLICT(room, agent_name) DO UPDATE SET last_delivered_id = ?3",
+        )
+        .bind(room)
+        .bind(agent)
+        .bind(id)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    pub async fn unread_count(&self, room: &str, agent: &str) -> anyhow::Result<i64> {
+        let cursor = self.cursor(room, agent).await?;
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n FROM messages WHERE room = ?1 AND id > ?2 AND from_agent != ?3",
+        )
+        .bind(room)
+        .bind(cursor)
+        .bind(agent)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(row.get("n"))
+    }
+
+    /// Messages this agent has not been shown yet, excluding its own.
+    pub async fn undelivered(&self, room: &str, agent: &str) -> anyhow::Result<Vec<MessageRow>> {
+        let cursor = self.cursor(room, agent).await?;
+        let rows = sqlx::query(
+            "SELECT id, room, from_agent, body, done, created_at
+             FROM messages WHERE room = ?1 AND id > ?2 AND from_agent != ?3 ORDER BY id ASC",
+        )
+        .bind(room)
+        .bind(cursor)
+        .bind(agent)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(message_row).collect())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageRow {
+    pub id: i64,
+    pub room: String,
+    pub from_agent: String,
+    pub body: String,
+    pub done: bool,
+    pub created_at: i64,
+}
+
+fn message_row(r: &sqlx::sqlite::SqliteRow) -> MessageRow {
+    MessageRow {
+        id: r.get("id"),
+        room: r.get("room"),
+        from_agent: r.get("from_agent"),
+        body: r.get("body"),
+        done: r.get::<i64, _>("done") != 0,
+        created_at: r.get("created_at"),
     }
 }
