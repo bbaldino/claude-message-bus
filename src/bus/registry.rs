@@ -39,43 +39,59 @@ impl Registry {
     /// that already holds a name.
     pub async fn attach(&self, name: &str, host: &str, tx: Sender) -> String {
         let mut conns = self.conns.lock().await;
-        if !conns.contains_key(name) {
-            conns.insert(
-                name.to_string(),
-                Conn {
-                    host: host.to_string(),
-                    tx,
-                },
-            );
-            return name.to_string();
-        }
-        let existing_host = conns.get(name).map(|c| c.host.clone()).unwrap_or_default();
-        let candidate = if existing_host != host {
-            format!("{name}@{host}")
+        let qualified = format!("{name}@{host}");
+
+        // Decide which *root* address this (name, host) pair belongs under,
+        // before worrying about numeric suffixes.
+        //
+        // Checking only `contains_key(name)` is not enough: the bare name
+        // can be unclaimed at this instant merely because the connection
+        // that held it detached, while *this host* still has a live
+        // connection under the qualified form from an earlier cross-host
+        // collision (e.g. `dashboard@nas`, maybe itself already suffixed as
+        // `dashboard@nas#2`). Handing the bare name back in that situation
+        // would give this host two live, differently-shaped identities for
+        // the same base name — and `hosts_for` always renders the bare-name
+        // holder as `name@host`, so the two would print as the *same*
+        // string in the ambiguity list, making them indistinguishable. This
+        // is the invariant boundary: a root may only be the bare `name` if
+        // no other live connection anywhere (bare-holder-on-this-host
+        // aside) already established a qualified family for this host.
+        let root = match conns.get(name) {
+            // This host already holds (or is re-registering into) the bare
+            // name: same-host family, stays on the bare root and gets the
+            // next `#N` suffix if occupied.
+            Some(c) if c.host == host => name.to_string(),
+            // A different host holds the bare name: must qualify.
+            Some(_) => qualified.clone(),
+            // Bare name currently unclaimed by anyone. Only grant it fresh
+            // if this host has no existing qualified family (exact or
+            // suffixed) already in play; otherwise keep using that family.
+            None => {
+                let qualified_prefix = format!("{qualified}#");
+                if conns.contains_key(&qualified)
+                    || conns.keys().any(|k| k.starts_with(&qualified_prefix))
+                {
+                    qualified.clone()
+                } else {
+                    name.to_string()
+                }
+            }
+        };
+
+        let effective = if !conns.contains_key(&root) {
+            root
         } else {
             let mut n = 2;
             loop {
-                let c = format!("{name}#{n}");
+                let c = format!("{root}#{n}");
                 if !conns.contains_key(&c) {
                     break c;
                 }
                 n += 1;
             }
         };
-        // The qualified form can itself collide if two same-named agents share a
-        // host *and* an earlier qualified name; fall through to numeric suffixes.
-        let effective = if conns.contains_key(&candidate) {
-            let mut n = 2;
-            loop {
-                let c = format!("{candidate}#{n}");
-                if !conns.contains_key(&c) {
-                    break c;
-                }
-                n += 1;
-            }
-        } else {
-            candidate
-        };
+
         conns.insert(
             effective.clone(),
             Conn {
@@ -168,6 +184,45 @@ mod tests {
         reg.attach("dashboard", "nas", tx2).await;
         let hosts = reg.hosts_for("dashboard").await;
         assert_eq!(hosts, vec!["dashboard@lisa", "dashboard@nas"]);
+    }
+
+    /// Regression for a defect found in fix round 1: `attach` decided the
+    /// bare-name fast path with a single `contains_key(name)` check, which
+    /// only sees whether the exact bare key is free — it misses that this
+    /// host already has a *live* qualified connection for the same base
+    /// name (from an earlier cross-host collision). Freeing the bare key by
+    /// detaching one connection must not let a second, still-live connection
+    /// on the same host claim it: that would give the host two apparently
+    /// distinct identities, and `hosts_for` would render both as the same
+    /// `name@host` string, making them indistinguishable.
+    #[tokio::test]
+    async fn a_second_live_connection_on_a_host_does_not_reclaim_a_freed_bare_name() {
+        let reg = Registry::new();
+        let (tx1, _r1) = channel();
+        let (tx2, _r2) = channel();
+        let (tx3, _r3) = channel();
+
+        assert_eq!(reg.attach("dashboard", "lisa", tx1).await, "dashboard");
+        assert_eq!(reg.attach("dashboard", "nas", tx2).await, "dashboard@nas");
+        reg.detach("dashboard").await;
+        let third = reg.attach("dashboard", "nas", tx3).await;
+
+        assert_ne!(
+            third, "dashboard",
+            "nas already has a live connection (dashboard@nas); it must not \
+             also be handed the freed bare name: got {third:?}"
+        );
+
+        // Every live connection must render as a distinct string from
+        // hosts_for, or the ambiguity list can't actually disambiguate them.
+        let hosts = reg.hosts_for("dashboard").await;
+        let mut deduped = hosts.clone();
+        deduped.dedup();
+        assert_eq!(
+            hosts.len(),
+            deduped.len(),
+            "hosts_for must not render two live connections identically: {hosts:?}"
+        );
     }
 
     #[tokio::test]
