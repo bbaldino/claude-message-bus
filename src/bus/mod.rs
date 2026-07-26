@@ -99,6 +99,22 @@ async fn connection(socket: WebSocket, app: App) {
             session_id,
         } = &cmd
         {
+            // A connection registers exactly once. Accepting a second
+            // Register would mint a fresh effective name via `attach` (e.g.
+            // `caas#2`) while leaving the original identity's connection
+            // entry in the registry untouched — that first name would never
+            // be detached, so it would stay "online" forever, silently
+            // swallowing anything addressed to it after this socket closes.
+            if let Some(existing) = &me {
+                let _ = tx.send(FromBus::Error {
+                    req_id: None,
+                    message: format!(
+                        "already registered as {existing}; a connection may only register once"
+                    ),
+                });
+                continue;
+            }
+
             let effective = app.registry.attach(name, host, tx.clone()).await;
             let _ = app
                 .store

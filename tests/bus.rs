@@ -71,6 +71,66 @@ async fn registering_confirms_the_effective_name() {
 }
 
 #[tokio::test]
+async fn a_second_register_on_one_connection_is_refused_and_identity_is_unchanged() {
+    // If a second Register were accepted, `attach` would mint a fresh
+    // effective name (e.g. "caas#2") for the same socket, and only that
+    // second name would ever be detached on disconnect: "caas" would stay
+    // registered online forever, silently absorbing anything addressed to
+    // it. The connection's identity must be fixed at the first Register.
+    let (_d, port) = start_bus().await;
+    let mut ws = connect(port, "caas").await;
+    match next_event(&mut ws).await {
+        FromBus::Registered { name } => assert_eq!(name, "caas"),
+        other => panic!("expected Registered, got {other:?}"),
+    }
+
+    send(
+        &mut ws,
+        &ToBus::Register {
+            name: "caas".into(),
+            host: "testhost".into(),
+            cwd: "/w/caas".into(),
+            session_id: None,
+        },
+    )
+    .await;
+    match next_event(&mut ws).await {
+        FromBus::Error { req_id, message } => {
+            assert_eq!(req_id, None);
+            assert!(
+                message.contains("caas"),
+                "error should name the existing identity: {message}"
+            );
+        }
+        other => panic!("expected Error refusing the second Register, got {other:?}"),
+    }
+
+    // The connection is still "caas": commands still work, and the identity
+    // that appears in a subsequent message is still the original one.
+    let mut other = connect(port, "dashboard").await;
+    next_event(&mut other).await; // Registered
+
+    send(
+        &mut ws,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent {
+                name: "dashboard".into(),
+            },
+            text: "still caas".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut ws).await; // Reply to the sender
+
+    match next_event(&mut other).await {
+        FromBus::Message { from, .. } => assert_eq!(from, "caas"),
+        other => panic!("expected Message from caas, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_dm_reaches_a_connected_agent() {
     let (_d, port) = start_bus().await;
     let mut a = connect(port, "caas").await;
@@ -413,6 +473,61 @@ async fn files_round_trip_through_the_bus() {
             assert_eq!(bytes, b"schema goes here");
         }
         other => panic!("expected FileContent, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn getting_a_missing_file_names_the_files_that_do_exist() {
+    // The task's error-message constraint ("name valid alternatives, not a
+    // bare not-found") applies here just as much as to unknown rooms. This
+    // is bespoke formatting logic in the GetFile arm, not a pass-through
+    // over an already-tested Store call, so it needs its own assertion.
+    use base64::Engine;
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await;
+
+    let content = base64::engine::general_purpose::STANDARD.encode(b"schema goes here");
+    send(
+        &mut a,
+        &ToBus::PutFile {
+            req_id: 2,
+            room: "protocol".into(),
+            key: "schema.txt".into(),
+            content_b64: content,
+            content_type: Some("text/plain".into()),
+        },
+    )
+    .await;
+    next_event(&mut a).await; // FileStored
+
+    send(
+        &mut a,
+        &ToBus::GetFile {
+            req_id: 3,
+            room: "protocol".into(),
+            key: "missing.txt".into(),
+        },
+    )
+    .await;
+    match next_event(&mut a).await {
+        FromBus::Error { req_id, message } => {
+            assert_eq!(req_id, Some(3));
+            assert!(
+                message.contains("schema.txt"),
+                "error must name the files that do exist: {message}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
     }
 }
 
