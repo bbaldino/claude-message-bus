@@ -327,3 +327,134 @@ fn send_requires_exactly_one_destination() {
         "should explain the two options: {text}"
     );
 }
+
+#[test]
+fn send_rejects_both_to_and_room() {
+    // Same guard, the other bad input: giving both is just as ambiguous as
+    // giving neither, and the catch-all match arm handles both — but only
+    // the neither-given case had a test before this one.
+    let mut a = Agent::start();
+    initialize(&mut a);
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    let text = call_tool(
+        &mut a,
+        13,
+        "send",
+        serde_json::json!({ "to": "someone", "room": "somewhere", "text": "ambiguous" }),
+    );
+    assert!(
+        text.contains("to") && text.contains("room"),
+        "should explain the two options: {text}"
+    );
+}
+
+#[test]
+fn put_file_rejects_both_content_and_path() {
+    let mut a = Agent::start();
+    initialize(&mut a);
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    let text = call_tool(
+        &mut a,
+        14,
+        "put_file",
+        serde_json::json!({ "room": "r", "key": "k", "content": "abc", "path": "/tmp/x" }),
+    );
+    assert!(
+        text.contains("content") && text.contains("path"),
+        "should explain the two options: {text}"
+    );
+}
+
+#[test]
+fn send_to_a_room_reports_both_delivered_and_queued_members() {
+    // The mixed case: `send`'s result text joins two independent clauses
+    // ("delivered to …" and "queued for … (offline)") with "; " when both
+    // lists are non-empty. This is the only path where a message is
+    // simultaneously delivered and not — the one most likely to regress into
+    // a half-truth, since dropping either clause alone still produces a
+    // plausible-looking sentence.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (_dir, port, _watcher) = rt.block_on(async {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { claude_bus::bus::serve_on(listener, path).await.unwrap() });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let url = format!("ws://127.0.0.1:{port}/ws");
+
+        // "watcher" joins the room and stays connected: it will show up as
+        // delivered. The connection is kept alive by returning it — presence
+        // in this bus is connection lifetime, so it must not be dropped.
+        let (mut watcher, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        watcher
+            .send(Message::text(
+                serde_json::json!({
+                    "type": "register", "name": "watcher", "host": "h", "cwd": "/w", "session_id": null
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        watcher
+            .send(Message::text(
+                serde_json::json!({ "type": "join", "req_id": 1, "room": "standup" }).to_string(),
+            ))
+            .await
+            .unwrap();
+
+        // "sleeper" joins the room, then disconnects: it will be offline
+        // when the room send happens, so it must show up as queued.
+        let (mut sleeper, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        sleeper
+            .send(Message::text(
+                serde_json::json!({
+                    "type": "register", "name": "sleeper", "host": "h", "cwd": "/w", "session_id": null
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        sleeper
+            .send(Message::text(
+                serde_json::json!({ "type": "join", "req_id": 1, "room": "standup" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        drop(sleeper);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        (dir, port, watcher)
+    });
+
+    let mut a = Agent::start_with_bus(port, "reporter");
+    initialize(&mut a);
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    let text = call_tool(
+        &mut a,
+        20,
+        "send",
+        serde_json::json!({ "room": "standup", "text": "daily update" }),
+    );
+    assert!(
+        text.contains("delivered to watcher"),
+        "must report the online member as delivered: {text}"
+    );
+    assert!(
+        text.contains("queued for sleeper"),
+        "must report the offline member as queued: {text}"
+    );
+    assert!(
+        text.contains("daily update"),
+        "must echo the text sent: {text}"
+    );
+}
