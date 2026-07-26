@@ -238,8 +238,17 @@ fn injects_bus_messages_as_channel_notifications() {
     assert_eq!(note["params"]["content"], "wire format proposal");
     assert_eq!(note["params"]["meta"]["from"], "sender");
     assert_eq!(note["params"]["meta"]["room"], "dm:receiver|sender");
-    assert!(
-        note["params"]["meta"]["msg_id"].is_string(),
-        "msg_id must be a string"
+    // This is the first message ever inserted into a fresh per-test sqlite
+    // database (messages.id is INTEGER PRIMARY KEY AUTOINCREMENT), so its id
+    // is deterministically 1. Pinning the value, not just the type, is
+    // required: `.is_string()` alone would pass for any string, including a
+    // wrong one.
+    assert_eq!(
+        note["params"]["meta"]["msg_id"], "1",
+        "msg_id must be the string \"1\", not a bare number or the wrong value"
+    );
+    assert_eq!(
+        note["params"]["meta"]["done"], "false",
+        "done must be the string \"false\", not a bare bool"
     );
 }
