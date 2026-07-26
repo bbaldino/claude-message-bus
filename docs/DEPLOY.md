@@ -15,8 +15,21 @@ One volume holds `bus.db` and `blobs/`. Single process, single writer.
 
 ## Each project that should join the bus
 
-Install the binary somewhere on `PATH`, then add to `~/.claude.json` (user scope, so
-every project picks it up) or a project's `.mcp.json`:
+Install the binary:
+
+```bash
+make install                    # -> ~/.local/bin/claude-bus
+make install PREFIX=/usr/local  # -> /usr/local/bin/claude-bus
+```
+
+`PREFIX` must be on your `PATH`, because the config below invokes `claude-bus` by name
+rather than by path. `make where` prints which copy a shell would actually run — worth
+checking after an upgrade, since an older binary earlier in `PATH` will silently shadow a
+fresh install. (`make install` is a thin wrapper over `cargo install --path . --root
+$PREFIX --locked`; plain `cargo install --path .` also works and lands in `~/.cargo/bin`.)
+
+Then add to `~/.claude.json` (user scope, so every project picks it up) or a project's
+`.mcp.json`:
 
 ```json
 {
