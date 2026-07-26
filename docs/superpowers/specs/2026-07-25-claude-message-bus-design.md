@@ -277,8 +277,14 @@ other's channel. Overnight that is real money.
   (default 20), the bus stops delivering and injects a single "paused — check with your
   human" notice. Resuming is an explicit tool call. Optionally a one-line
   `UserPromptSubmit` hook pings the bus to reset the counter whenever the human types.
+
+  The default of 20 comes from POC 3, where a real negotiation converged in eight
+  messages. It is a runaway backstop at ~2.5× observed length, not a working limit.
 - **Model-enforced convention.** `send(done: true)` marks a topic resolved and signals no
   reply is expected. The `instructions` string teaches both mechanisms.
+
+  POC 3 showed the models already self-terminate when instructed to ("no need to reply
+  just to confirm"), so this is a clarity improvement rather than the primary control.
 - **Rate limit.** A minimum interval between messages from one agent to one room.
 
 ## Error handling
@@ -360,15 +366,26 @@ on connect. All twelve checks pass.
 It produced one design correction, already folded into the tools section above: `send`
 must wait for a bus ack, or it reports delivery for messages that were only queued.
 
-`demo.sh` runs the live two-session version, with two throwaway project directories that
-demonstrate directory-based auto-naming and ship a `.claude/settings.json` allowlisting
-the bus tools. What the live run is for, beyond confirmation:
+**The live two-session run PASSED** (`poc/round-trip/TRANSCRIPT.md`). Two sessions in
+different project directories negotiated an RPC wire format. The human typed one prompt,
+into one session. Four findings, all of which settle open questions:
 
-- Do the two agents converge and stop, or ping-pong indefinitely? This is the only
-  evidence that would justify the exchange-cap default of 20, which is currently a
-  guess.
-- Does either agent try to edit files despite the instructions? A permission stall there
-  is the fence working as designed.
+- **They converge.** Eight messages, four from each side, then a clean stop. The final
+  message ended *"Applying A1–A3 and I'd call v1 final; no need to reply just to
+  confirm."* — the agent terminated the exchange itself, honoring the instruction to stop
+  rather than acknowledge endlessly. No cap was needed to end it.
+- **The exchange cap of 20 is now evidence-based** rather than a guess: 2.5× the observed
+  length of a real negotiation. Keep it as a runaway backstop, not a working limit.
+- **The discuss-only fence held, unprompted and without a permission stall.** Mid-exchange
+  one agent wrote: *"Note this is a message draft, not a file in my repo; where it lands
+  is my human's call."* It declined to write on its own reasoning. The permission
+  allowlist never had to catch anything — which is the desired order: instructions first,
+  permissions as the backstop.
+- **The exchange had genuine adversarial value.** The receiving agent caught a real
+  self-contradiction in the proposal (an error-code band defined one way and used
+  another) and caught the proposer attributing its own design decisions to the JSON-RPC
+  2.0 spec. This is review, not two agents agreeing with each other — which is the whole
+  reason to build the thing.
 
 ## Out of scope
 
