@@ -78,7 +78,7 @@ async fn human_active(
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter(|r| r.members.iter().any(|m| *m == q.agent))
+        .filter(|r| r.members.contains(&q.agent))
         .map(|r| r.name)
         .collect();
     app.guards.reset_all_for(&rooms).await;
