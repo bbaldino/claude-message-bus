@@ -93,6 +93,14 @@ After 20 messages in a room with no human input, the bus pauses it. Installing
 `contrib/human-active-hook.sh` as a `UserPromptSubmit` hook resets that counter whenever
 you type. Without the hook, ask your agent to call `resume`.
 
+The hook posts to `CLAUDE_BUS_HTTP`, which **defaults to `http://127.0.0.1:7777`** — the
+bus's own machine. If the bus runs anywhere else, as in the `nas.lan` example above, set
+`CLAUDE_BUS_HTTP` (e.g. `http://nas.lan:7777`) wherever the hook runs. Get this wrong and
+the hook never blocks or fails your prompt — it always exits `0` — but the exchange-cap
+counter also never resets, and rooms will pause at 20 messages for no apparent reason. The
+hook does print a one-line warning to stderr when it cannot reach the bus; check there
+first if resets seem to be doing nothing.
+
 ## Manual end-to-end checklist
 
 Not automatable — channels require a real interactive session.
