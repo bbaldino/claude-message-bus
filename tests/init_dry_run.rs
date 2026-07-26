@@ -227,6 +227,59 @@ fn dry_run_partial_configuration_offers_only_the_missing_half() {
 }
 
 #[test]
+fn project_scope_is_detected_from_mcp_json_even_when_the_probe_disagrees() {
+    // Finding 2 (fix round 1): project-scope detection reads .mcp.json
+    // directly rather than depending on `claude mcp get`'s wording. Proven
+    // here with a fake `claude` whose `mcp get` always reports "not
+    // configured" — as if the CLI's prose changed, or the entry is
+    // otherwise invisible to the probe — while `.mcp.json` genuinely has
+    // the `msgbus` key. `init` must still recognize project scope as
+    // already configured, entirely from the file.
+    let project_dir = tempfile::tempdir().unwrap();
+    let fake_claude = fake_claude_dir(); // always reports NotConfigured
+    let path = format!(
+        "{}:{}",
+        fake_claude.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    std::fs::write(
+        project_dir.path().join(".mcp.json"),
+        r#"{"mcpServers":{"msgbus":{"command":"claude-bus","args":["agent","--bus","ws://127.0.0.1:7777/ws"]}}}"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-bus"))
+        .args([
+            "init",
+            "--dry-run",
+            "--project",
+            "--bus",
+            "ws://127.0.0.1:7777/ws",
+        ])
+        .current_dir(project_dir.path())
+        .env("PATH", path)
+        .env("HOME", project_dir.path())
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .output()
+        .expect("run claude-bus init --dry-run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout: {stdout}");
+    assert!(
+        !stdout.contains("claude mcp add"),
+        "should not offer to add an MCP entry .mcp.json already has; stdout was:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("MCP entry already present"),
+        "should recognize the entry from .mcp.json directly; stdout was:\n{stdout}"
+    );
+
+    // Nothing written, as with every other dry-run scenario.
+    assert!(!project_dir.path().join(".claude").exists());
+}
+
+#[test]
 fn non_interactive_with_no_scope_flag_fails_closed_instead_of_guessing() {
     // A script that never mentioned scope at all must not have that decision
     // made for it — silently defaulting to user scope would turn a

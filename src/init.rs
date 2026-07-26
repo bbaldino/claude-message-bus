@@ -3,13 +3,26 @@
 //!
 //! Split deliberately down the middle:
 //!
-//! - The MCP server entry lives in Claude Code's own config (`~/.claude.json`
-//!   for user scope, or a project's `.mcp.json`). That file is not ours: on a
-//!   real machine it is tens of kilobytes of caches, history, and identifiers
-//!   we have no business touching by hand. We never open it — we shell out to
-//!   `claude mcp add`, the official tool for exactly this. Checking whether
-//!   one already exists is read-only (`claude mcp get`), so we do it up
-//!   front, before any prompt — see `run` below.
+//! - The MCP server entry lives in Claude Code's own config: `~/.claude.json`
+//!   for user scope, or a project's `.mcp.json`. Neither is ours to *write* —
+//!   we always shell out to `claude mcp add`, the official tool for that,
+//!   never hand-editing either file. Checking whether an entry already
+//!   exists is a different matter, and the two scopes are deliberately
+//!   treated differently:
+//!   - **Project** (`.mcp.json`): read directly (see
+//!     `project_mcp_json_has_msgbus`). It's small, its shape is already
+//!     documented in `docs/DEPLOY.md` for hand-editing, and it's exactly the
+//!     file `claude mcp add --scope project` writes — so a `msgbus` key
+//!     there is an authoritative answer, not a guess from prose.
+//!   - **User** (`~/.claude.json`): never opened, in either direction, full
+//!     stop. On a real machine it is tens of kilobytes of caches, history,
+//!     and identifiers we have no business touching — and, confirmed by
+//!     inspecting this project's own `~/.claude.json` while designing this,
+//!     adjacent entries can hold plaintext API keys and secrets. Detected
+//!     only by parsing the single `Scope:` line out of `claude mcp get`'s
+//!     text output (`parse_mcp_scope`), the same read-only probe used either
+//!     way. Do not "improve" this by symmetry with the project-scope path —
+//!     the asymmetry is deliberate and the file is sensitive.
 //! - The permission allowlist lives in `.claude/settings.json`, which has no
 //!   equivalent CLI. That one actually is ours to merge, carefully: it is
 //!   small, but it can hold unrelated keys (theme, hooks, model, ...) that
@@ -79,7 +92,18 @@ pub struct InitArgs {
     pub scope: Option<Scope>,
     pub bus: Option<String>,
     pub dry_run: bool,
+    /// Accept the routine plan `init` shows (the allowlist merge, and an MCP
+    /// add when nothing ambiguous is going on) without an interactive
+    /// prompt. Deliberately *not* sufficient on its own to overwrite an MCP
+    /// entry `init` can't confirm matches the target scope — that needs
+    /// `force`. See `confirm`'s doc comment.
     pub yes: bool,
+    /// Authorizes overwriting an MCP entry `init` found but can't confirm is
+    /// the one it would write itself (`Action::Conflict`). A separate,
+    /// stronger consent than `yes`: script authors who pass `--yes` for
+    /// routine runs should not thereby also be opting into clobbering
+    /// something unrelated that happens to share the name `msgbus`.
+    pub force: bool,
 }
 
 /// The fully-qualified permission strings `init` wants present, in
@@ -296,23 +320,64 @@ fn parse_mcp_scope(raw: &str) -> Option<Scope> {
     }
 }
 
-/// How the (scope-agnostic) MCP probe relates to one specific target scope.
+/// How the MCP probe relates to one specific target scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpState {
     NotConfigured,
-    /// An entry exists and it's at the scope being asked about.
+    /// An entry exists and it's confirmed to be at the scope being asked
+    /// about.
     MatchesScope,
     /// An entry exists but isn't confirmed to be at the scope being asked
-    /// about — a different scope, or a scope `parse_mcp_scope` couldn't
-    /// read. Treated conservatively: never assumed to satisfy this scope.
+    /// about — a different scope, or (for user scope) text
+    /// `parse_mcp_scope` couldn't read. Treated conservatively: never
+    /// assumed to satisfy this scope.
     Differs,
 }
 
-fn mcp_state_for_scope(probe: &McpProbe, target: Scope) -> McpState {
+/// Reads `.mcp.json` directly rather than parsing `claude mcp get`'s prose —
+/// see the module doc comment for why project scope gets this and user
+/// scope deliberately does not. Only checks for the presence of a `msgbus`
+/// key under `mcpServers`, the same "don't structurally compare content"
+/// restraint `merge_allowlist`'s sibling functions already apply elsewhere:
+/// presence is authoritative (this is the exact file `claude mcp add
+/// --scope project` writes), but what the entry's command/args/URL actually
+/// say is still left for a human to judge if it ever matters.
+fn project_mcp_json_has_msgbus(project_dir: &Path) -> anyhow::Result<bool> {
+    let path = project_dir.join(".mcp.json");
+    let has_entry = read_json_file(&path)?
+        .and_then(|v| v.get("mcpServers").and_then(|m| m.get("msgbus")).cloned())
+        .is_some();
+    Ok(has_entry)
+}
+
+/// Pure: `.mcp.json`'s content, already reduced to "does it have a `msgbus`
+/// entry," decides project scope on its own — a probe result reporting an
+/// entry elsewhere never overrides an authoritative "no" from the file
+/// itself. If `.mcp.json` doesn't have one, whether *something* named
+/// `msgbus` was found anywhere (almost certainly at user scope, or possibly
+/// an unapproved/unusual state) still needs a human's eyes rather than being
+/// silently treated as "safe to add here too" — untested territory for
+/// `claude mcp add --scope project` when a same-named entry already exists
+/// elsewhere.
+fn mcp_state_for_project_scope(mcp_json_has_msgbus: bool, probe: &McpProbe) -> McpState {
+    if mcp_json_has_msgbus {
+        return McpState::MatchesScope;
+    }
+    match probe {
+        McpProbe::NotConfigured => McpState::NotConfigured,
+        McpProbe::Existing(_) => McpState::Differs,
+    }
+}
+
+/// Pure: user scope has no direct-read equivalent (see the module doc
+/// comment for why `~/.claude.json` is never opened), so this is the only
+/// detection mechanism for that scope — parse the one documented `Scope:`
+/// line out of `claude mcp get`'s text.
+fn mcp_state_for_user_scope(probe: &McpProbe) -> McpState {
     match probe {
         McpProbe::NotConfigured => McpState::NotConfigured,
         McpProbe::Existing(raw) => match parse_mcp_scope(raw) {
-            Some(s) if s == target => McpState::MatchesScope,
+            Some(Scope::User) => McpState::MatchesScope,
             _ => McpState::Differs,
         },
     }
@@ -369,7 +434,12 @@ fn build_scope_plan(
         present: tools.len() - merge.added.len(),
         total: tools.len(),
     };
-    let mcp_state = mcp_state_for_scope(mcp_probe, scope);
+    let mcp_state = match scope {
+        Scope::Project => {
+            mcp_state_for_project_scope(project_mcp_json_has_msgbus(project_dir)?, mcp_probe)
+        }
+        Scope::User => mcp_state_for_user_scope(mcp_probe),
+    };
     let action = plan_action(mcp_state, allowlist);
     Ok(ScopePlan {
         scope,
@@ -415,11 +485,23 @@ fn print_status(probe: &McpProbe, plans: &[&ScopePlan]) {
     println!("  allowlist   {}", fragments.join(" · "));
 }
 
-/// Ask a yes/no question. `--yes` shortcuts to true without printing
-/// anything. When stdin is not a terminal, this returns false immediately
-/// without printing or blocking — a script that re-runs `init` unattended
-/// should never hang on a prompt nobody is there to answer, and declining is
-/// the safe default matching the `[y/N]` convention used throughout.
+/// Ask a yes/no question, or skip asking if `assume_yes` is set. This is a
+/// generic primitive with no opinion on *which* flag `assume_yes` should be
+/// — that is the caller's responsibility, and it matters: `init` has two
+/// confirmation points that need different consent. The final "apply the
+/// plan just shown" gate is routine and `--yes` covers it. Overwriting an
+/// MCP entry that `init` found but couldn't confirm matches the target scope
+/// (`Action::Conflict`) is not routine, and `--yes` must never be passed as
+/// `assume_yes` for that call — only `--force` (or a real interactive "y")
+/// may authorize it. See the `Action::Conflict` arm in `run` for how that
+/// split is enforced, including refusing outright rather than silently
+/// declining when neither is available non-interactively.
+///
+/// When stdin is not a terminal and `assume_yes` is false, this returns
+/// false immediately without printing or blocking — a script that re-runs
+/// `init` unattended should never hang on a prompt nobody is there to
+/// answer, and declining is the safe default matching the `[y/N]`
+/// convention used throughout.
 fn confirm(prompt: &str, assume_yes: bool, interactive: bool) -> bool {
     if assume_yes {
         return true;
@@ -648,9 +730,26 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
                 }
                 println!();
             }
+            // `--yes` covers the routine "apply this plan" gate below, not
+            // this one: overwriting an entry `init` can't confirm matches
+            // the target scope needs its own, stronger consent. A
+            // non-interactive run without `--force` refuses outright rather
+            // than falling back to "declined, nothing changed" — silently
+            // treating an unauthorized overwrite as a no-op would hide a
+            // real problem (the entry that's there might not be what the
+            // caller thinks it is) behind a successful-looking exit.
+            if !is_tty && !args.force {
+                anyhow::bail!(
+                    "claude-bus init: an existing \"msgbus\" MCP entry was found that init \
+                     can't confirm matches {} scope (shown above) — refusing to overwrite it \
+                     non-interactively without --force. Pass --force to overwrite, or run \
+                     interactively to decide.",
+                    scope.claude_scope_flag()
+                );
+            }
             confirm(
                 "Overwrite it by re-running `claude mcp add`? [y/N] ",
-                args.yes,
+                args.force,
                 is_tty,
             )
         }
@@ -765,7 +864,10 @@ fn print_dry_run_preview(plan: &ScopePlan, bus: &str, mcp_probe: &McpProbe) {
                     println!("  {line}");
                 }
                 println!();
-                println!("Would ask whether to overwrite it (run without --dry-run to decide).");
+                println!(
+                    "Would require an interactive confirmation, or --force, to overwrite it \
+                     (run without --dry-run to decide; --yes alone would not be enough)."
+                );
             }
             if !plan.merge.added.is_empty() {
                 println!();
@@ -900,43 +1002,112 @@ mod tests {
         assert_eq!(parse_mcp_scope(raw), None);
     }
 
-    // --- mcp_state_for_scope --------------------------------------------
+    // --- mcp_state_for_user_scope: parses `claude mcp get`'s prose --------
 
     #[test]
-    fn mcp_state_not_configured_regardless_of_target() {
+    fn user_scope_not_configured_when_probe_finds_nothing() {
         assert_eq!(
-            mcp_state_for_scope(&McpProbe::NotConfigured, Scope::Project),
-            McpState::NotConfigured
-        );
-        assert_eq!(
-            mcp_state_for_scope(&McpProbe::NotConfigured, Scope::User),
+            mcp_state_for_user_scope(&McpProbe::NotConfigured),
             McpState::NotConfigured
         );
     }
 
     #[test]
-    fn mcp_state_matches_scope_when_probe_scope_equals_target() {
+    fn user_scope_matches_when_probe_says_user_config() {
+        let probe =
+            McpProbe::Existing("Scope: User config (available in all your projects)".into());
+        assert_eq!(mcp_state_for_user_scope(&probe), McpState::MatchesScope);
+    }
+
+    #[test]
+    fn user_scope_differs_when_probe_says_project_config() {
         let probe = McpProbe::Existing("Scope: Project config (shared via .mcp.json)".into());
+        assert_eq!(mcp_state_for_user_scope(&probe), McpState::Differs);
+    }
+
+    #[test]
+    fn user_scope_differs_when_scope_text_is_unrecognized() {
+        let probe = McpProbe::Existing("Scope: Local config (private to you)".into());
+        assert_eq!(mcp_state_for_user_scope(&probe), McpState::Differs);
+    }
+
+    // --- mcp_state_for_project_scope: authoritative from .mcp.json's own
+    // content, never overridden by what the (unrelated) probe found ------
+
+    #[test]
+    fn project_scope_matches_when_mcp_json_has_the_entry() {
+        // Even if the probe found nothing at all — .mcp.json's own content
+        // is authoritative for project scope, per the brief: it's the exact
+        // file `claude mcp add --scope project` writes.
         assert_eq!(
-            mcp_state_for_scope(&probe, Scope::Project),
+            mcp_state_for_project_scope(true, &McpProbe::NotConfigured),
             McpState::MatchesScope
         );
     }
 
     #[test]
-    fn mcp_state_differs_when_probe_scope_is_the_other_scope() {
-        let probe = McpProbe::Existing("Scope: Project config (shared via .mcp.json)".into());
-        assert_eq!(mcp_state_for_scope(&probe, Scope::User), McpState::Differs);
+    fn project_scope_matches_regardless_of_what_the_probe_says_elsewhere() {
+        // The probe here describes a *user*-scope entry, which does not
+        // change the answer: .mcp.json having the key is what decides
+        // project scope, full stop — this is the whole point of Finding 2,
+        // removing the dependency on `claude mcp get`'s wording.
+        let probe =
+            McpProbe::Existing("Scope: User config (available in all your projects)".into());
+        assert_eq!(
+            mcp_state_for_project_scope(true, &probe),
+            McpState::MatchesScope
+        );
     }
 
     #[test]
-    fn mcp_state_differs_when_scope_cannot_be_determined() {
-        let probe = McpProbe::Existing("Scope: Local config (private to you)".into());
+    fn project_scope_not_configured_when_mcp_json_lacks_it_and_probe_finds_nothing() {
         assert_eq!(
-            mcp_state_for_scope(&probe, Scope::Project),
+            mcp_state_for_project_scope(false, &McpProbe::NotConfigured),
+            McpState::NotConfigured
+        );
+    }
+
+    #[test]
+    fn project_scope_differs_when_mcp_json_lacks_it_but_something_named_msgbus_exists() {
+        // .mcp.json has no entry, but the probe found *something* (almost
+        // certainly at user scope) — never silently treated as "safe to add
+        // here too."
+        let probe =
+            McpProbe::Existing("Scope: User config (available in all your projects)".into());
+        assert_eq!(
+            mcp_state_for_project_scope(false, &probe),
             McpState::Differs
         );
-        assert_eq!(mcp_state_for_scope(&probe, Scope::User), McpState::Differs);
+    }
+
+    // --- project_mcp_json_has_msgbus: the direct-read half of Finding 2 --
+
+    #[test]
+    fn project_mcp_json_has_msgbus_true_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"msgbus":{"command":"claude-bus","args":["agent"]}}}"#,
+        )
+        .unwrap();
+        assert!(project_mcp_json_has_msgbus(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn project_mcp_json_has_msgbus_false_when_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!project_mcp_json_has_msgbus(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn project_mcp_json_has_msgbus_false_when_other_servers_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"other-server":{"command":"foo"}}}"#,
+        )
+        .unwrap();
+        assert!(!project_mcp_json_has_msgbus(dir.path()).unwrap());
     }
 
     // --- plan_action: the decision matrix -------------------------------

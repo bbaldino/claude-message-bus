@@ -19,7 +19,8 @@ fn usage() -> ! {
     eprintln!("  claude-bus agent [--bus ws://host:7777/ws] [--name <n>] [--name-template <t>]");
     eprintln!("  claude-bus tail <room> [--bus ws://host:7777/ws]");
     eprintln!(
-        "  claude-bus init [--user | --project] [--bus ws://host:7777/ws] [--dry-run] [--yes]"
+        "  claude-bus init [--user | --project] [--bus ws://host:7777/ws] [--dry-run] [--yes] \
+         [--force]"
     );
     std::process::exit(2);
 }
@@ -74,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bus: flag(&args, "--bus"),
                 dry_run: has_flag(&args, "--dry-run"),
                 yes: has_flag(&args, "--yes"),
+                force: has_flag(&args, "--force"),
             };
             init::run(init_args)?;
             Ok(())
