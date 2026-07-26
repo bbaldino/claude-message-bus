@@ -574,6 +574,28 @@ async fn the_exchange_cap_pauses_a_runaway_room() {
         other => panic!("expected Paused, got {other:?}"),
     }
 
+    // The outstanding request must also resolve promptly — via a truthful
+    // Error naming the pause — rather than leaving the sender to block for
+    // the full request timeout and conclude the bus is unreachable.
+    match next_event(&mut a).await {
+        FromBus::Error { req_id, message } => {
+            assert_eq!(req_id, Some(999));
+            assert!(
+                message.to_lowercase().contains("paused"),
+                "must name the pause: {message}"
+            );
+            assert!(
+                message.to_lowercase().contains("resume"),
+                "must point at the resume path: {message}"
+            );
+            assert!(
+                !message.to_lowercase().contains("unreachable"),
+                "must not suggest the bus is down: {message}"
+            );
+        }
+        other => panic!("expected Error resolving the paused send, got {other:?}"),
+    }
+
     send(
         &mut a,
         &ToBus::Resume {

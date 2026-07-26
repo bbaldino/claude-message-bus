@@ -244,11 +244,25 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     return;
                 }
                 GuardVerdict::Paused { count } => {
+                    let pause_reason = format!(
+                        "{count} messages in this room with no human input. \
+                         Tell your human, and call resume once they say to continue."
+                    );
+                    // The channel event is what informs the model
+                    // conversationally; the Error below is what resolves the
+                    // outstanding `send` request so it doesn't sit blocked
+                    // for the full 10s timeout and get misreported as the
+                    // bus being unreachable.
                     let _ = tx.send(FromBus::Paused {
                         room: room.clone(),
-                        reason: format!(
-                            "{count} messages in this room with no human input. \
-                             Tell your human, and call resume once they say to continue."
+                        reason: pause_reason.clone(),
+                    });
+                    let _ = tx.send(FromBus::Error {
+                        req_id: Some(req_id),
+                        message: format!(
+                            "send blocked: room \"{room}\" is paused ({pause_reason}) \
+                             The bus itself is reachable — this is the exchange-cap pause, \
+                             not an outage. Call resume once your human says to continue."
                         ),
                     });
                     return;

@@ -638,3 +638,71 @@ fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages()
          have advanced past the 2 already shown), got: {content:?}"
     );
 }
+
+// Regression for the Paused guard arm reporting the bus as unreachable: it
+// used to send only `FromBus::Paused` (no req_id) and never resolve the
+// outstanding request, so `send` blocked the full 10s timeout and reported
+// "the bus did not reply within 10s; it may be unreachable" — a lie about
+// system health at the exact moment the runaway guard fires.
+#[test]
+fn send_reports_the_pause_not_a_bus_outage() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (_dir, port) = rt.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Cap of 1, no rate limit: the second send in the room trips Paused
+        // immediately without needing to burn through the default cap of 20.
+        let guards = claude_bus::bus::delivery::Guards::new(1, 0);
+        tokio::spawn(async move {
+            claude_bus::bus::serve_on_with(listener, path, guards)
+                .await
+                .unwrap()
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        (dir, port)
+    });
+
+    let mut a = Agent::start_with_bus(port, "runaway");
+    initialize(&mut a);
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    // Consume the cap of 1.
+    call_tool(
+        &mut a,
+        30,
+        "send",
+        serde_json::json!({ "room": "loop", "text": "one" }),
+    );
+
+    let started = std::time::Instant::now();
+    let text = call_tool(
+        &mut a,
+        31,
+        "send",
+        serde_json::json!({ "room": "loop", "text": "two" }),
+    );
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "send should resolve promptly when the room is paused, not block \
+         toward the 10s timeout: took {elapsed:?}"
+    );
+    assert!(
+        text.to_lowercase().contains("paused"),
+        "must name the pause: {text}"
+    );
+    assert!(
+        text.to_lowercase().contains("resume"),
+        "must point at the resume path: {text}"
+    );
+    assert!(
+        !text.to_lowercase().contains("unreachable"),
+        "must not claim the bus is unreachable: {text}"
+    );
+}
