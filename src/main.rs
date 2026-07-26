@@ -36,8 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 &config::RealEnv,
             );
-            // stdout is the JSON-RPC transport in agent mode: stderr only.
-            eprintln!("agent name resolved to {name} — not yet implemented");
+            let bus = flag(&args, "--bus").unwrap_or_else(|| "ws://127.0.0.1:7777/ws".to_string());
+            claude_bus::agent::run(bus, name).await?;
             Ok(())
         }
         Some("tail") => {
