@@ -45,8 +45,9 @@ impl Store {
     ) -> anyhow::Result<FileRow> {
         if bytes.len() > MAX_BLOB_BYTES {
             bail!(
-                "file is {:.1} MB; the limit is 50 MB",
-                bytes.len() as f64 / (1024.0 * 1024.0)
+                "file is {:.1} MB; the limit is {:.0} MB",
+                bytes.len() as f64 / (1024.0 * 1024.0),
+                MAX_BLOB_BYTES as f64 / (1024.0 * 1024.0)
             );
         }
         self.ensure_room(room).await?;

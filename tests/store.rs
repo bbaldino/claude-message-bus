@@ -324,9 +324,14 @@ async fn oversized_blob_is_rejected_with_a_clear_message() {
         .await
         .expect_err("must reject");
     let msg = err.to_string();
+
+    // Derive the expected wording from MAX_BLOB_BYTES itself, not a literal,
+    // so this test breaks if the message and the constant ever disagree.
+    let limit_mb = MAX_BLOB_BYTES as f64 / (1024.0 * 1024.0);
+    let expected = format!("the limit is {limit_mb:.0} MB");
     assert!(
-        msg.contains("50"),
-        "error should state the limit, got: {msg}"
+        msg.contains(&expected),
+        "error should state the limit derived from MAX_BLOB_BYTES ({expected:?}), got: {msg:?}"
     );
 }
 
