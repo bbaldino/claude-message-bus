@@ -39,6 +39,40 @@ impl Agent {
         self.stdout.read_line(&mut line).expect("read stdout");
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("bad json {line:?}: {e}"))
     }
+
+    fn start_with_bus(port: u16, name: &str) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_claude-bus"))
+            .args([
+                "agent",
+                "--bus",
+                &format!("ws://127.0.0.1:{port}/ws"),
+                "--name",
+                name,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn agent");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        Self {
+            child,
+            stdin,
+            stdout,
+        }
+    }
+
+    /// Read stdout until a notification with the given method appears.
+    fn next_notification(&mut self, method: &str) -> serde_json::Value {
+        for _ in 0..50 {
+            let v = self.next_json();
+            if v["method"] == method {
+                return v;
+            }
+        }
+        panic!("never saw a {method} notification");
+    }
 }
 
 impl Drop for Agent {
@@ -154,4 +188,58 @@ fn starts_even_when_the_bus_is_unreachable() {
     let mut a = Agent::start();
     let res = initialize(&mut a);
     assert_eq!(res["result"]["serverInfo"]["name"], "msgbus");
+}
+
+// Full loop with a real bus: a message sent by another agent must surface on
+// this agent's stdout as a notifications/claude/channel with the meta keys the
+// channel contract requires.
+#[test]
+fn injects_bus_messages_as_channel_notifications() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (_dir, port) = rt.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { claude_bus::bus::serve_on(listener, path).await.unwrap() });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        (dir, port)
+    });
+
+    let mut a = Agent::start_with_bus(port, "receiver");
+    initialize(&mut a);
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    // A second agent, driven directly over the wire, sends to the first.
+    rt.block_on(async {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
+            .await
+            .unwrap();
+        let reg = serde_json::json!({
+            "type": "register", "name": "sender", "host": "h", "cwd": "/w", "session_id": null
+        });
+        ws.send(Message::text(reg.to_string())).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let msg = serde_json::json!({
+            "type": "send", "req_id": 1,
+            "target": { "kind": "agent", "name": "receiver" },
+            "text": "wire format proposal", "done": false
+        });
+        ws.send(Message::text(msg.to_string())).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    });
+
+    let note = a.next_notification("notifications/claude/channel");
+    assert_eq!(note["params"]["content"], "wire format proposal");
+    assert_eq!(note["params"]["meta"]["from"], "sender");
+    assert_eq!(note["params"]["meta"]["room"], "dm:receiver|sender");
+    assert!(
+        note["params"]["meta"]["msg_id"].is_string(),
+        "msg_id must be a string"
+    );
 }
