@@ -4,7 +4,7 @@
 //! internal `run()` function directly — so a regression in the dry-run gate
 //! inside `main.rs`/`init::run` is caught the same way a user would hit it.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// A fake `claude` on PATH, ahead of the real one. `claude_on_path()` only
 /// checks for a file named `claude`, so this satisfies the PATH check
@@ -114,5 +114,62 @@ fn dry_run_reports_pending_changes_even_when_a_settings_file_already_exists() {
     assert_eq!(
         after, original,
         "dry run must not modify an existing settings.json"
+    );
+}
+
+#[test]
+fn non_interactive_with_no_scope_flag_fails_closed_instead_of_guessing() {
+    // A script that never mentioned scope at all must not have that decision
+    // made for it — silently defaulting to user scope would turn a
+    // copy-pasted `claude-bus init --bus ... --yes` meant for one project
+    // into a machine-wide settings.json write. `--dry-run` is used here only
+    // to keep the test itself inert if this regresses; the assertion is
+    // about the exit code and message, not about what a real run would do.
+    let project_dir = tempfile::tempdir().unwrap();
+    let fake_claude = fake_claude_dir();
+    let path = format!(
+        "{}:{}",
+        fake_claude.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-bus"))
+        .args(["init", "--dry-run", "--bus", "ws://127.0.0.1:7777/ws"])
+        // No --user / --project.
+        .current_dir(project_dir.path())
+        .env("PATH", path)
+        .env("HOME", project_dir.path())
+        .env_remove("CLAUDE_PROJECT_DIR")
+        // Explicit, rather than relying on however `cargo test` happens to
+        // wire up the harness's stdin: this test is specifically about the
+        // non-TTY path, so make stdin unambiguously not a terminal.
+        .stdin(Stdio::null())
+        .output()
+        .expect("run claude-bus init --dry-run with no scope flag");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "should exit non-zero rather than guess a scope; stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--user") && stderr.contains("--project"),
+        "error should name both flags so the fix is obvious; stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("non-interactive"),
+        "error should explain why it refused; stderr was:\n{stderr}"
+    );
+
+    // Belt and suspenders: confirm it really did nothing, not just that it
+    // printed an error and proceeded anyway.
+    let entries: Vec<_> = std::fs::read_dir(project_dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "failing closed must still write nothing, but the project dir now contains: {entries:?}"
     );
 }

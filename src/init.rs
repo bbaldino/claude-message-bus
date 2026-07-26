@@ -331,6 +331,22 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
 
     let is_tty = std::io::stdin().is_terminal();
 
+    // Fail closed rather than guess: an interactive user picking "every
+    // project" off the menu is an affirmative, visible choice. A script that
+    // never mentioned scope at all is not — and user scope is the more
+    // consequential of the two, since ~/.claude/settings.json affects every
+    // project on the machine, not just the one the script happens to be
+    // sitting in. Silently defaulting there would turn a copy-pasted
+    // `claude-bus init --bus ... --yes` meant for one project into a
+    // machine-wide change with no error and no prompt.
+    if args.scope.is_none() && !is_tty {
+        anyhow::bail!(
+            "claude-bus init: scope must be given explicitly in non-interactive use (stdin \
+             is not a terminal) — pass --user (every project, ~/.claude/settings.json) or \
+             --project (this project only, .claude/settings.json here)."
+        );
+    }
+
     let project_dir = project_dir();
     let project_name = project_dir
         .file_name()
@@ -344,12 +360,13 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
 
     let scope = match args.scope {
         Some(s) => s,
-        None if is_tty => {
+        // is_tty is guaranteed true here — the bail above already handled
+        // the non-interactive, no-flag case.
+        None => {
             println!("  msgbus      not configured (checked after scope is chosen)");
             println!();
             prompt_scope()
         }
-        None => Scope::User,
     };
 
     let bus = match args.bus.clone() {
