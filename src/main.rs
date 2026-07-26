@@ -1,4 +1,4 @@
-mod config;
+use claude_bus::config;
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
