@@ -426,6 +426,7 @@ fn build_scope_plan(
     project_dir: &Path,
     tools: &[String],
     mcp_probe: &McpProbe,
+    project_has_mcp_entry: bool,
 ) -> anyhow::Result<ScopePlan> {
     let settings_path = scope.settings_path(project_dir);
     let existing_settings = read_json_file(&settings_path)?;
@@ -435,9 +436,7 @@ fn build_scope_plan(
         total: tools.len(),
     };
     let mcp_state = match scope {
-        Scope::Project => {
-            mcp_state_for_project_scope(project_mcp_json_has_msgbus(project_dir)?, mcp_probe)
-        }
+        Scope::Project => mcp_state_for_project_scope(project_has_mcp_entry, mcp_probe),
         Scope::User => mcp_state_for_user_scope(mcp_probe),
     };
     let action = plan_action(mcp_state, allowlist);
@@ -450,15 +449,44 @@ fn build_scope_plan(
     })
 }
 
-fn mcp_status_line(probe: &McpProbe) -> String {
-    match probe {
-        McpProbe::NotConfigured => "not configured".to_string(),
-        McpProbe::Existing(raw) => match parse_mcp_scope(raw) {
-            Some(Scope::Project) => "project scope (.mcp.json)".to_string(),
-            Some(Scope::User) => "user scope (~/.claude.json)".to_string(),
-            None => "existing, scope unclear — see `claude mcp get msgbus`".to_string(),
-        },
+/// Pure: the "mcp entry" line(s) of the compact status block, built from the
+/// same two authoritative-as-possible signals `build_scope_plan` decides
+/// with — never from a single "whatever the CLI printed" string. This is
+/// deliberately independent of which scope(s) the user asked about: an
+/// untrusted project directory can make `claude mcp get` answer about a
+/// *different* entry (typically user scope) than the one `.mcp.json` itself
+/// contains, and if both exist, both are shown — that shadowing is exactly
+/// what a user needs to know before answering anything, not something to
+/// pick one source and silently drop the other.
+fn mcp_summary_fragments(project_has_mcp_entry: bool, probe: &McpProbe) -> Vec<String> {
+    let mut fragments = Vec::new();
+    if project_has_mcp_entry {
+        fragments.push("project scope (.mcp.json)".to_string());
     }
+    match probe {
+        McpProbe::Existing(raw) => match parse_mcp_scope(raw) {
+            Some(Scope::User) => fragments.push("user scope (~/.claude.json)".to_string()),
+            Some(Scope::Project) if !project_has_mcp_entry => {
+                // The CLI found a project-scope entry that this directory's
+                // own .mcp.json didn't — surface it rather than silently
+                // dropping it (e.g. a different cwd than expected).
+                fragments.push(
+                    "project scope per `claude mcp get msgbus` (not found in this \
+                     directory's .mcp.json)"
+                        .to_string(),
+                );
+            }
+            Some(Scope::Project) => {} // already covered by the .mcp.json fragment above
+            None => {
+                fragments.push("existing, scope unclear — see `claude mcp get msgbus`".to_string())
+            }
+        },
+        McpProbe::NotConfigured => {}
+    }
+    if fragments.is_empty() {
+        fragments.push("not configured".to_string());
+    }
+    fragments
 }
 
 fn allowlist_fragment(scope: Scope, status: AllowlistStatus) -> String {
@@ -476,8 +504,11 @@ fn allowlist_fragment(scope: Scope, status: AllowlistStatus) -> String {
 
 /// Prints the compact status block — the whole point of probing first: the
 /// user sees the real situation before answering anything.
-fn print_status(probe: &McpProbe, plans: &[&ScopePlan]) {
-    println!("  mcp entry   {}", mcp_status_line(probe));
+fn print_status(project_has_mcp_entry: bool, probe: &McpProbe, plans: &[&ScopePlan]) {
+    println!(
+        "  mcp entry   {}",
+        mcp_summary_fragments(project_has_mcp_entry, probe).join(" · ")
+    );
     let fragments: Vec<String> = plans
         .iter()
         .map(|p| allowlist_fragment(p.scope, p.allowlist))
@@ -622,15 +653,34 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
 
     // Probe everything up front, before any prompt — including the scope
     // and bus-address prompts below. `claude mcp get` is read-only; reading
-    // `.claude/settings.json` is read-only. Neither writes or mutates
-    // anything, so doing this before asking the user anything (and even
-    // under `--dry-run`) doesn't weaken the dry-run guarantee that matters.
+    // `.claude/settings.json` and `.mcp.json` is read-only. Nothing here
+    // writes or mutates anything, so doing this before asking the user
+    // anything (and even under `--dry-run`) doesn't weaken the dry-run
+    // guarantee that matters.
+    //
+    // `project_has_mcp_entry` is read exactly once, here, and threaded into
+    // both the decision (`build_scope_plan`) and the display
+    // (`print_status`/`mcp_summary_fragments`) so they can never see two
+    // different answers about the same file — that split was the bug fix
+    // round 2 found: the status line was built from `claude mcp get`'s
+    // prose alone, which can disagree with `.mcp.json` (e.g. an untrusted
+    // project directory, where the CLI honestly reports a user-scope entry
+    // while `.mcp.json` has its own, different, project-scope one), while
+    // the *decision* had already been fixed to trust the file. Now both
+    // sides look at the same value.
     let mcp_probe = claude_mcp_get("msgbus")?;
+    let project_has_mcp_entry = project_mcp_json_has_msgbus(&project_dir)?;
 
     let (scope, chosen_plan) = match args.scope {
         Some(target) => {
-            let plan = build_scope_plan(target, &project_dir, &tools, &mcp_probe)?;
-            print_status(&mcp_probe, &[&plan]);
+            let plan = build_scope_plan(
+                target,
+                &project_dir,
+                &tools,
+                &mcp_probe,
+                project_has_mcp_entry,
+            )?;
+            print_status(project_has_mcp_entry, &mcp_probe, &[&plan]);
             if plan.action == Action::NothingToDo {
                 println!();
                 println!(
@@ -648,9 +698,25 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
             // without a flag, "the target scope" isn't decided yet, and the
             // whole point is to let the user skip the question if one scope
             // turns out to already be fully configured.
-            let plan_project = build_scope_plan(Scope::Project, &project_dir, &tools, &mcp_probe)?;
-            let plan_user = build_scope_plan(Scope::User, &project_dir, &tools, &mcp_probe)?;
-            print_status(&mcp_probe, &[&plan_project, &plan_user]);
+            let plan_project = build_scope_plan(
+                Scope::Project,
+                &project_dir,
+                &tools,
+                &mcp_probe,
+                project_has_mcp_entry,
+            )?;
+            let plan_user = build_scope_plan(
+                Scope::User,
+                &project_dir,
+                &tools,
+                &mcp_probe,
+                project_has_mcp_entry,
+            )?;
+            print_status(
+                project_has_mcp_entry,
+                &mcp_probe,
+                &[&plan_project, &plan_user],
+            );
 
             let already_done = [&plan_project, &plan_user]
                 .into_iter()
@@ -810,8 +876,34 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     }
 
     println!();
-    println!("Done.");
-    launch_reminder();
+    if will_add_mcp {
+        // The only case where init actually wrote (or confirmed writing)
+        // the MCP entry itself — either it didn't exist yet, or the human
+        // (or `--force`) explicitly authorized overwriting it. Either way,
+        // the entry now points at `bus`, verified by construction, so
+        // "Done." and the launch reminder are both honest.
+        println!("Done.");
+        launch_reminder();
+    } else {
+        // `will_add_mcp` is false here because an MCP entry was already
+        // judged "present" for this scope and left untouched — but that
+        // judgment only ever confirmed *scope* (project via `.mcp.json`
+        // presence, user via `claude mcp get`'s prose), never *content*.
+        // init has no idea whether that entry's bus address is `bus` or
+        // something else entirely, so it must not claim the job is done or
+        // hand out launch instructions that assume it is.
+        println!(
+            "Allowlist updated for {} scope. The existing msgbus MCP entry was left \
+             untouched — init only confirmed it exists, not what it points at, so it may \
+             not be using {bus}. If it isn't, re-run with --force to overwrite it.",
+            scope.claude_scope_flag()
+        );
+        println!();
+        println!(
+            "Not printing the launch reminder: sessions that join server:msgbus will reach \
+             whatever bus that entry actually points at, which this run did not verify."
+        );
+    }
     Ok(())
 }
 
@@ -837,7 +929,9 @@ fn print_dry_run_preview(plan: &ScopePlan, bus: &str, mcp_probe: &McpProbe) {
         }
         Action::AddAllowlistOnly => {
             println!(
-                "MCP entry already present ({} scope); would leave it untouched.",
+                "MCP entry already present ({} scope); would leave it untouched. init only \
+                 confirms it exists, not what it points at — if it isn't already using {bus}, \
+                 --force would be needed to overwrite it.",
                 plan.scope.claude_scope_flag()
             );
             println!();
@@ -1108,6 +1202,85 @@ mod tests {
         )
         .unwrap();
         assert!(!project_mcp_json_has_msgbus(dir.path()).unwrap());
+    }
+
+    // --- mcp_summary_fragments: fix round 2, Finding 1 -------------------
+    //
+    // The bug: the status line was built from `claude mcp get`'s prose
+    // alone, which can disagree with what `.mcp.json` actually contains (an
+    // untrusted project directory is exactly such a case — see
+    // `tests/init_reproduction.rs` for the full end-to-end reproduction).
+    // These pin the combining logic directly.
+
+    #[test]
+    fn summary_shows_not_configured_when_neither_source_has_anything() {
+        assert_eq!(
+            mcp_summary_fragments(false, &McpProbe::NotConfigured),
+            vec!["not configured".to_string()]
+        );
+    }
+
+    #[test]
+    fn summary_shows_project_when_only_mcp_json_has_it() {
+        assert_eq!(
+            mcp_summary_fragments(true, &McpProbe::NotConfigured),
+            vec!["project scope (.mcp.json)".to_string()]
+        );
+    }
+
+    #[test]
+    fn summary_shows_user_when_only_the_probe_finds_a_user_scope_entry() {
+        let probe =
+            McpProbe::Existing("Scope: User config (available in all your projects)".into());
+        assert_eq!(
+            mcp_summary_fragments(false, &probe),
+            vec!["user scope (~/.claude.json)".to_string()]
+        );
+    }
+
+    #[test]
+    fn summary_shows_both_when_mcp_json_has_it_and_the_probe_finds_a_different_user_entry() {
+        // The exact reproduction shape: a project .mcp.json entry the CLI
+        // probe doesn't see (untrusted directory), plus a real ambient
+        // user-scope entry it does. Before the fix, this printed only the
+        // user-scope line and the project entry was invisible in the
+        // summary even though the plan correctly acted on it.
+        let probe =
+            McpProbe::Existing("Scope: User config (available in all your projects)".into());
+        assert_eq!(
+            mcp_summary_fragments(true, &probe),
+            vec![
+                "project scope (.mcp.json)".to_string(),
+                "user scope (~/.claude.json)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn summary_does_not_duplicate_project_when_both_sources_agree() {
+        let probe = McpProbe::Existing("Scope: Project config (shared via .mcp.json)".into());
+        assert_eq!(
+            mcp_summary_fragments(true, &probe),
+            vec!["project scope (.mcp.json)".to_string()]
+        );
+    }
+
+    #[test]
+    fn summary_surfaces_a_project_entry_the_probe_sees_but_mcp_json_does_not() {
+        let probe = McpProbe::Existing("Scope: Project config (shared via .mcp.json)".into());
+        let fragments = mcp_summary_fragments(false, &probe);
+        assert_eq!(fragments.len(), 1);
+        assert!(fragments[0].contains("project scope"));
+        assert!(fragments[0].contains("not found in this directory's .mcp.json"));
+    }
+
+    #[test]
+    fn summary_shows_unclear_when_mcp_json_lacks_it_and_probe_scope_is_unrecognized() {
+        let probe = McpProbe::Existing("Scope: Local config (private to you)".into());
+        assert_eq!(
+            mcp_summary_fragments(false, &probe),
+            vec!["existing, scope unclear — see `claude mcp get msgbus`".to_string()]
+        );
     }
 
     // --- plan_action: the decision matrix -------------------------------
