@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "msgbus": {
-      "command": "/home/bbaldino/work/claude-message-bus/poc/round-trip/target/debug/round-trip",
-      "args": ["agent", "--bus", "ws://127.0.0.1:7777/ws"]
-    }
-  }
-}

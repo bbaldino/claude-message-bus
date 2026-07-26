@@ -5,7 +5,6 @@ edition = "2024"
 
 [workspace]
 members = ["."]
-exclude = ["poc/probe", "poc/rust-probe", "poc/round-trip"]
 
 [lib]
 name = "claude_bus"
