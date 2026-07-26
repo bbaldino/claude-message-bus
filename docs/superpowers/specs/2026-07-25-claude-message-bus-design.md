@@ -178,6 +178,7 @@ Typical user-scope config:
 | `put_file(room, key, path \| content)` | Store an artifact; exactly one of `path`/`content` |
 | `get_file(room, key)` | Retrieve an artifact |
 | `list_files(room)` | List artifacts in a room |
+| `resume(room)` | Clear a room's exchange-cap pause (see *Runaway guards*) |
 
 `send` returns the full text it sent as its tool result, so the outbound half of a
 conversation is recoverable rather than invisible.
@@ -243,13 +244,14 @@ allowlisted in `settings.json` are exactly the discuss-only set:
       "mcp__msgbus__join",
       "mcp__msgbus__put_file",
       "mcp__msgbus__get_file",
-      "mcp__msgbus__list_files"
+      "mcp__msgbus__list_files",
+      "mcp__msgbus__resume"
     ]
   }
 }
 ```
 
-All eight bus tools are allowlisted so an unattended exchange never stalls. None of them
+All nine bus tools are allowlisted so an unattended exchange never stalls. None of them
 writes to the local repository: `put_file` and `get_file` move bytes to and from the bus,
 and applying a retrieved artifact to disk still requires `Write`.
 
@@ -275,8 +277,13 @@ other's channel. Overnight that is real money.
 
 - **Bus-enforced cap.** After N consecutive exchanges in a room with no human input
   (default 20), the bus stops delivering and injects a single "paused — check with your
-  human" notice. Resuming is an explicit tool call. Optionally a one-line
-  `UserPromptSubmit` hook pings the bus to reset the counter whenever the human types.
+  human" notice.
+
+  Two ways to clear a pause, because "no human input" is not directly observable from the
+  bus. The accurate signal is a one-line `UserPromptSubmit` hook that pings the bus
+  whenever the human types in that project — install it and the counter resets naturally.
+  Without the hook, the `resume(room)` tool clears it explicitly, which in practice means
+  the human asks their agent to resume.
 
   The default of 20 comes from POC 3, where a real negotiation converged in eight
   messages. It is a runaway backstop at ~2.5× observed length, not a working limit.
@@ -355,7 +362,7 @@ A live-session confirmation script is at `poc/rust-probe/run-test.sh`. Given the
 bytes are identical to the already-passing Node probe, it confirms rather than
 discovers.
 
-**POC 3 — two-session round trip. BUILT, automated tests pass; live run pending**
+**POC 3 — two-session round trip. PASSED**
 (`poc/round-trip/`). One binary, two subcommands — `serve` and `agent` — as the real
 design specifies, in-memory only. `test-roundtrip.mjs` drives a bus and three agent
 processes over stdio and asserts the whole loop: registration and roster, a message
