@@ -1,4 +1,5 @@
 use claude_bus::config;
+use claude_bus::init::{self, InitArgs, Scope};
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
@@ -7,12 +8,19 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
+fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|a| a == name)
+}
+
 fn usage() -> ! {
     eprintln!("claude-bus — a message bus for Claude Code agents");
     eprintln!();
     eprintln!("  claude-bus serve [--port 7777] [--data ./data]");
     eprintln!("  claude-bus agent [--bus ws://host:7777/ws] [--name <n>] [--name-template <t>]");
     eprintln!("  claude-bus tail <room> [--bus ws://host:7777/ws]");
+    eprintln!(
+        "  claude-bus init [--user | --project] [--bus ws://host:7777/ws] [--dry-run] [--yes]"
+    );
     std::process::exit(2);
 }
 
@@ -45,6 +53,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The room is the first positional argument after "tail".
             let room = args.get(2).filter(|a| !a.starts_with("--")).cloned();
             claude_bus::tail::run(bus, room).await?;
+            Ok(())
+        }
+        Some("init") => {
+            let user = has_flag(&args, "--user");
+            let project = has_flag(&args, "--project");
+            if user && project {
+                eprintln!("claude-bus init: pass only one of --user or --project");
+                std::process::exit(2);
+            }
+            let scope = if user {
+                Some(Scope::User)
+            } else if project {
+                Some(Scope::Project)
+            } else {
+                None
+            };
+            let init_args = InitArgs {
+                scope,
+                bus: flag(&args, "--bus"),
+                dry_run: has_flag(&args, "--dry-run"),
+                yes: has_flag(&args, "--yes"),
+            };
+            init::run(init_args)?;
             Ok(())
         }
         _ => usage(),

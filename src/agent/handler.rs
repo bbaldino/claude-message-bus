@@ -20,6 +20,25 @@ use crate::proto::{FromBus, ReplyResult, ToBus};
 
 pub type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<FromBus>>>>;
 
+/// The single source of truth for the tool names this server exposes.
+/// `list_tools` below is the other half of the contract — its tool literals
+/// must match this list exactly, which `tests/agent_contract.rs` asserts.
+/// `claude-bus init` derives its permission allowlist from this same const,
+/// rather than hardcoding the nine names a third time, so adding a tool here
+/// without wiring it into `list_tools` fails the suite instead of silently
+/// stalling an unattended agent-to-agent exchange on a permission prompt.
+pub const BUS_TOOL_NAMES: [&str; 9] = [
+    "send",
+    "history",
+    "rooms",
+    "agents",
+    "join",
+    "put_file",
+    "get_file",
+    "list_files",
+    "resume",
+];
+
 #[derive(Clone)]
 pub struct Handler {
     pub name: String,

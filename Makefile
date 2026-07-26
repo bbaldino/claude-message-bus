@@ -12,8 +12,9 @@
 # `claude-bus` by name, not by path.
 
 PREFIX ?= $(HOME)/.local
+BUS ?= ws://127.0.0.1:7777/ws
 
-.PHONY: install uninstall where test
+.PHONY: install uninstall where test config config-project config-check
 
 ## Build in release mode and install to $(PREFIX)/bin.
 ##
@@ -42,3 +43,17 @@ where:
 
 test:
 	cargo test
+
+## Thin wrappers over `claude-bus init` — see docs/DEPLOY.md for what each
+## scope actually writes. All three honor BUS, e.g.:
+##   make config BUS=ws://nas.lan:7777/ws
+config:
+	cargo run --quiet -- init --user --bus "$(BUS)"
+
+config-project:
+	cargo run --quiet -- init --project --bus "$(BUS)"
+
+## Preview what `make config` (user scope) would do, without writing or
+## running anything.
+config-check:
+	cargo run --quiet -- init --user --bus "$(BUS)" --dry-run

@@ -136,7 +136,12 @@ fn sends_instructions_that_establish_the_discuss_only_posture() {
 }
 
 #[test]
-fn exposes_exactly_the_nine_documented_tools() {
+fn exposes_exactly_the_tools_named_in_bus_tool_names() {
+    // Derived from claude_bus::agent::handler::BUS_TOOL_NAMES rather than a
+    // second hardcoded list: `claude-bus init` builds its permission
+    // allowlist from that same const, so if a tool is added to `list_tools`
+    // without updating the const (or vice versa), this test — not a stalled
+    // unattended agent exchange months later — is what catches it.
     let mut a = Agent::start();
     initialize(&mut a);
     a.send(serde_json::json!({
@@ -153,20 +158,14 @@ fn exposes_exactly_the_nine_documented_tools() {
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
     names.sort();
-    assert_eq!(
-        names,
-        vec![
-            "agents",
-            "get_file",
-            "history",
-            "join",
-            "list_files",
-            "put_file",
-            "resume",
-            "rooms",
-            "send",
-        ]
-    );
+
+    let mut expected: Vec<String> = claude_bus::agent::handler::BUS_TOOL_NAMES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    expected.sort();
+
+    assert_eq!(names, expected);
 }
 
 #[test]

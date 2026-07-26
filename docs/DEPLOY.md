@@ -28,7 +28,27 @@ checking after an upgrade, since an older binary earlier in `PATH` will silently
 fresh install. (`make install` is a thin wrapper over `cargo install --path . --root
 $PREFIX --locked`; plain `cargo install --path .` also works and lands in `~/.cargo/bin`.)
 
-Then add to `~/.claude.json` (user scope, so every project picks it up) or a project's
+Then configure the project:
+
+```bash
+claude-bus init                                    # interactive
+claude-bus init --user --bus ws://nas.lan:7777/ws   # every project, non-interactive
+claude-bus init --project --bus ws://nas.lan:7777/ws --dry-run   # preview first
+```
+
+`init` shells out to `claude mcp add` for the MCP server entry — that file
+(`~/.claude.json` or a project's `.mcp.json`) belongs to Claude Code, not to us, so we
+never hand-edit it. It then merges the permission allowlist below into
+`.claude/settings.json` itself, deriving the nine tool names from the same const
+`list_tools` is checked against, so it can't drift from what the agent actually exposes.
+It never overwrites an existing `msgbus` entry without asking, and `--dry-run` writes and
+runs nothing. Also available as `make config` / `make config-project` / `make config-check`
+(see the Makefile).
+
+The rest of this section is what `init` does under the hood — read it if you want to
+configure by hand instead, or to understand what to check when something's wrong.
+
+Add to `~/.claude.json` (user scope, so every project picks it up) or a project's
 `.mcp.json`:
 
 ```json
