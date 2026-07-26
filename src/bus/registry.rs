@@ -8,7 +8,30 @@ use tokio::sync::Mutex;
 
 use crate::proto::FromBus;
 
-pub type Sender = tokio::sync::mpsc::UnboundedSender<FromBus>;
+/// Per-connection outbound queue depth.
+///
+/// A bounded channel is what turns "the peer is not keeping up" into a
+/// correct, observable `queued` verdict instead of unbounded memory growth.
+/// The cap must clear ordinary bursts without ever reporting `queued` for a
+/// peer that is simply alive and briefly busy:
+///
+/// - A room fan-out enqueues exactly one event per *other* member per `send`,
+///   not one per member — so a single `send` never contributes more than one
+///   entry to any one peer's queue.
+/// - The exchange guard's default cap (`DEFAULT_CAP` = 20, see
+///   `bus::delivery`) bounds how many rapid-fire messages one room can
+///   produce before the room pauses, so a single room's worst case is ~20
+///   queued events for a peer that hasn't drained yet.
+/// - `send_unread_summaries` adds at most one `Unread` event per room the
+///   agent belongs to on reconnect.
+///
+/// 64 comfortably clears the worst plausible combination of those (one
+/// maxed-out room plus a generous number of unread-summary rooms plus the
+/// connection's own Registered/Reply traffic) while still bounding memory to
+/// a handful of KB per connection if a peer truly vanishes.
+pub const CHANNEL_CAPACITY: usize = 64;
+
+pub type Sender = tokio::sync::mpsc::Sender<FromBus>;
 
 struct Conn {
     host: String,
@@ -106,10 +129,17 @@ impl Registry {
         self.conns.lock().await.remove(name);
     }
 
+    /// `true` means the event was actually queued onto the peer's connection
+    /// — the sole basis for the `delivered_to` / `queued_for` split callers
+    /// report back to the model. `false` covers both "no such peer" and "that
+    /// peer's queue is full" (i.e. it is not draining, whether because it is
+    /// gone or just badly behind): either way the honest answer is `queued`,
+    /// never `delivered`. `try_send` is synchronous, so this never awaits
+    /// while holding the registry lock.
     pub async fn send_to(&self, name: &str, msg: FromBus) -> bool {
         let conns = self.conns.lock().await;
         match conns.get(name) {
-            Some(c) => c.tx.send(msg).is_ok(),
+            Some(c) => c.tx.try_send(msg).is_ok(),
             None => false,
         }
     }
@@ -149,8 +179,8 @@ mod tests {
     use super::*;
     use crate::proto::FromBus;
 
-    fn channel() -> (Sender, tokio::sync::mpsc::UnboundedReceiver<FromBus>) {
-        tokio::sync::mpsc::unbounded_channel()
+    fn channel() -> (Sender, tokio::sync::mpsc::Receiver<FromBus>) {
+        tokio::sync::mpsc::channel(CHANNEL_CAPACITY)
     }
 
     #[tokio::test]
@@ -259,6 +289,47 @@ mod tests {
             .await
         );
         assert!(rx.recv().await.is_some());
+    }
+
+    /// This is the second half of the defect fix: an unbounded channel let a
+    /// wedged peer's queue grow forever while `send_to` kept returning `true`
+    /// (delivered). With a bounded channel, a full queue is itself a correct
+    /// `queued` signal. Sabotage check: swapping `try_send` back for `send`
+    /// on an unbounded channel (or just not draining `rx` before asserting)
+    /// makes this pass for the wrong reason, so the receiver here is
+    /// deliberately never drained — the capacity is the only thing standing
+    /// between "queued" and "delivered".
+    #[tokio::test]
+    async fn send_to_a_full_channel_reports_failure_not_delivery() {
+        let reg = Registry::new();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        reg.attach("caas", "lisa", tx).await;
+
+        // Fill the one slot. Nobody ever calls `rx.recv()`, so this is the
+        // only message the channel will ever hold.
+        assert!(
+            reg.send_to(
+                "caas",
+                FromBus::Registered {
+                    name: "caas".into()
+                }
+            )
+            .await,
+            "the first message has room and must be reported delivered"
+        );
+
+        // The channel is now full: the peer is not keeping up (or is gone),
+        // and that must read as queued, not delivered.
+        assert!(
+            !reg.send_to(
+                "caas",
+                FromBus::Registered {
+                    name: "caas".into()
+                }
+            )
+            .await,
+            "a full queue must never be reported as delivered"
+        );
     }
 
     #[tokio::test]

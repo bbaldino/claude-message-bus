@@ -25,6 +25,31 @@ async fn start_bus() -> (tempfile::TempDir, u16) {
     (dir, port)
 }
 
+/// Same as `start_bus`, but with an injectable keepalive cadence so the
+/// "vanished peer" tests don't have to sleep for the production 30s/90s
+/// timeout.
+async fn start_bus_with_keepalive(
+    ping_interval: std::time::Duration,
+    pong_timeout: std::time::Duration,
+) -> (tempfile::TempDir, u16) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let guards =
+            claude_bus::bus::delivery::Guards::new(claude_bus::bus::delivery::DEFAULT_CAP, 0);
+        let keepalive = claude_bus::bus::Keepalive::new(ping_interval, pong_timeout);
+        claude_bus::bus::serve_on_with_keepalive(listener, path, guards, keepalive)
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    (dir, port)
+}
+
 async fn connect(port: u16, name: &str) -> Ws {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
         .await
@@ -58,6 +83,30 @@ async fn send(ws: &mut Ws, cmd: &ToBus) {
     ws.send(Message::text(serde_json::to_string(cmd).unwrap()))
         .await
         .unwrap();
+}
+
+/// Keeps polling `ws` for `duration` without expecting any particular event.
+///
+/// `tokio-tungstenite` only flushes its automatic `Pong` reply the next time
+/// something reads (or writes) the stream — see `WebSocket::write`'s docs.
+/// A connection that is simply waiting (e.g. via a bare `sleep`) is
+/// therefore indistinguishable, from the bus's point of view, from a
+/// genuinely vanished peer: nobody is pumping it, so no pong goes out. Tests
+/// that want a *live* connection to survive an idle period need to pump it
+/// like this instead of sleeping past it.
+async fn pump_for(ws: &mut Ws, duration: std::time::Duration) {
+    let deadline = tokio::time::Instant::now() + duration;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let _ = tokio::time::timeout(
+            remaining.min(std::time::Duration::from_millis(20)),
+            ws.next(),
+        )
+        .await;
+    }
 }
 
 #[tokio::test]
@@ -611,4 +660,97 @@ async fn the_exchange_cap_pauses_a_runaway_room() {
         } => assert_eq!(room, "loop"),
         other => panic!("expected Resumed, got {other:?}"),
     }
+}
+
+// Regression for the defect this fix round targets: nothing pinged
+// connections, so a peer whose host vanished stayed "online" forever and
+// `send` kept reporting `delivered` for messages nobody would ever receive.
+//
+// This is not a socket-close test — closing a socket cleanly was already
+// detected before this fix, via `stream.next()` returning `None`. The
+// failure mode here is a peer that is silent but whose TCP connection is
+// still open (laptop lid closed, cable pulled, NAT black-holing): `victim`
+// below never drops its connection and never sends a pong, simulating
+// exactly that.
+#[tokio::test]
+async fn a_peer_that_stops_answering_pings_is_detached_and_reads_as_queued() {
+    let (_d, port) = start_bus_with_keepalive(
+        std::time::Duration::from_millis(50),
+        std::time::Duration::from_millis(150),
+    )
+    .await;
+
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await; // Registered
+
+    // `victim` registers and is read from exactly once, for its own
+    // Registered reply. After that its stream is never polled again, so
+    // tokio-tungstenite never gets the chance to auto-reply to the bus's
+    // Pings with a Pong (that reply is only flushed on the next read/write/
+    // flush call — see tungstenite's `WebSocket::write` docs). The
+    // connection itself is kept alive in scope for the whole test: this
+    // must be detected by ping/pong silence, not by the socket closing.
+    let mut victim = connect(port, "victim").await;
+    next_event(&mut victim).await; // Registered
+
+    // A few ping/timeout cycles at 50ms/150ms — comfortably short of any
+    // reasonable test timeout, comfortably long enough for the bus to have
+    // pinged, waited, and given up at least once. `a` is pumped (not merely
+    // slept past) so *it* keeps answering pings and stays online; only
+    // `victim` goes silent.
+    pump_for(&mut a, std::time::Duration::from_millis(600)).await;
+
+    send(&mut a, &ToBus::ListAgents { req_id: 1 }).await;
+    match next_event(&mut a).await {
+        FromBus::Reply {
+            result: ReplyResult::Agents { agents },
+            ..
+        } => {
+            let victim_agent = agents
+                .iter()
+                .find(|ag| ag.name == "victim")
+                .expect("victim should still be a known agent, just not an online one");
+            assert!(
+                !victim_agent.online,
+                "victim stopped answering pings and must no longer read as online"
+            );
+        }
+        other => panic!("expected Agents, got {other:?}"),
+    }
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Agent {
+                name: "victim".into(),
+            },
+            text: "are you there".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut a).await {
+        FromBus::Reply {
+            result:
+                ReplyResult::Sent {
+                    delivered_to,
+                    queued_for,
+                    ..
+                },
+            ..
+        } => {
+            assert!(
+                delivered_to.is_empty(),
+                "a vanished peer must never be reported as delivered"
+            );
+            assert_eq!(queued_for, vec!["victim".to_string()]);
+        }
+        other => panic!("expected Sent, got {other:?}"),
+    }
+
+    // Keep the never-polled connection alive until the assertions above are
+    // done, so its silence — not a dropped socket — is what the bus reacted
+    // to.
+    drop(victim);
 }

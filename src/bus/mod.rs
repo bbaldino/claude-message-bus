@@ -7,6 +7,7 @@ pub mod rooms;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -23,11 +24,56 @@ use crate::store::{Store, now_ms};
 use delivery::{GuardVerdict, Guards};
 use registry::Registry;
 
+/// How often the bus pings each connected client, and how long it waits for
+/// a pong before deciding the peer is gone.
+///
+/// Nothing on either side sent a `Ping` before this fix, so a peer whose
+/// host vanished hard (lid closed, cable pulled, NAT black-holing) stayed
+/// "online" — and kept being reported as `delivered` — until TCP itself
+/// noticed, which is minutes away by default and can be indefinite behind a
+/// black-holing NAT. This is what closes that gap.
+///
+/// `ping_interval` = 30s / `pong_timeout` = 90s (3 missed pings) for the
+/// production default: frequent enough that a vanished peer is caught well
+/// within a human's patience for "is this thing on", generous enough
+/// (3 full cycles, not 1) that a busy-but-alive agent — one whose task is
+/// momentarily starving the executor that would otherwise answer a ping —
+/// is never mistaken for a dead one. `tokio-tungstenite` (both the axum
+/// server side and the `tokio-tungstenite` client side used by
+/// `agent::bridge` and `tail`) answers `Ping` with `Pong` automatically as
+/// long as something keeps polling the stream, which both clients already
+/// do in their main read loops — no client-side change was needed for pongs
+/// to happen.
+#[derive(Clone, Copy)]
+pub struct Keepalive {
+    pub ping_interval: Duration,
+    pub pong_timeout: Duration,
+}
+
+impl Default for Keepalive {
+    fn default() -> Self {
+        Self {
+            ping_interval: Duration::from_secs(30),
+            pong_timeout: Duration::from_secs(90),
+        }
+    }
+}
+
+impl Keepalive {
+    pub fn new(ping_interval: Duration, pong_timeout: Duration) -> Self {
+        Self {
+            ping_interval,
+            pong_timeout,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct App {
     store: Arc<Store>,
     registry: Registry,
     guards: Guards,
+    keepalive: Keepalive,
 }
 
 pub async fn serve(port: u16, data_dir: PathBuf) -> anyhow::Result<()> {
@@ -48,10 +94,24 @@ pub async fn serve_on_with(
     data_dir: PathBuf,
     guards: Guards,
 ) -> anyhow::Result<()> {
+    serve_on_with_keepalive(listener, data_dir, guards, Keepalive::default()).await
+}
+
+/// Keepalive is injected the same way `Guards` is: production gets the real
+/// 30s/90s cadence, tests get millisecond-scale intervals so the "a vanished
+/// peer stops being reported as online" behavior is testable without
+/// sleeping for the production timeout.
+pub async fn serve_on_with_keepalive(
+    listener: tokio::net::TcpListener,
+    data_dir: PathBuf,
+    guards: Guards,
+    keepalive: Keepalive,
+) -> anyhow::Result<()> {
     let app = App {
         store: Arc::new(Store::open(&data_dir).await?),
         registry: Registry::new(),
         guards,
+        keepalive,
     };
     let router = Router::new()
         .route("/ws", get(upgrade))
@@ -91,79 +151,131 @@ async fn upgrade(ws: WebSocketUpgrade, State(app): State<App>) -> Response {
 
 async fn connection(socket: WebSocket, app: App) {
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<FromBus>();
+    let (tx, mut rx) = mpsc::channel::<FromBus>(registry::CHANNEL_CAPACITY);
 
+    // The writer task owns the sink for the connection's whole lifetime, so
+    // it — not the read loop below — is the one that actually emits `Ping`
+    // frames on a timer, interleaved with real `FromBus` events.
+    let ping_interval = app.keepalive.ping_interval;
     let writer = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let Ok(json) = serde_json::to_string(&event) else {
-                continue;
-            };
-            if sink.send(Message::Text(json.into())).await.is_err() {
-                break;
+        let mut ping_ticker = tokio::time::interval(ping_interval);
+        ping_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ping_ticker.tick().await; // the first tick fires immediately; skip it
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    let Some(event) = event else { break };
+                    let Ok(json) = serde_json::to_string(&event) else {
+                        continue;
+                    };
+                    if sink.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+                _ = ping_ticker.tick() => {
+                    if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
 
     let mut me: Option<String> = None;
 
-    while let Some(Ok(msg)) = stream.next().await {
-        let Message::Text(text) = msg else { continue };
-        let cmd: ToBus = match serde_json::from_str(&text) {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(FromBus::Error {
-                    req_id: None,
-                    message: format!("unparseable command: {e}"),
-                });
-                continue;
-            }
-        };
+    // A peer that stops answering pings must not be allowed to keep the read
+    // loop parked in `stream.next().await` forever — on a black-holed
+    // connection that read may never return on its own, TCP alone can take
+    // ~15 minutes to notice by default, and indefinitely behind a
+    // black-holing NAT. `timeout_ticker` fires independently of whatever
+    // `stream.next()` is doing, so the peer is judged solely on whether a
+    // pong actually arrived, not on whether the socket happens to wake up.
+    let mut last_pong = tokio::time::Instant::now();
+    let mut timeout_ticker = tokio::time::interval(app.keepalive.ping_interval);
+    timeout_ticker.tick().await; // skip the immediate first tick
 
-        if let ToBus::Register {
-            name,
-            host,
-            cwd,
-            session_id,
-        } = &cmd
-        {
-            // A connection registers exactly once. Accepting a second
-            // Register would mint a fresh effective name via `attach` (e.g.
-            // `caas#2`) while leaving the original identity's connection
-            // entry in the registry untouched — that first name would never
-            // be detached, so it would stay "online" forever, silently
-            // swallowing anything addressed to it after this socket closes.
-            if let Some(existing) = &me {
-                let _ = tx.send(FromBus::Error {
-                    req_id: None,
-                    message: format!(
-                        "already registered as {existing}; a connection may only register once"
-                    ),
-                });
-                continue;
-            }
+    loop {
+        tokio::select! {
+            incoming = stream.next() => {
+                let Some(Ok(msg)) = incoming else { break };
+                let text = match msg {
+                    Message::Pong(_) => {
+                        last_pong = tokio::time::Instant::now();
+                        continue;
+                    }
+                    Message::Text(text) => text,
+                    _ => continue,
+                };
 
-            let effective = app.registry.attach(name, host, tx.clone()).await;
-            let _ = app
-                .store
-                .upsert_agent(&effective, host, cwd, session_id.as_deref())
-                .await;
-            me = Some(effective.clone());
-            let _ = tx.send(FromBus::Registered {
-                name: effective.clone(),
-            });
-            send_unread_summaries(&app, &effective, &tx).await;
-            continue;
+                let cmd: ToBus = match serde_json::from_str(&text) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.try_send(FromBus::Error {
+                            req_id: None,
+                            message: format!("unparseable command: {e}"),
+                        });
+                        continue;
+                    }
+                };
+
+                if let ToBus::Register {
+                    name,
+                    host,
+                    cwd,
+                    session_id,
+                } = &cmd
+                {
+                    // A connection registers exactly once. Accepting a second
+                    // Register would mint a fresh effective name via `attach` (e.g.
+                    // `caas#2`) while leaving the original identity's connection
+                    // entry in the registry untouched — that first name would never
+                    // be detached, so it would stay "online" forever, silently
+                    // swallowing anything addressed to it after this socket closes.
+                    if let Some(existing) = &me {
+                        let _ = tx.try_send(FromBus::Error {
+                            req_id: None,
+                            message: format!(
+                                "already registered as {existing}; a connection may only register once"
+                            ),
+                        });
+                        continue;
+                    }
+
+                    let effective = app.registry.attach(name, host, tx.clone()).await;
+                    let _ = app
+                        .store
+                        .upsert_agent(&effective, host, cwd, session_id.as_deref())
+                        .await;
+                    me = Some(effective.clone());
+                    let _ = tx.try_send(FromBus::Registered {
+                        name: effective.clone(),
+                    });
+                    send_unread_summaries(&app, &effective, &tx).await;
+                    continue;
+                }
+
+                let Some(name) = me.clone() else {
+                    let _ = tx.try_send(FromBus::Error {
+                        req_id: None,
+                        message: "register before sending commands".into(),
+                    });
+                    continue;
+                };
+
+                handle(&app, &name, cmd, &tx).await;
+            }
+            _ = timeout_ticker.tick() => {
+                if last_pong.elapsed() > app.keepalive.pong_timeout {
+                    if let Some(name) = &me {
+                        eprintln!(
+                            "keepalive timeout: no pong from {name} within {:?}, closing",
+                            app.keepalive.pong_timeout
+                        );
+                    }
+                    break;
+                }
+            }
         }
-
-        let Some(name) = me.clone() else {
-            let _ = tx.send(FromBus::Error {
-                req_id: None,
-                message: "register before sending commands".into(),
-            });
-            continue;
-        };
-
-        handle(&app, &name, cmd, &tx).await;
     }
 
     if let Some(name) = me {
@@ -188,7 +300,7 @@ async fn send_unread_summaries(app: &App, name: &str, tx: &registry::Sender) {
         if let Ok(count) = app.store.unread_count(&room.name, name).await
             && count > 0
         {
-            let _ = tx.send(FromBus::Unread {
+            let _ = tx.try_send(FromBus::Unread {
                 room: room.name.clone(),
                 count,
             });
@@ -213,14 +325,14 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
 
         ToBus::Join { req_id, room } => {
             if let Err(e) = app.store.join_room(&room, me).await {
-                let _ = tx.send(FromBus::Error {
+                let _ = tx.try_send(FromBus::Error {
                     req_id: Some(req_id),
                     message: e.to_string(),
                 });
                 return;
             }
             let members = app.store.room_members(&room).await.unwrap_or_default();
-            let _ = tx.send(FromBus::Reply {
+            let _ = tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Joined { room, members },
             });
@@ -237,7 +349,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
             match app.guards.check(&room, me, now_ms()).await {
                 GuardVerdict::Allow => {}
                 GuardVerdict::RateLimited { retry_in_ms } => {
-                    let _ = tx.send(FromBus::Error {
+                    let _ = tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: format!("rate limited; retry in {retry_in_ms} ms"),
                     });
@@ -253,11 +365,11 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     // outstanding `send` request so it doesn't sit blocked
                     // for the full 10s timeout and get misreported as the
                     // bus being unreachable.
-                    let _ = tx.send(FromBus::Paused {
+                    let _ = tx.try_send(FromBus::Paused {
                         room: room.clone(),
                         reason: pause_reason.clone(),
                     });
-                    let _ = tx.send(FromBus::Error {
+                    let _ = tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: format!(
                             "send blocked: room \"{room}\" is paused ({pause_reason}) \
@@ -278,7 +390,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
             let msg_id = match app.store.append_message(&room, me, &text, done).await {
                 Ok(id) => id,
                 Err(e) => {
-                    let _ = tx.send(FromBus::Error {
+                    let _ = tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: e.to_string(),
                     });
@@ -304,7 +416,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                 }
             }
 
-            let _ = tx.send(FromBus::Reply {
+            let _ = tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Sent {
                     room,
@@ -322,7 +434,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
         } => {
             let members = app.store.room_members(&room).await.unwrap_or_default();
             if members.is_empty() {
-                let _ = tx.send(FromBus::Error {
+                let _ = tx.try_send(FromBus::Error {
                     req_id: Some(req_id),
                     message: format!(
                         "no room named {room}. Known rooms: {}",
@@ -345,7 +457,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     created_at: m.created_at,
                 })
                 .collect();
-            let _ = tx.send(FromBus::Reply {
+            let _ = tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::History { messages },
             });
@@ -364,7 +476,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     members: r.members,
                 })
                 .collect();
-            let _ = tx.send(FromBus::Reply {
+            let _ = tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Rooms { rooms },
             });
@@ -384,7 +496,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     host: a.host,
                 })
                 .collect();
-            let _ = tx.send(FromBus::Reply {
+            let _ = tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Agents { agents },
             });
@@ -400,7 +512,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
             let bytes = match base64::engine::general_purpose::STANDARD.decode(&content_b64) {
                 Ok(b) => b,
                 Err(e) => {
-                    let _ = tx.send(FromBus::Error {
+                    let _ = tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: format!("content is not valid base64: {e}"),
                     });
@@ -413,7 +525,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                 .await
             {
                 Ok(f) => {
-                    let _ = tx.send(FromBus::Reply {
+                    let _ = tx.try_send(FromBus::Reply {
                         req_id,
                         result: ReplyResult::FileStored {
                             key: f.key,
@@ -423,7 +535,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     });
                 }
                 Err(e) => {
-                    let _ = tx.send(FromBus::Error {
+                    let _ = tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: e.to_string(),
                     });
@@ -433,7 +545,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
 
         ToBus::GetFile { req_id, room, key } => match app.store.get_file(&room, &key).await {
             Ok(Some((meta, bytes))) => {
-                let _ = tx.send(FromBus::Reply {
+                let _ = tx.try_send(FromBus::Reply {
                     req_id,
                     result: ReplyResult::FileContent {
                         key: meta.key,
@@ -452,7 +564,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     .map(|f| f.key)
                     .collect::<Vec<_>>()
                     .join(", ");
-                let _ = tx.send(FromBus::Error {
+                let _ = tx.try_send(FromBus::Error {
                     req_id: Some(req_id),
                     message: format!(
                         "no file {key} in {room}. Available: {}",
@@ -465,7 +577,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                 });
             }
             Err(e) => {
-                let _ = tx.send(FromBus::Error {
+                let _ = tx.try_send(FromBus::Error {
                     req_id: Some(req_id),
                     message: e.to_string(),
                 });
@@ -486,7 +598,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     updated_by: f.updated_by,
                 })
                 .collect();
-            let _ = tx.send(FromBus::Reply {
+            let _ = tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Files { files },
             });
@@ -494,7 +606,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
 
         ToBus::Resume { req_id, room } => {
             app.guards.reset(&room).await;
-            let _ = tx.send(FromBus::Reply {
+            let _ = tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Resumed { room },
             });
