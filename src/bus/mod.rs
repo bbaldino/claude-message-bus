@@ -44,6 +44,12 @@ use registry::Registry;
 /// long as something keeps polling the stream, which both clients already
 /// do in their main read loops — no client-side change was needed for pongs
 /// to happen.
+///
+/// The timeout is only *re-checked* once per `ping_interval` (see
+/// `timeout_ticker` in `connection`), not the instant `pong_timeout`
+/// elapses, so the worst-case time to detect a vanished peer is
+/// `pong_timeout + ping_interval` — up to ~120s at the production default,
+/// not 90s.
 #[derive(Clone, Copy)]
 pub struct Keepalive {
     pub ping_interval: Duration,
@@ -67,6 +73,31 @@ impl Keepalive {
         }
     }
 }
+
+/// Capacity of a connection's *control* channel — the queue for replies to
+/// this connection's own commands (`Reply`, `Error`, `Registered`, `Unread`,
+/// `Paused`), as opposed to `registry::CHANNEL_CAPACITY`, which bounds the
+/// *routing* channel other connections fan messages into via
+/// `Registry::send_to`.
+///
+/// These used to be the same channel. That let pressure on an agent as a
+/// *recipient* (other agents' room fan-out filling its routing queue) starve
+/// replies to that same agent's own outstanding requests as a *sender* —
+/// the tool call would then time out after 10s and misreport the bus as
+/// unreachable, exactly the lie the delivered/queued split exists to
+/// prevent. Splitting the two channels means routing pressure can never
+/// drop a reply.
+///
+/// Control traffic is strictly request/response: in the steady state there
+/// is at most one outstanding reply per in-flight command, plus at most two
+/// events for a single `Send` that trips the pause guard (`Paused` then its
+/// resolving `Error`, sent back to back with nothing draining between
+/// them). 16 comfortably covers Register + Registered + a generous number
+/// of reconnect Unread summaries, plus several commands pipelined ahead of
+/// their replies, without ever growing unbounded — control traffic
+/// originates from this connection's own actions, so it can't be driven
+/// past that by another agent the way the routing queue can.
+const CONTROL_CHANNEL_CAPACITY: usize = 16;
 
 #[derive(Clone)]
 struct App {
@@ -107,9 +138,25 @@ pub async fn serve_on_with_keepalive(
     guards: Guards,
     keepalive: Keepalive,
 ) -> anyhow::Result<()> {
+    serve_on_full(listener, data_dir, guards, keepalive, Registry::new()).await
+}
+
+/// `Registry` is injected for the same reason `Guards` and `Keepalive` are:
+/// it lets a test reach in and call `Registry::send_to` directly against a
+/// connection the running bus has live, without needing to win a race over
+/// the wire against the writer task that's draining it. That is what proves
+/// a full *routing* queue (other connections' fan-out) can never starve the
+/// same connection's own *control*-channel replies.
+pub async fn serve_on_full(
+    listener: tokio::net::TcpListener,
+    data_dir: PathBuf,
+    guards: Guards,
+    keepalive: Keepalive,
+    registry: Registry,
+) -> anyhow::Result<()> {
     let app = App {
         store: Arc::new(Store::open(&data_dir).await?),
-        registry: Registry::new(),
+        registry,
         guards,
         keepalive,
     };
@@ -151,32 +198,49 @@ async fn upgrade(ws: WebSocketUpgrade, State(app): State<App>) -> Response {
 
 async fn connection(socket: WebSocket, app: App) {
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::channel::<FromBus>(registry::CHANNEL_CAPACITY);
+
+    // Two separate queues, not one. `routing_tx` is what `Registry` hands
+    // out to *other* connections via `send_to` — it carries fan-out
+    // `Message` events addressed to this agent. `control_tx` is used only
+    // by this connection's own read loop below, for replies to this
+    // connection's own commands. Keeping them apart means a flood of
+    // inbound routing traffic (this agent being a popular recipient) can
+    // never fill the queue a reply to this agent's *own* request needs to
+    // land in — see `CONTROL_CHANNEL_CAPACITY` for why that matters.
+    let (routing_tx, mut routing_rx) = mpsc::channel::<FromBus>(registry::CHANNEL_CAPACITY);
+    let (control_tx, mut control_rx) = mpsc::channel::<FromBus>(CONTROL_CHANNEL_CAPACITY);
 
     // The writer task owns the sink for the connection's whole lifetime, so
     // it — not the read loop below — is the one that actually emits `Ping`
-    // frames on a timer, interleaved with real `FromBus` events.
+    // frames on a timer, interleaved with real `FromBus` events drained from
+    // both queues. Control traffic is preferred when both are ready: a
+    // reply that unblocks a waiting tool call matters more than another
+    // routed message, and briefly starving routing traffic is harmless —
+    // `Registry::send_to`'s boolean already reports that honestly as
+    // `queued`, never `delivered`.
     let ping_interval = app.keepalive.ping_interval;
     let writer = tokio::spawn(async move {
         let mut ping_ticker = tokio::time::interval(ping_interval);
         ping_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ping_ticker.tick().await; // the first tick fires immediately; skip it
         loop {
-            tokio::select! {
-                event = rx.recv() => {
-                    let Some(event) = event else { break };
-                    let Ok(json) = serde_json::to_string(&event) else {
-                        continue;
-                    };
-                    if sink.send(Message::Text(json.into())).await.is_err() {
-                        break;
-                    }
-                }
+            let event = tokio::select! {
+                biased;
+                event = control_rx.recv() => event,
+                event = routing_rx.recv() => event,
                 _ = ping_ticker.tick() => {
                     if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
                         break;
                     }
+                    continue;
                 }
+            };
+            let Some(event) = event else { break };
+            let Ok(json) = serde_json::to_string(&event) else {
+                continue;
+            };
+            if sink.send(Message::Text(json.into())).await.is_err() {
+                break;
             }
         }
     });
@@ -210,7 +274,7 @@ async fn connection(socket: WebSocket, app: App) {
                 let cmd: ToBus = match serde_json::from_str(&text) {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ = tx.try_send(FromBus::Error {
+                        let _ = control_tx.try_send(FromBus::Error {
                             req_id: None,
                             message: format!("unparseable command: {e}"),
                         });
@@ -232,7 +296,7 @@ async fn connection(socket: WebSocket, app: App) {
                     // be detached, so it would stay "online" forever, silently
                     // swallowing anything addressed to it after this socket closes.
                     if let Some(existing) = &me {
-                        let _ = tx.try_send(FromBus::Error {
+                        let _ = control_tx.try_send(FromBus::Error {
                             req_id: None,
                             message: format!(
                                 "already registered as {existing}; a connection may only register once"
@@ -241,28 +305,31 @@ async fn connection(socket: WebSocket, app: App) {
                         continue;
                     }
 
-                    let effective = app.registry.attach(name, host, tx.clone()).await;
+                    // `Registry` only ever needs the routing sender: it is
+                    // what other connections use to fan messages in, never
+                    // to answer this connection's own commands.
+                    let effective = app.registry.attach(name, host, routing_tx.clone()).await;
                     let _ = app
                         .store
                         .upsert_agent(&effective, host, cwd, session_id.as_deref())
                         .await;
                     me = Some(effective.clone());
-                    let _ = tx.try_send(FromBus::Registered {
+                    let _ = control_tx.try_send(FromBus::Registered {
                         name: effective.clone(),
                     });
-                    send_unread_summaries(&app, &effective, &tx).await;
+                    send_unread_summaries(&app, &effective, &control_tx).await;
                     continue;
                 }
 
                 let Some(name) = me.clone() else {
-                    let _ = tx.try_send(FromBus::Error {
+                    let _ = control_tx.try_send(FromBus::Error {
                         req_id: None,
                         message: "register before sending commands".into(),
                     });
                     continue;
                 };
 
-                handle(&app, &name, cmd, &tx).await;
+                handle(&app, &name, cmd, &control_tx).await;
             }
             _ = timeout_ticker.tick() => {
                 if last_pong.elapsed() > app.keepalive.pong_timeout {
@@ -289,7 +356,7 @@ async fn connection(socket: WebSocket, app: App) {
 /// On reconnect an agent gets counts, never the backlog: replaying yesterday's
 /// conversation into a fresh session wastes context and derails whatever the
 /// human actually sat down to do.
-async fn send_unread_summaries(app: &App, name: &str, tx: &registry::Sender) {
+async fn send_unread_summaries(app: &App, name: &str, control_tx: &registry::Sender) {
     let Ok(rooms) = app.store.rooms().await else {
         return;
     };
@@ -300,7 +367,7 @@ async fn send_unread_summaries(app: &App, name: &str, tx: &registry::Sender) {
         if let Ok(count) = app.store.unread_count(&room.name, name).await
             && count > 0
         {
-            let _ = tx.try_send(FromBus::Unread {
+            let _ = control_tx.try_send(FromBus::Unread {
                 room: room.name.clone(),
                 count,
             });
@@ -319,20 +386,20 @@ async fn known_rooms(app: &App) -> String {
     }
 }
 
-async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
+async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registry::Sender) {
     match cmd {
         ToBus::Register { .. } => {}
 
         ToBus::Join { req_id, room } => {
             if let Err(e) = app.store.join_room(&room, me).await {
-                let _ = tx.try_send(FromBus::Error {
+                let _ = control_tx.try_send(FromBus::Error {
                     req_id: Some(req_id),
                     message: e.to_string(),
                 });
                 return;
             }
             let members = app.store.room_members(&room).await.unwrap_or_default();
-            let _ = tx.try_send(FromBus::Reply {
+            let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Joined { room, members },
             });
@@ -349,7 +416,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
             match app.guards.check(&room, me, now_ms()).await {
                 GuardVerdict::Allow => {}
                 GuardVerdict::RateLimited { retry_in_ms } => {
-                    let _ = tx.try_send(FromBus::Error {
+                    let _ = control_tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: format!("rate limited; retry in {retry_in_ms} ms"),
                     });
@@ -365,11 +432,11 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     // outstanding `send` request so it doesn't sit blocked
                     // for the full 10s timeout and get misreported as the
                     // bus being unreachable.
-                    let _ = tx.try_send(FromBus::Paused {
+                    let _ = control_tx.try_send(FromBus::Paused {
                         room: room.clone(),
                         reason: pause_reason.clone(),
                     });
-                    let _ = tx.try_send(FromBus::Error {
+                    let _ = control_tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: format!(
                             "send blocked: room \"{room}\" is paused ({pause_reason}) \
@@ -390,7 +457,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
             let msg_id = match app.store.append_message(&room, me, &text, done).await {
                 Ok(id) => id,
                 Err(e) => {
-                    let _ = tx.try_send(FromBus::Error {
+                    let _ = control_tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: e.to_string(),
                     });
@@ -416,7 +483,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                 }
             }
 
-            let _ = tx.try_send(FromBus::Reply {
+            let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Sent {
                     room,
@@ -434,7 +501,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
         } => {
             let members = app.store.room_members(&room).await.unwrap_or_default();
             if members.is_empty() {
-                let _ = tx.try_send(FromBus::Error {
+                let _ = control_tx.try_send(FromBus::Error {
                     req_id: Some(req_id),
                     message: format!(
                         "no room named {room}. Known rooms: {}",
@@ -457,7 +524,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     created_at: m.created_at,
                 })
                 .collect();
-            let _ = tx.try_send(FromBus::Reply {
+            let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::History { messages },
             });
@@ -476,7 +543,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     members: r.members,
                 })
                 .collect();
-            let _ = tx.try_send(FromBus::Reply {
+            let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Rooms { rooms },
             });
@@ -496,7 +563,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     host: a.host,
                 })
                 .collect();
-            let _ = tx.try_send(FromBus::Reply {
+            let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Agents { agents },
             });
@@ -512,7 +579,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
             let bytes = match base64::engine::general_purpose::STANDARD.decode(&content_b64) {
                 Ok(b) => b,
                 Err(e) => {
-                    let _ = tx.try_send(FromBus::Error {
+                    let _ = control_tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: format!("content is not valid base64: {e}"),
                     });
@@ -525,7 +592,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                 .await
             {
                 Ok(f) => {
-                    let _ = tx.try_send(FromBus::Reply {
+                    let _ = control_tx.try_send(FromBus::Reply {
                         req_id,
                         result: ReplyResult::FileStored {
                             key: f.key,
@@ -535,7 +602,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     });
                 }
                 Err(e) => {
-                    let _ = tx.try_send(FromBus::Error {
+                    let _ = control_tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: e.to_string(),
                     });
@@ -545,7 +612,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
 
         ToBus::GetFile { req_id, room, key } => match app.store.get_file(&room, &key).await {
             Ok(Some((meta, bytes))) => {
-                let _ = tx.try_send(FromBus::Reply {
+                let _ = control_tx.try_send(FromBus::Reply {
                     req_id,
                     result: ReplyResult::FileContent {
                         key: meta.key,
@@ -564,7 +631,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     .map(|f| f.key)
                     .collect::<Vec<_>>()
                     .join(", ");
-                let _ = tx.try_send(FromBus::Error {
+                let _ = control_tx.try_send(FromBus::Error {
                     req_id: Some(req_id),
                     message: format!(
                         "no file {key} in {room}. Available: {}",
@@ -577,7 +644,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                 });
             }
             Err(e) => {
-                let _ = tx.try_send(FromBus::Error {
+                let _ = control_tx.try_send(FromBus::Error {
                     req_id: Some(req_id),
                     message: e.to_string(),
                 });
@@ -598,7 +665,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
                     updated_by: f.updated_by,
                 })
                 .collect();
-            let _ = tx.try_send(FromBus::Reply {
+            let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Files { files },
             });
@@ -606,7 +673,7 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
 
         ToBus::Resume { req_id, room } => {
             app.guards.reset(&room).await;
-            let _ = tx.try_send(FromBus::Reply {
+            let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Resumed { room },
             });

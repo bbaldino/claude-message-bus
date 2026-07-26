@@ -50,6 +50,38 @@ async fn start_bus_with_keepalive(
     (dir, port)
 }
 
+/// Same as `start_bus`, but the caller supplies (and keeps a clone of) the
+/// `Registry`, so a test can reach in and call `Registry::send_to` directly
+/// against a connection the running bus already has live. `cap` sets the
+/// exchange guard's cap directly (rate limit stays disabled), so a test that
+/// needs to trip `Paused` repeatedly and cheaply can use a cap of 1 instead
+/// of burning through the production default of 20 each time.
+async fn start_bus_with_registry(
+    registry: claude_bus::bus::registry::Registry,
+    cap: u32,
+) -> (tempfile::TempDir, u16) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let guards = claude_bus::bus::delivery::Guards::new(cap, 0);
+        claude_bus::bus::serve_on_full(
+            listener,
+            path,
+            guards,
+            claude_bus::bus::Keepalive::default(),
+            registry,
+        )
+        .await
+        .unwrap();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    (dir, port)
+}
+
 async fn connect(port: u16, name: &str) -> Ws {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
         .await
@@ -76,6 +108,22 @@ async fn next_event(ws: &mut Ws) -> FromBus {
         if let Message::Text(t) = msg {
             return serde_json::from_str(&t).expect("parse FromBus");
         }
+    }
+}
+
+/// Like `next_event`, but skips over the flood of `FromBus::Message` events
+/// from "attacker" that the routing-queue-pressure tests push through
+/// `Registry::send_to` directly. Those exist only to occupy the queue while
+/// it's being filled; once the writer task gets scheduled it drains and
+/// forwards them like any other routed message, so a test waiting for a
+/// specific reply afterward has to look past them.
+async fn next_non_flood_event(ws: &mut Ws) -> FromBus {
+    loop {
+        let ev = next_event(ws).await;
+        if matches!(&ev, FromBus::Message { from, .. } if from == "attacker") {
+            continue;
+        }
+        return ev;
     }
 }
 
@@ -753,4 +801,269 @@ async fn a_peer_that_stops_answering_pings_is_detached_and_reads_as_queued() {
     // done, so its silence — not a dropped socket — is what the bus reacted
     // to.
     drop(victim);
+}
+
+fn flood_message() -> FromBus {
+    FromBus::Message {
+        id: 0,
+        room: "flood".into(),
+        from: "attacker".into(),
+        text: "x".into(),
+        done: false,
+    }
+}
+
+/// Keeps a connection's routing queue saturated for as long as `active`
+/// stays `true`, by calling `Registry::send_to` directly (the same path
+/// other connections' room/DM fan-out goes through) in a tight loop.
+///
+/// A one-shot fill isn't enough to prove control traffic is immune to
+/// routing pressure: the writer task drains the queue as fast as it can
+/// forward messages onto the socket, so by the time a test's own
+/// request/reply round trip actually reaches the point of contention, a
+/// single burst has usually already drained away. Continuously refilling —
+/// racing the writer's drain rate — is what reproduces sustained pressure,
+/// which is the scenario the review's finding actually describes (a
+/// connection that is a member of *several concurrently busy rooms*, not
+/// one that received one burst and then went quiet).
+///
+/// `yield_now` between sends is required, not cosmetic: `tokio::sync::Mutex`
+/// resolves synchronously when uncontended, so a bare `while active.load()
+/// { send_to(...).await }` never actually yields to the scheduler and starves
+/// every other task on a single-threaded runtime — including the writer task
+/// this is racing against, and the test's own main task.
+async fn flood_continuously(
+    registry: claude_bus::bus::registry::Registry,
+    name: String,
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    while active.load(Ordering::Relaxed) {
+        // Re-saturate the queue in one uninterrupted burst (no `.await`
+        // yield point inside this inner loop — `try_send` and an
+        // uncontended `tokio::sync::Mutex` both resolve synchronously) so
+        // that whenever another task — the writer draining it, or this
+        // connection's own read loop trying to enqueue a reply — actually
+        // gets to run, it is as likely as possible to see the queue at
+        // capacity, not mid-drain.
+        while registry.send_to(&name, flood_message()).await {}
+        tokio::task::yield_now().await;
+    }
+}
+
+// Regression for fix round 1's follow-up defect: the connection's own
+// command replies used to share one queue with inbound fan-out routed to it
+// as a recipient. An agent that is a member of busy rooms could have its
+// *inbound* queue filled by *other* agents' traffic, and if that coincided
+// with a reply to one of its *own* requests, the reply got dropped —
+// `Handler::request`'s oneshot never resolved, and the tool call eventually
+// reported the bus as unreachable on a connection that was never
+// unreachable. The fix splits the control (own replies) and routing
+// (inbound fan-out) queues so pressure on one can never starve the other.
+#[tokio::test]
+async fn a_full_routing_queue_does_not_starve_the_connections_own_replies() {
+    let registry = claude_bus::bus::registry::Registry::new();
+    let (_d, port) =
+        start_bus_with_registry(registry.clone(), claude_bus::bus::delivery::DEFAULT_CAP).await;
+
+    let mut victim = connect(port, "victim").await;
+    let name = match next_event(&mut victim).await {
+        FromBus::Registered { name } => name,
+        other => panic!("expected Registered, got {other:?}"),
+    };
+
+    // Sanity check: `Registry::send_to` does fill and then report full at
+    // exactly the routing queue's capacity, directly against a live
+    // connection (this is the same contract `registry::tests::
+    // send_to_a_full_channel_reports_failure_not_delivery` covers in
+    // isolation, re-checked here against the real `connection()` wiring).
+    let mut queued = 0usize;
+    while registry.send_to(&name, flood_message()).await {
+        queued += 1;
+        assert!(
+            queued <= claude_bus::bus::registry::CHANNEL_CAPACITY * 2,
+            "send_to never reported the queue full; it should have stopped \
+             accepting after CHANNEL_CAPACITY sends"
+        );
+    }
+    assert_eq!(
+        queued,
+        claude_bus::bus::registry::CHANNEL_CAPACITY,
+        "the routing queue should fill at exactly its capacity"
+    );
+
+    // Keep re-filling it for the duration of the actual request/reply
+    // round trips below — a one-shot fill drains away as soon as the
+    // writer task gets scheduled, which happens before `victim`'s own
+    // reply is even sent; sustained pressure is what the review's finding
+    // describes (an agent that is a member of *several concurrently busy
+    // rooms*).
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flooder = tokio::spawn(flood_continuously(
+        registry.clone(),
+        name.clone(),
+        active.clone(),
+    ));
+
+    // With the routing queue kept saturated, victim's own requests — sent
+    // over its own live connection — must still get replies. They travel
+    // the separate control channel, so routing pressure must not touch
+    // them. This is repeated rather than sent once: exactly when a reply's
+    // `try_send` lands relative to the flooder's and writer's own
+    // scheduling is not something a test can pin down turn-by-turn, so many
+    // independent attempts under sustained pressure is what makes this
+    // reliably distinguish "never drops" from "usually doesn't drop".
+    let attempts = 300u64;
+    for req_id in 0..attempts {
+        send(&mut victim, &ToBus::ListRooms { req_id }).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            next_non_flood_event(&mut victim),
+        )
+        .await;
+        match result {
+            Ok(FromBus::Reply {
+                req_id: got_id,
+                result: ReplyResult::Rooms { .. },
+            }) => assert_eq!(got_id, req_id),
+            Ok(other) => panic!("expected a Reply to ListRooms {req_id}, got {other:?}"),
+            Err(_) => {
+                active.store(false, std::sync::atomic::Ordering::Relaxed);
+                let _ = flooder.await;
+                panic!(
+                    "victim's own Reply to request {req_id} never arrived while its \
+                     routing queue was kept full — the control and routing channels \
+                     are not actually independent"
+                );
+            }
+        }
+    }
+
+    active.store(false, std::sync::atomic::Ordering::Relaxed);
+    let _ = flooder.await;
+}
+
+// Same pressure, but against the specific two-events-back-to-back path the
+// review called out as the worst instance: `FromBus::Paused` and its
+// resolving `FromBus::Error` are two sequential `try_send`s with no `.await`
+// (and so no drain opportunity) between them. If the first drops for
+// capacity, the second almost certainly does too — collapsing the fallback
+// that exists so a paused room never produces a false "bus unreachable"
+// timeout. Both must still arrive even with the routing queue completely
+// full.
+#[tokio::test]
+async fn a_full_routing_queue_does_not_swallow_the_pause_notification_or_its_resolving_error() {
+    let registry = claude_bus::bus::registry::Registry::new();
+    // Cap of 1: every room pauses on its second message, so one iteration
+    // below reaches the Paused+Error pair in two round trips instead of the
+    // production default's twenty-one. As with the sibling test above, the
+    // exact instant a `try_send` lands relative to the flooder's and
+    // writer's own scheduling isn't something a test can pin down
+    // turn-by-turn, so this repeats the trip many times, across fresh rooms
+    // (the guard's pause state is per-room), rather than tripping it once.
+    let (_d, port) = start_bus_with_registry(registry.clone(), 1).await;
+
+    let mut a = connect(port, "caas").await;
+    let name = match next_event(&mut a).await {
+        FromBus::Registered { name } => name,
+        other => panic!("expected Registered, got {other:?}"),
+    };
+
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flooder = tokio::spawn(flood_continuously(
+        registry.clone(),
+        name.clone(),
+        active.clone(),
+    ));
+
+    let fail = |active: &std::sync::Arc<std::sync::atomic::AtomicBool>, msg: String| -> ! {
+        active.store(false, std::sync::atomic::Ordering::Relaxed);
+        panic!("{msg}");
+    };
+
+    let iterations = 150u64;
+    for i in 0..iterations {
+        let room = format!("loop{i}");
+
+        send(
+            &mut a,
+            &ToBus::Send {
+                req_id: i * 10,
+                target: Target::Room { room: room.clone() },
+                text: "one".into(),
+                done: false,
+            },
+        )
+        .await;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            next_non_flood_event(&mut a),
+        )
+        .await
+        {
+            Ok(FromBus::Reply { .. }) => {}
+            Ok(other) => fail(
+                &active,
+                format!("iteration {i}: expected Reply, got {other:?}"),
+            ),
+            Err(_) => fail(
+                &active,
+                format!("iteration {i}: first message's Reply never arrived under pressure"),
+            ),
+        }
+
+        send(
+            &mut a,
+            &ToBus::Send {
+                req_id: i * 10 + 1,
+                target: Target::Room { room: room.clone() },
+                text: "two, over the cap of 1".into(),
+                done: false,
+            },
+        )
+        .await;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            next_non_flood_event(&mut a),
+        )
+        .await
+        {
+            Ok(FromBus::Paused { room: r, .. }) => assert_eq!(r, room),
+            Ok(other) => fail(
+                &active,
+                format!("iteration {i}: expected Paused, got {other:?}"),
+            ),
+            Err(_) => fail(
+                &active,
+                format!("iteration {i}: Paused never arrived under routing-queue pressure"),
+            ),
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            next_non_flood_event(&mut a),
+        )
+        .await
+        {
+            Ok(FromBus::Error { req_id, message }) => {
+                assert_eq!(req_id, Some(i * 10 + 1));
+                assert!(message.to_lowercase().contains("paused"));
+            }
+            Ok(other) => fail(
+                &active,
+                format!("iteration {i}: expected the resolving Error, got {other:?}"),
+            ),
+            Err(_) => fail(
+                &active,
+                format!(
+                    "iteration {i}: the resolving Error never arrived under routing-queue \
+                     pressure — Paused and Error are sent back to back with nothing \
+                     draining between them, so this is the case most likely to drop the \
+                     second"
+                ),
+            ),
+        }
+    }
+
+    active.store(false, std::sync::atomic::Ordering::Relaxed);
+    let _ = flooder.await;
 }
