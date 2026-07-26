@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(7777);
             let data = flag(&args, "--data").unwrap_or_else(|| "./data".to_string());
-            println!("serve on {port}, data at {data} — not yet implemented");
+            claude_bus::bus::serve(port, std::path::PathBuf::from(data)).await?;
             Ok(())
         }
         Some("agent") => {
