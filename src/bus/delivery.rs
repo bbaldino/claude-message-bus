@@ -52,6 +52,15 @@ impl Guards {
 
     /// `now_ms` is passed in rather than read here so the rate limit is
     /// testable without sleeping.
+    ///
+    /// Mutates on `Allow`: consumes one unit of the room's exchange budget
+    /// and records `now_ms` as this agent's last send time. This is not a
+    /// peek — call it exactly once per message actually sent. Calling it to
+    /// preview a verdict, or calling it twice for one message (once to
+    /// validate, once to send), will double-count and make both guards trip
+    /// earlier than their configured `cap` / `min_interval_ms`. A
+    /// `RateLimited` or `Paused` verdict does not mutate anything, so
+    /// retrying a rejected attempt is always free.
     pub async fn check(&self, room: &str, agent: &str, now_ms: i64) -> GuardVerdict {
         let mut rooms = self.rooms.lock().await;
         let state = rooms.entry(room.to_string()).or_default();
@@ -175,6 +184,28 @@ mod tests {
         ));
         g.reset("r").await;
         assert!(matches!(g.check("r", "caas", 2).await, GuardVerdict::Allow));
+    }
+
+    #[tokio::test]
+    async fn reset_does_not_bypass_the_rate_limit() {
+        let g = Guards::new(1, 2000);
+        // Consume the cap and record caas's last send time at t=0.
+        assert!(matches!(g.check("r", "caas", 0).await, GuardVerdict::Allow));
+        assert!(matches!(
+            g.check("r", "caas", 100).await,
+            GuardVerdict::Paused { .. }
+        ));
+
+        // A human resumes the room shortly after.
+        g.reset("r").await;
+
+        // caas retries immediately: the pause is lifted, but it is still
+        // within min_interval_ms of its last real send, so this must be
+        // rate-limited, not a free pass through Allow.
+        match g.check("r", "caas", 150).await {
+            GuardVerdict::RateLimited { retry_in_ms } => assert_eq!(retry_in_ms, 1850),
+            other => panic!("expected rate limit, got {other:?}"),
+        }
     }
 
     #[tokio::test]
