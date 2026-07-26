@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# UserPromptSubmit hook: tells the bus the human is active in this project, which
+# resets the exchange-cap counter for that agent's rooms.
+#
+# Optional. Without it, a paused room is cleared with the `resume` tool instead.
+#
+# Install in .claude/settings.json:
+#   {
+#     "hooks": {
+#       "UserPromptSubmit": [
+#         { "hooks": [ { "type": "command",
+#                        "command": "/path/to/human-active-hook.sh",
+#                        "timeout": 5 } ] }
+#       ]
+#     }
+#   }
+BUS_HTTP="${CLAUDE_BUS_HTTP:-http://127.0.0.1:7777}"
+NAME="${CLAUDE_BUS_NAME:-$(basename "${CLAUDE_PROJECT_DIR:-$PWD}")}"
+curl -s -m 2 -X POST "$BUS_HTTP/human-active?agent=$NAME" >/dev/null 2>&1 || true
+exit 0

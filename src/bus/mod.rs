@@ -53,9 +53,36 @@ pub async fn serve_on_with(
         registry: Registry::new(),
         guards,
     };
-    let router = Router::new().route("/ws", get(upgrade)).with_state(app);
+    let router = Router::new()
+        .route("/ws", get(upgrade))
+        .route("/human-active", axum::routing::post(human_active))
+        .with_state(app);
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct HumanActiveQuery {
+    agent: String,
+}
+
+/// Called by the optional UserPromptSubmit hook. The human typing is the only
+/// accurate signal that a conversation is still supervised.
+async fn human_active(
+    State(app): State<App>,
+    axum::extract::Query(q): axum::extract::Query<HumanActiveQuery>,
+) -> &'static str {
+    let rooms: Vec<String> = app
+        .store
+        .rooms()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.members.iter().any(|m| *m == q.agent))
+        .map(|r| r.name)
+        .collect();
+    app.guards.reset_all_for(&rooms).await;
+    "ok"
 }
 
 async fn upgrade(ws: WebSocketUpgrade, State(app): State<App>) -> Response {
