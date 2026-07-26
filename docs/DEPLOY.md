@@ -41,9 +41,11 @@ claude-bus init --project --bus ws://nas.lan:7777/ws --dry-run   # preview first
 never hand-edit it. It then merges the permission allowlist below into
 `.claude/settings.json` itself, deriving the nine tool names from the same const
 `list_tools` is checked against, so it can't drift from what the agent actually exposes.
-It never overwrites an existing `msgbus` entry without asking, and `--dry-run` writes and
-runs nothing. Also available as `make config` / `make config-project` / `make config-check`
-(see the Makefile).
+It never overwrites an existing `msgbus` entry without asking, and it checks what's already
+configured — both halves, both scopes if you haven't picked one yet — before it asks you
+anything. `--dry-run` writes and mutates nothing (it does run one read-only check, `claude
+mcp get msgbus`, so the preview reflects what's actually there). Also available as `make
+config` / `make config-project` / `make config-check` (see the Makefile).
 
 The rest of this section is what `init` does under the hood — read it if you want to
 configure by hand instead, or to understand what to check when something's wrong.

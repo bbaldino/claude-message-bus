@@ -7,11 +7,19 @@
 //!   for user scope, or a project's `.mcp.json`). That file is not ours: on a
 //!   real machine it is tens of kilobytes of caches, history, and identifiers
 //!   we have no business touching by hand. We never open it — we shell out to
-//!   `claude mcp add`, the official tool for exactly this.
+//!   `claude mcp add`, the official tool for exactly this. Checking whether
+//!   one already exists is read-only (`claude mcp get`), so we do it up
+//!   front, before any prompt — see `run` below.
 //! - The permission allowlist lives in `.claude/settings.json`, which has no
 //!   equivalent CLI. That one actually is ours to merge, carefully: it is
 //!   small, but it can hold unrelated keys (theme, hooks, model, ...) that
 //!   must survive untouched.
+//!
+//! The two halves are independent and each has two possible scopes, so
+//! "configured or not" is a 2x2-ish matrix, not a boolean. `plan_action`
+//! below is the pure function that reduces a probed state down to what to
+//! do about it; `run` probes everything (both halves, and — when no scope
+//! flag was given — both scopes) before asking the user anything.
 //!
 //! The nine tool names come from `crate::agent::handler::BUS_TOOL_NAMES` —
 //! the same const `list_tools` is checked against in `tests/agent_contract.rs`
@@ -165,6 +173,21 @@ fn plan_merge(existing: Option<Value>, tools: &[String]) -> MergePlan {
     }
 }
 
+/// How many of the target `permissions.allow` entries are already present,
+/// out of how many total. The only thing `plan_action` needs to know about
+/// the allowlist half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AllowlistStatus {
+    present: usize,
+    total: usize,
+}
+
+impl AllowlistStatus {
+    fn is_complete(self) -> bool {
+        self.total > 0 && self.present == self.total
+    }
+}
+
 fn read_json_file(path: &Path) -> anyhow::Result<Option<Value>> {
     match std::fs::read_to_string(path) {
         Ok(s) => {
@@ -187,10 +210,14 @@ fn write_json_file(path: &Path, value: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A pure PATH scan — never spawns anything. `--dry-run` must run zero
-/// subprocesses, and even outside dry-run this gives a clear, specific error
-/// instead of the confusing "No such file or directory (os error 2)" a raw
-/// spawn failure would surface.
+/// A pure PATH scan — never spawns anything. Used both to give a clear,
+/// specific error when `claude` is missing (instead of the confusing "No
+/// such file or directory (os error 2)" a raw spawn failure would surface)
+/// and to keep the very first thing `run` does free of any subprocess. This
+/// is no longer the thing that makes `--dry-run` spawn nothing overall —
+/// `--dry-run` does run one read-only probe now, see `claude_mcp_get` below
+/// — but it's still the reason a missing `claude` fails fast and legibly
+/// rather than via a raw `ENOENT` from deep inside a probe.
 fn claude_on_path() -> bool {
     let Some(path_var) = std::env::var_os("PATH") else {
         return false;
@@ -198,26 +225,37 @@ fn claude_on_path() -> bool {
     std::env::split_paths(&path_var).any(|dir| dir.join("claude").is_file())
 }
 
-enum McpState {
+/// The raw result of probing for an MCP entry named `msgbus`, scope-agnostic
+/// (`claude mcp get <name>` doesn't take a `--scope` argument — it reports
+/// whichever entry it finds).
+enum McpProbe {
     NotConfigured,
     /// The raw text `claude mcp get <name>` printed. Deliberately not parsed
-    /// into a structured comparison — shown verbatim so a human can judge
-    /// whether it already matches what `init` would write.
+    /// into a structured comparison of its content (command, args, bus URL)
+    /// — shown verbatim so a human can judge whether it already matches what
+    /// `init` would write. The one exception is `parse_mcp_scope` below,
+    /// which reads only the single documented `Scope:` line, because knowing
+    /// *where* the entry lives (not what it says) is required to answer "is
+    /// the target scope already configured" at all.
     Existing(String),
 }
 
 /// Runs `claude mcp get <name>`. Per the CLI's documented behavior (verified
 /// by hand against a real `claude` binary): exit 0 and prints the existing
 /// entry's scope when one exists, non-zero and an explanatory message on
-/// stdout when it does not.
-fn claude_mcp_get(name: &str) -> anyhow::Result<McpState> {
+/// stdout when it does not. Read-only — no config file is touched by this
+/// call — which is why `run` now calls it unconditionally, including under
+/// `--dry-run`: the guarantee `--dry-run` exists to provide is "writes and
+/// mutates nothing," not "spawns nothing," and this call keeps the former
+/// true while making the latter no longer true.
+fn claude_mcp_get(name: &str) -> anyhow::Result<McpProbe> {
     let output = Command::new("claude").args(["mcp", "get", name]).output()?;
     if output.status.success() {
-        Ok(McpState::Existing(
+        Ok(McpProbe::Existing(
             String::from_utf8_lossy(&output.stdout).trim().to_string(),
         ))
     } else {
-        Ok(McpState::NotConfigured)
+        Ok(McpProbe::NotConfigured)
     }
 }
 
@@ -240,6 +278,141 @@ fn claude_mcp_add(scope: Scope, bus_url: &str) -> anyhow::Result<()> {
         anyhow::bail!("`claude mcp add` exited with {status}");
     }
     Ok(())
+}
+
+/// Reads only the one documented `Scope:` line out of `claude mcp get`'s
+/// output — never the command, args, or anything else about the entry.
+/// `None` means the text didn't recognizably say either scope (an
+/// unrecognized format, or the third `local` scope `init` doesn't offer),
+/// and is treated the same as "differs": ambiguous enough to need a human,
+/// not a value worth guessing at.
+fn parse_mcp_scope(raw: &str) -> Option<Scope> {
+    if raw.contains("Project config") {
+        Some(Scope::Project)
+    } else if raw.contains("User config") {
+        Some(Scope::User)
+    } else {
+        None
+    }
+}
+
+/// How the (scope-agnostic) MCP probe relates to one specific target scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpState {
+    NotConfigured,
+    /// An entry exists and it's at the scope being asked about.
+    MatchesScope,
+    /// An entry exists but isn't confirmed to be at the scope being asked
+    /// about — a different scope, or a scope `parse_mcp_scope` couldn't
+    /// read. Treated conservatively: never assumed to satisfy this scope.
+    Differs,
+}
+
+fn mcp_state_for_scope(probe: &McpProbe, target: Scope) -> McpState {
+    match probe {
+        McpProbe::NotConfigured => McpState::NotConfigured,
+        McpProbe::Existing(raw) => match parse_mcp_scope(raw) {
+            Some(s) if s == target => McpState::MatchesScope,
+            _ => McpState::Differs,
+        },
+    }
+}
+
+/// The five things `init` can decide to do for one scope, once both halves
+/// have been probed. A pure function on the same principle as
+/// `merge_allowlist`: the decision of *what* to do never needs a
+/// filesystem, a subprocess, or a TTY to get right, only the already-probed
+/// state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    NothingToDo,
+    AddMcpOnly,
+    AddAllowlistOnly,
+    AddBoth,
+    /// The MCP entry exists but isn't confirmed to match this scope. Never
+    /// resolved automatically — always surfaced to a human (see `McpState::
+    /// Differs`), regardless of whether the allowlist half is already fine.
+    Conflict,
+}
+
+fn plan_action(mcp: McpState, allowlist: AllowlistStatus) -> Action {
+    match (mcp, allowlist.is_complete()) {
+        (McpState::Differs, _) => Action::Conflict,
+        (McpState::MatchesScope, true) => Action::NothingToDo,
+        (McpState::MatchesScope, false) => Action::AddAllowlistOnly,
+        (McpState::NotConfigured, true) => Action::AddMcpOnly,
+        (McpState::NotConfigured, false) => Action::AddBoth,
+    }
+}
+
+/// Everything probed and decided for one scope: read-only, computed once,
+/// reused for both the status display and (if that scope ends up chosen)
+/// the actual apply.
+struct ScopePlan {
+    scope: Scope,
+    settings_path: PathBuf,
+    allowlist: AllowlistStatus,
+    merge: MergePlan,
+    action: Action,
+}
+
+fn build_scope_plan(
+    scope: Scope,
+    project_dir: &Path,
+    tools: &[String],
+    mcp_probe: &McpProbe,
+) -> anyhow::Result<ScopePlan> {
+    let settings_path = scope.settings_path(project_dir);
+    let existing_settings = read_json_file(&settings_path)?;
+    let merge = plan_merge(existing_settings, tools);
+    let allowlist = AllowlistStatus {
+        present: tools.len() - merge.added.len(),
+        total: tools.len(),
+    };
+    let mcp_state = mcp_state_for_scope(mcp_probe, scope);
+    let action = plan_action(mcp_state, allowlist);
+    Ok(ScopePlan {
+        scope,
+        settings_path,
+        allowlist,
+        merge,
+        action,
+    })
+}
+
+fn mcp_status_line(probe: &McpProbe) -> String {
+    match probe {
+        McpProbe::NotConfigured => "not configured".to_string(),
+        McpProbe::Existing(raw) => match parse_mcp_scope(raw) {
+            Some(Scope::Project) => "project scope (.mcp.json)".to_string(),
+            Some(Scope::User) => "user scope (~/.claude.json)".to_string(),
+            None => "existing, scope unclear — see `claude mcp get msgbus`".to_string(),
+        },
+    }
+}
+
+fn allowlist_fragment(scope: Scope, status: AllowlistStatus) -> String {
+    if status.present == 0 {
+        format!("{} not configured", scope.claude_scope_flag())
+    } else {
+        format!(
+            "{} {}/{}",
+            scope.claude_scope_flag(),
+            status.present,
+            status.total
+        )
+    }
+}
+
+/// Prints the compact status block — the whole point of probing first: the
+/// user sees the real situation before answering anything.
+fn print_status(probe: &McpProbe, plans: &[&ScopePlan]) {
+    println!("  mcp entry   {}", mcp_status_line(probe));
+    let fragments: Vec<String> = plans
+        .iter()
+        .map(|p| allowlist_fragment(p.scope, p.allowlist))
+        .collect();
+    println!("  allowlist   {}", fragments.join(" · "));
 }
 
 /// Ask a yes/no question. `--yes` shortcuts to true without printing
@@ -338,7 +511,11 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     // project on the machine, not just the one the script happens to be
     // sitting in. Silently defaulting there would turn a copy-pasted
     // `claude-bus init --bus ... --yes` meant for one project into a
-    // machine-wide change with no error and no prompt.
+    // machine-wide change with no error and no prompt. This check runs
+    // before any probing, so a scope-less non-interactive call bails
+    // immediately regardless of what's already configured — with no flag,
+    // there's no well-defined "target scope" for a short-circuit to report
+    // against, so there's nothing to check yet.
     if args.scope.is_none() && !is_tty {
         anyhow::bail!(
             "claude-bus init: scope must be given explicitly in non-interactive use (stdin \
@@ -357,21 +534,90 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     println!();
     println!("  project     {project_name}  ({})", project_dir.display());
     println!("  agent name  {agent_name}");
+    println!();
 
-    let scope = match args.scope {
-        Some(s) => s,
-        // is_tty is guaranteed true here — the bail above already handled
-        // the non-interactive, no-flag case.
+    let tools = qualified_tool_names();
+
+    // Probe everything up front, before any prompt — including the scope
+    // and bus-address prompts below. `claude mcp get` is read-only; reading
+    // `.claude/settings.json` is read-only. Neither writes or mutates
+    // anything, so doing this before asking the user anything (and even
+    // under `--dry-run`) doesn't weaken the dry-run guarantee that matters.
+    let mcp_probe = claude_mcp_get("msgbus")?;
+
+    let (scope, chosen_plan) = match args.scope {
+        Some(target) => {
+            let plan = build_scope_plan(target, &project_dir, &tools, &mcp_probe)?;
+            print_status(&mcp_probe, &[&plan]);
+            if plan.action == Action::NothingToDo {
+                println!();
+                println!(
+                    "Already fully configured for {} scope. Nothing to do.",
+                    target.claude_scope_flag()
+                );
+                launch_reminder();
+                return Ok(());
+            }
+            (target, plan)
+        }
         None => {
-            println!("  msgbus      not configured (checked after scope is chosen)");
+            // is_tty is guaranteed true here — the bail above already
+            // handled the non-interactive, no-flag case. Probe both scopes:
+            // without a flag, "the target scope" isn't decided yet, and the
+            // whole point is to let the user skip the question if one scope
+            // turns out to already be fully configured.
+            let plan_project = build_scope_plan(Scope::Project, &project_dir, &tools, &mcp_probe)?;
+            let plan_user = build_scope_plan(Scope::User, &project_dir, &tools, &mcp_probe)?;
+            print_status(&mcp_probe, &[&plan_project, &plan_user]);
+
+            let already_done = [&plan_project, &plan_user]
+                .into_iter()
+                .find(|p| p.action == Action::NothingToDo);
+            if let Some(done) = already_done {
+                let other = if done.scope == Scope::Project {
+                    Scope::User
+                } else {
+                    Scope::Project
+                };
+                println!();
+                println!(
+                    "Already fully configured for {} scope. Nothing to do.",
+                    done.scope.claude_scope_flag()
+                );
+                println!(
+                    "Run again with --{} if you also want {} scope configured.",
+                    other.claude_scope_flag(),
+                    other.claude_scope_flag()
+                );
+                launch_reminder();
+                return Ok(());
+            }
+
             println!();
-            prompt_scope()
+            println!("Neither scope is fully configured yet.");
+            println!();
+            let target = prompt_scope();
+            let plan = if target == Scope::Project {
+                plan_project
+            } else {
+                plan_user
+            };
+            (target, plan)
         }
     };
 
+    // The bus address is only relevant if we might call `claude mcp add` —
+    // skip asking for it otherwise (e.g. an allowlist-only fix-up), the same
+    // "don't ask questions whose answers don't matter" principle that
+    // motivated probing before prompting in the first place.
+    let needs_bus = matches!(
+        chosen_plan.action,
+        Action::AddMcpOnly | Action::AddBoth | Action::Conflict
+    );
+
     let bus = match args.bus.clone() {
         Some(b) => b,
-        None if is_tty => {
+        None if needs_bus && is_tty => {
             println!();
             prompt_bus()
         }
@@ -380,74 +626,42 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
 
     println!();
     println!("Scope: {}", scope.describe());
-    println!("Bus address: {bus}");
-
-    let settings_path = scope.settings_path(&project_dir);
-    let existing_settings = read_json_file(&settings_path)?;
-    let tools = qualified_tool_names();
-    let plan = plan_merge(existing_settings, &tools);
+    if needs_bus {
+        println!("Bus address: {bus}");
+    }
 
     if args.dry_run {
-        println!();
-        println!(
-            "msgbus      dry run — not checked (run without --dry-run, or `claude mcp get \
-             msgbus`, to see the current entry)"
-        );
-        println!();
-        println!("Would run:");
-        println!(
-            "  claude mcp add --scope {} msgbus -- claude-bus agent --bus {bus}",
-            scope.claude_scope_flag()
-        );
-        println!();
-        println!("Would merge into {}:", settings_path.display());
-        if plan.added.is_empty() {
-            println!("  permissions.allow already has all 9 entries; no changes needed");
-        } else {
-            println!(
-                "  + permissions.allow    {} entries ({} … {})",
-                plan.added.len(),
-                plan.added.first().unwrap(),
-                plan.added.last().unwrap()
-            );
-        }
-        println!(
-            "  {} existing top-level key(s) preserved.",
-            plan.existing_top_level_keys
-        );
-        println!();
-        println!("Dry run: nothing was written, nothing was run.");
+        print_dry_run_preview(&chosen_plan, &bus, &mcp_probe);
         return Ok(());
     }
 
-    let mcp_state = claude_mcp_get("msgbus")?;
-
-    let will_add_mcp = match &mcp_state {
-        McpState::NotConfigured => true,
-        McpState::Existing(raw) => {
-            println!();
-            println!("An MCP entry named \"msgbus\" already exists:");
-            println!();
-            for line in raw.lines() {
-                println!("  {line}");
+    let will_add_mcp = match chosen_plan.action {
+        Action::AddMcpOnly | Action::AddBoth => true,
+        Action::AddAllowlistOnly => false,
+        Action::Conflict => {
+            if let McpProbe::Existing(raw) = &mcp_probe {
+                println!();
+                println!("An MCP entry named \"msgbus\" already exists:");
+                println!();
+                for line in raw.lines() {
+                    println!("  {line}");
+                }
+                println!();
             }
-            println!();
             confirm(
                 "Overwrite it by re-running `claude mcp add`? [y/N] ",
                 args.yes,
                 is_tty,
             )
         }
+        Action::NothingToDo => unreachable!("NothingToDo already returned above"),
     };
 
-    let will_merge_settings = !plan.added.is_empty();
+    let will_merge_settings = !chosen_plan.merge.added.is_empty();
 
     if !will_add_mcp && !will_merge_settings {
         println!();
-        println!(
-            "Already configured for {} scope. Nothing to do.",
-            scope.claude_scope_flag()
-        );
+        println!("Nothing to do for {} scope.", scope.claude_scope_flag());
         launch_reminder();
         return Ok(());
     }
@@ -464,21 +678,22 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     }
     println!();
     if will_merge_settings {
-        println!("Will merge into {}:", settings_path.display());
+        println!("Will merge into {}:", chosen_plan.settings_path.display());
         println!(
             "  + permissions.allow    {} entries ({} … {})",
-            plan.added.len(),
-            plan.added.first().unwrap(),
-            plan.added.last().unwrap()
+            chosen_plan.merge.added.len(),
+            chosen_plan.merge.added.first().unwrap(),
+            chosen_plan.merge.added.last().unwrap()
         );
         println!(
             "  {} existing top-level key(s) preserved.",
-            plan.existing_top_level_keys
+            chosen_plan.merge.existing_top_level_keys
         );
     } else {
         println!(
-            "permissions.allow already has all 9 entries; {} left untouched.",
-            settings_path.display()
+            "permissions.allow already has all {} entries; {} left untouched.",
+            chosen_plan.allowlist.total,
+            chosen_plan.settings_path.display()
         );
     }
 
@@ -492,13 +707,91 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
         claude_mcp_add(scope, &bus)?;
     }
     if will_merge_settings {
-        write_json_file(&settings_path, &plan.merged)?;
+        write_json_file(&chosen_plan.settings_path, &chosen_plan.merge.merged)?;
     }
 
     println!();
     println!("Done.");
     launch_reminder();
     Ok(())
+}
+
+/// `--dry-run`'s preview: same probed state as a real run, same decision
+/// (`chosen_plan.action`), just print-and-stop instead of confirm-and-apply.
+/// Never calls `claude_mcp_add` or `write_json_file` — that's what makes the
+/// "writes and mutates nothing" guarantee structural rather than "trust me."
+fn print_dry_run_preview(plan: &ScopePlan, bus: &str, mcp_probe: &McpProbe) {
+    println!();
+    match plan.action {
+        Action::NothingToDo => unreachable!("NothingToDo already returned before dry-run preview"),
+        Action::AddMcpOnly => {
+            println!("Would run:");
+            println!(
+                "  claude mcp add --scope {} msgbus -- claude-bus agent --bus {bus}",
+                plan.scope.claude_scope_flag()
+            );
+            println!();
+            println!(
+                "permissions.allow already has all {} entries; no changes needed.",
+                plan.allowlist.total
+            );
+        }
+        Action::AddAllowlistOnly => {
+            println!(
+                "MCP entry already present ({} scope); would leave it untouched.",
+                plan.scope.claude_scope_flag()
+            );
+            println!();
+            print_merge_preview(plan);
+        }
+        Action::AddBoth => {
+            println!("Would run:");
+            println!(
+                "  claude mcp add --scope {} msgbus -- claude-bus agent --bus {bus}",
+                plan.scope.claude_scope_flag()
+            );
+            println!();
+            print_merge_preview(plan);
+        }
+        Action::Conflict => {
+            if let McpProbe::Existing(raw) = mcp_probe {
+                println!(
+                    "An MCP entry named \"msgbus\" already exists (not confirmed to be at {} \
+                     scope):",
+                    plan.scope.claude_scope_flag()
+                );
+                println!();
+                for line in raw.lines() {
+                    println!("  {line}");
+                }
+                println!();
+                println!("Would ask whether to overwrite it (run without --dry-run to decide).");
+            }
+            if !plan.merge.added.is_empty() {
+                println!();
+                print_merge_preview(plan);
+            }
+        }
+    }
+    println!();
+    println!(
+        "Dry run: wrote nothing. The only thing run was the read-only `claude mcp get msgbus` \
+         check above."
+    );
+}
+
+fn print_merge_preview(plan: &ScopePlan) {
+    println!("Would merge into {}:", plan.settings_path.display());
+    println!(
+        "  + permissions.allow    {} entries ({} … {})",
+        plan.merge.added.len(),
+        plan.merge.added.first().unwrap(),
+        plan.merge.added.last().unwrap()
+    );
+    println!(
+        "  {} existing top-level key(s) preserved.",
+        plan.merge.existing_top_level_keys
+    );
 }
 
 #[cfg(test)]
@@ -584,5 +877,157 @@ mod tests {
         for (q, raw) in names.iter().zip(BUS_TOOL_NAMES.iter()) {
             assert_eq!(q, &format!("mcp__msgbus__{raw}"));
         }
+    }
+
+    // --- parse_mcp_scope -----------------------------------------------
+
+    #[test]
+    fn parse_mcp_scope_recognizes_project_config() {
+        let raw = "msgbus:\n  Scope: Project config (shared via .mcp.json)\n  Status: ✔ Connected";
+        assert_eq!(parse_mcp_scope(raw), Some(Scope::Project));
+    }
+
+    #[test]
+    fn parse_mcp_scope_recognizes_user_config() {
+        let raw =
+            "msgbus:\n  Scope: User config (available in all your projects)\n  Status: ✔ Connected";
+        assert_eq!(parse_mcp_scope(raw), Some(Scope::User));
+    }
+
+    #[test]
+    fn parse_mcp_scope_returns_none_for_unrecognized_text() {
+        let raw = "msgbus:\n  Scope: Local config (private to you in this project)\n";
+        assert_eq!(parse_mcp_scope(raw), None);
+    }
+
+    // --- mcp_state_for_scope --------------------------------------------
+
+    #[test]
+    fn mcp_state_not_configured_regardless_of_target() {
+        assert_eq!(
+            mcp_state_for_scope(&McpProbe::NotConfigured, Scope::Project),
+            McpState::NotConfigured
+        );
+        assert_eq!(
+            mcp_state_for_scope(&McpProbe::NotConfigured, Scope::User),
+            McpState::NotConfigured
+        );
+    }
+
+    #[test]
+    fn mcp_state_matches_scope_when_probe_scope_equals_target() {
+        let probe = McpProbe::Existing("Scope: Project config (shared via .mcp.json)".into());
+        assert_eq!(
+            mcp_state_for_scope(&probe, Scope::Project),
+            McpState::MatchesScope
+        );
+    }
+
+    #[test]
+    fn mcp_state_differs_when_probe_scope_is_the_other_scope() {
+        let probe = McpProbe::Existing("Scope: Project config (shared via .mcp.json)".into());
+        assert_eq!(mcp_state_for_scope(&probe, Scope::User), McpState::Differs);
+    }
+
+    #[test]
+    fn mcp_state_differs_when_scope_cannot_be_determined() {
+        let probe = McpProbe::Existing("Scope: Local config (private to you)".into());
+        assert_eq!(
+            mcp_state_for_scope(&probe, Scope::Project),
+            McpState::Differs
+        );
+        assert_eq!(mcp_state_for_scope(&probe, Scope::User), McpState::Differs);
+    }
+
+    // --- plan_action: the decision matrix -------------------------------
+    //
+    // Each case pins one dimension and varies the other, so that breaking
+    // either half's handling in isolation fails a case here. See the
+    // sabotage evidence in the report for confirmation these actually catch
+    // the breakage they name.
+
+    fn complete() -> AllowlistStatus {
+        AllowlistStatus {
+            present: 9,
+            total: 9,
+        }
+    }
+
+    fn missing() -> AllowlistStatus {
+        AllowlistStatus {
+            present: 0,
+            total: 9,
+        }
+    }
+
+    fn partial() -> AllowlistStatus {
+        AllowlistStatus {
+            present: 4,
+            total: 9,
+        }
+    }
+
+    #[test]
+    fn fully_configured_is_nothing_to_do() {
+        assert_eq!(
+            plan_action(McpState::MatchesScope, complete()),
+            Action::NothingToDo
+        );
+    }
+
+    #[test]
+    fn allowlist_present_mcp_missing_is_mcp_only() {
+        assert_eq!(
+            plan_action(McpState::NotConfigured, complete()),
+            Action::AddMcpOnly
+        );
+    }
+
+    #[test]
+    fn mcp_present_allowlist_missing_is_allowlist_only() {
+        assert_eq!(
+            plan_action(McpState::MatchesScope, missing()),
+            Action::AddAllowlistOnly
+        );
+    }
+
+    #[test]
+    fn mcp_present_allowlist_partial_is_allowlist_only() {
+        assert_eq!(
+            plan_action(McpState::MatchesScope, partial()),
+            Action::AddAllowlistOnly
+        );
+    }
+
+    #[test]
+    fn neither_configured_is_add_both() {
+        assert_eq!(
+            plan_action(McpState::NotConfigured, missing()),
+            Action::AddBoth
+        );
+    }
+
+    #[test]
+    fn differing_mcp_entry_is_conflict_even_with_complete_allowlist() {
+        assert_eq!(plan_action(McpState::Differs, complete()), Action::Conflict);
+    }
+
+    #[test]
+    fn differing_mcp_entry_is_conflict_even_with_missing_allowlist() {
+        assert_eq!(plan_action(McpState::Differs, missing()), Action::Conflict);
+    }
+
+    #[test]
+    fn allowlist_status_is_complete_requires_nonzero_total() {
+        assert!(
+            !AllowlistStatus {
+                present: 0,
+                total: 0
+            }
+            .is_complete()
+        );
+        assert!(complete().is_complete());
+        assert!(!partial().is_complete());
+        assert!(!missing().is_complete());
     }
 }
