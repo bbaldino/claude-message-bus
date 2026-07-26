@@ -1399,9 +1399,6 @@ pub enum ToBus {
         room: String,
         last_delivered_id: i64,
     },
-    /// Emitted by the optional UserPromptSubmit hook: the human typed, so the
-    /// exchange counter for their rooms resets.
-    HumanActive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2123,7 +2120,13 @@ async fn start_bus() -> (tempfile::TempDir, u16) {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-        claude_bus::bus::serve_on(listener, path).await.unwrap();
+        // Rate limit disabled: these tests send bursts deliberately. The
+        // exchange cap stays at its default so the runaway test exercises it.
+        let guards = claude_bus::bus::delivery::Guards::new(
+            claude_bus::bus::delivery::DEFAULT_CAP,
+            0,
+        );
+        claude_bus::bus::serve_on_with(listener, path, guards).await.unwrap();
     });
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     (dir, port)
@@ -2416,18 +2419,8 @@ async fn the_exchange_cap_pauses_a_runaway_room() {
 }
 ```
 
-Note the rate limit is deliberately disabled in these tests by the server exposing `serve_on`, which uses `Guards::new(DEFAULT_CAP, 0)` when the env var `CLAUDE_BUS_NO_RATE_LIMIT` is set; set it in the test harness. Add to the top of `tests/bus.rs`:
-
-```rust
-#[ctor::ctor]
-fn disable_rate_limit_for_tests() {
-    unsafe { std::env::set_var("CLAUDE_BUS_NO_RATE_LIMIT", "1") };
-}
-```
-
-```bash
-cargo add ctor --dev
-```
+The rate limit is disabled by injecting `Guards` into `serve_on_with`, as `start_bus`
+above does. Production code must not branch on a test-only environment variable.
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
@@ -2479,15 +2472,20 @@ pub async fn serve(port: u16, data_dir: PathBuf) -> anyhow::Result<()> {
 
 /// Split out so tests can bind port 0 and learn the assigned port.
 pub async fn serve_on(listener: tokio::net::TcpListener, data_dir: PathBuf) -> anyhow::Result<()> {
-    let min_interval = if std::env::var("CLAUDE_BUS_NO_RATE_LIMIT").is_ok() {
-        0
-    } else {
-        delivery::DEFAULT_MIN_INTERVAL_MS
-    };
+    serve_on_with(listener, data_dir, Guards::default()).await
+}
+
+/// Guards are injected rather than read from configuration so tests can disable
+/// the rate limit without the production path branching on a test-only signal.
+pub async fn serve_on_with(
+    listener: tokio::net::TcpListener,
+    data_dir: PathBuf,
+    guards: Guards,
+) -> anyhow::Result<()> {
     let app = App {
         store: Arc::new(Store::open(&data_dir).await?),
         registry: Registry::new(),
-        guards: Guards::new(DEFAULT_CAP, min_interval),
+        guards,
     };
     let router = Router::new().route("/ws", get(upgrade)).with_state(app);
     axum::serve(listener, router).await?;
@@ -2805,19 +2803,6 @@ async fn handle(app: &App, me: &str, cmd: ToBus, tx: &registry::Sender) {
         ToBus::Ack { room, last_delivered_id } => {
             let _ = app.store.set_cursor(&room, me, last_delivered_id).await;
         }
-
-        ToBus::HumanActive => {
-            let rooms: Vec<String> = app
-                .store
-                .rooms()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|r| r.members.iter().any(|m| m == me))
-                .map(|r| r.name)
-                .collect();
-            app.guards.reset_all_for(&rooms).await;
-        }
     }
 }
 ```
@@ -3114,6 +3099,11 @@ fn schema(v: Value) -> Arc<JsonObject> {
 }
 
 impl rmcp::ServerHandler for Handler {
+    // InitializeResult and Implementation are #[non_exhaustive], so struct
+    // literal syntax is unavailable outside rmcp and field assignment after
+    // Default::default() is the only route. Clippy's lint assumes a literal was
+    // possible; here it was not.
+    #[allow(clippy::field_reassign_with_default)]
     fn get_info(&self) -> InitializeResult {
         // The presence of this key is what makes Claude Code register a
         // notification listener and treat this server as a channel.

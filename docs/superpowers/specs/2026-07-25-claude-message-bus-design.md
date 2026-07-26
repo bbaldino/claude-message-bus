@@ -259,10 +259,21 @@ and applying a retrieved artifact to disk still requires `Write`.
 and asks. The prompt-injection surface between two agents is fenced by the permission
 system rather than by model compliance.
 
-The one residual surface is `put_file(path:)`, which reads local disk and uploads it — an
-agent could in principle be talked into sharing a file it shouldn't. On a trusted LAN
-running your own agents this is acceptable; if it ever isn't, restrict `put_file` to the
-`content` form and drop `path`.
+Two residual surfaces, both accepted deliberately for a trusted LAN.
+
+`put_file(path:)` reads local disk and uploads it, so an agent could in principle be
+talked into sharing a file it shouldn't. If that ever stops being acceptable, restrict
+`put_file` to the `content` form and drop `path`.
+
+**Every room is readable by every participant.** The read paths — `history`, `get_file`,
+`list_files` — perform no membership check, and `rooms()` returns every room including
+every `dm:<a>|<b>`. So discovery is a single tool call, after which any agent (or any
+unauthenticated client that can reach the bus) can read any DM's history and download any
+room's artifacts. This is consistent with the no-auth posture below rather than an
+oversight, but it does mean the prompt-injection fence is one-directional: the permission
+allowlist stops an agent being talked into *writing*, and does not stop it being talked
+into *reading and relaying* a conversation it was not part of. Closing this is a
+membership check on those three read arms plus a filter in `rooms()`.
 
 Extending to a fully autonomous mode later changes only two things: the injected
 instruction text, and which tools are allowlisted. Transport, addressing, storage, and
