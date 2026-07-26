@@ -1,4 +1,4 @@
-use claude_bus::store::{MessageRow, Store};
+use claude_bus::store::{MAX_BLOB_BYTES, MessageRow, Store};
 
 async fn temp_store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -238,4 +238,106 @@ async fn done_flag_round_trips() {
         .unwrap();
     let msgs = store.history("protocol", 10).await.unwrap();
     assert!(msgs[0].done);
+}
+
+#[tokio::test]
+async fn file_round_trips() {
+    let (_d, store) = seeded().await;
+    let stored = store
+        .put_file(
+            "protocol",
+            "schema.json",
+            b"{\"a\":1}",
+            Some("application/json"),
+            "caas",
+        )
+        .await
+        .unwrap();
+    assert_eq!(stored.size, 7);
+    assert_eq!(stored.updated_by, "caas");
+
+    let (meta, bytes) = store
+        .get_file("protocol", "schema.json")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bytes, b"{\"a\":1}");
+    assert_eq!(meta.content_type.as_deref(), Some("application/json"));
+    assert_eq!(meta.sha256, stored.sha256);
+}
+
+#[tokio::test]
+async fn writing_the_same_key_overwrites() {
+    let (_d, store) = seeded().await;
+    store
+        .put_file("protocol", "notes.md", b"first", None, "caas")
+        .await
+        .unwrap();
+    store
+        .put_file("protocol", "notes.md", b"second", None, "dashboard")
+        .await
+        .unwrap();
+
+    let files = store.list_files("protocol").await.unwrap();
+    assert_eq!(files.len(), 1, "overwrite by key, no versioning");
+    let (_m, bytes) = store
+        .get_file("protocol", "notes.md")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bytes, b"second");
+}
+
+#[tokio::test]
+async fn missing_file_is_none_not_an_error() {
+    let (_d, store) = seeded().await;
+    assert!(
+        store
+            .get_file("protocol", "nope.txt")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn identical_content_shares_one_blob() {
+    // Content addressing: two keys with the same bytes must not store twice.
+    let (_d, store) = seeded().await;
+    let a = store
+        .put_file("protocol", "a.txt", b"same", None, "caas")
+        .await
+        .unwrap();
+    let b = store
+        .put_file("protocol", "b.txt", b"same", None, "caas")
+        .await
+        .unwrap();
+    assert_eq!(a.sha256, b.sha256);
+}
+
+#[tokio::test]
+async fn oversized_blob_is_rejected_with_a_clear_message() {
+    let (_d, store) = seeded().await;
+    let huge = vec![0u8; MAX_BLOB_BYTES + 1];
+    let err = store
+        .put_file("protocol", "huge.bin", &huge, None, "caas")
+        .await
+        .expect_err("must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("50"),
+        "error should state the limit, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn files_are_scoped_to_their_room() {
+    let (_d, store) = seeded().await;
+    store.ensure_room("other").await.unwrap();
+    store
+        .put_file("protocol", "k.txt", b"x", None, "caas")
+        .await
+        .unwrap();
+    assert!(store.get_file("other", "k.txt").await.unwrap().is_none());
+    assert_eq!(store.list_files("other").await.unwrap().len(), 0);
 }

@@ -7,6 +7,9 @@ use anyhow::Context;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
+mod files;
+pub use files::{FileRow, MAX_BLOB_BYTES};
+
 const SCHEMA: &str = include_str!("../../schema.sql");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,8 +30,6 @@ pub struct RoomRow {
 
 pub struct Store {
     pool: SqlitePool,
-    // Consumed by the file store added in Task 4; unused until then.
-    #[allow(dead_code)]
     blobs_dir: std::path::PathBuf,
 }
 
@@ -74,7 +75,6 @@ impl Store {
         &self.pool
     }
 
-    #[allow(dead_code)]
     pub(crate) fn blobs_dir(&self) -> &Path {
         &self.blobs_dir
     }
