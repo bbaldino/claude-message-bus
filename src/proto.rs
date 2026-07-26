@@ -103,6 +103,14 @@ pub struct FileInfo {
     pub updated_by: String,
 }
 
+/// One room's contribution to a reconnecting agent's `FromBus::Unread`
+/// summary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoomUnread {
+    pub room: String,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReplyResult {
@@ -162,10 +170,12 @@ pub enum FromBus {
         text: String,
         done: bool,
     },
-    /// Sent on reconnect instead of replaying the backlog.
+    /// Sent on reconnect instead of replaying the backlog. One event per
+    /// connection, not per room — see `RoomUnread` — so a reconnecting
+    /// agent's own control-plane queue can never be exhausted by the number
+    /// of rooms it happens to belong to.
     Unread {
-        room: String,
-        count: i64,
+        rooms: Vec<RoomUnread>,
     },
     /// The exchange cap tripped for this room.
     Paused {

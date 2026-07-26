@@ -630,7 +630,7 @@ fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages()
     receiver2.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
     let note = receiver2.next_notification("notifications/claude/channel");
     assert_eq!(note["params"]["meta"]["kind"], "unread");
-    assert_eq!(note["params"]["meta"]["room"], "protocol");
+    assert_eq!(note["params"]["meta"]["rooms"], "protocol");
     let content = note["params"]["content"].as_str().unwrap_or("");
     assert!(
         content.starts_with("3 "),

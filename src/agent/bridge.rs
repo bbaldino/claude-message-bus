@@ -141,15 +141,32 @@ async fn dispatch(
                 eprintln!("[agent] not acking msg {id} in {room}: injection failed");
             }
         }
-        FromBus::Unread { room, count } => {
-            eprintln!("[agent] {count} unread in {room}");
+        FromBus::Unread { rooms } => {
+            // One event for the whole reconnect, not one per room: both so
+            // the model isn't hit with a separate injection per room, and
+            // because that's what lets the bus keep this bounded on its
+            // side (see `RoomUnread` / `send_unread_summaries`).
+            let total: i64 = rooms.iter().map(|r| r.count).sum();
+            let room_names: Vec<&str> = rooms.iter().map(|r| r.room.as_str()).collect();
+            eprintln!(
+                "[agent] {total} unread across {} room(s): {}",
+                rooms.len(),
+                room_names.join(", ")
+            );
+            let detail = rooms
+                .iter()
+                .map(|r| format!("- {}: {}", r.room, r.count))
+                .collect::<Vec<_>>()
+                .join("\n");
             inject(
                 peer,
                 &format!(
-                    "{count} message(s) arrived in room \"{room}\" while you were away. \
-                     Call history with room=\"{room}\" if you want to catch up."
+                    "{total} message(s) arrived while you were away, across {} room(s):\n\
+                     {detail}\n\
+                     Call history with a room name if you want to catch up.",
+                    rooms.len()
                 ),
-                json!({ "room": room, "kind": "unread" }),
+                json!({ "kind": "unread", "rooms": room_names.join(",") }),
             )
             .await;
         }

@@ -18,7 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 use crate::proto::{
-    AgentInfo, FileInfo, FromBus, HistoryItem, ReplyResult, RoomInfo, Target, ToBus,
+    AgentInfo, FileInfo, FromBus, HistoryItem, ReplyResult, RoomInfo, RoomUnread, Target, ToBus,
 };
 use crate::store::{Store, now_ms};
 use delivery::{GuardVerdict, Guards};
@@ -213,27 +213,41 @@ async fn connection(socket: WebSocket, app: App) {
     // The writer task owns the sink for the connection's whole lifetime, so
     // it — not the read loop below — is the one that actually emits `Ping`
     // frames on a timer, interleaved with real `FromBus` events drained from
-    // both queues. Control traffic is preferred when both are ready: a
-    // reply that unblocks a waiting tool call matters more than another
-    // routed message, and briefly starving routing traffic is harmless —
-    // `Registry::send_to`'s boolean already reports that honestly as
-    // `queued`, never `delivered`.
+    // both queues. Control traffic is preferred over routing traffic when
+    // both are ready: a reply that unblocks a waiting tool call matters more
+    // than another routed message, and briefly starving routing traffic is
+    // harmless — `Registry::send_to`'s boolean already reports that
+    // honestly as `queued`.
     let ping_interval = app.keepalive.ping_interval;
     let writer = tokio::spawn(async move {
         let mut ping_ticker = tokio::time::interval(ping_interval);
         ping_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ping_ticker.tick().await; // the first tick fires immediately; skip it
         loop {
+            // `ping_ticker` goes first in this `biased` order even though
+            // it's the *least* important branch to service. Under `biased`,
+            // an earlier arm being (usually) `Pending` is what lets later
+            // arms run at all — polling the near-always-`Pending` timer
+            // first costs nothing, whereas putting a channel first would
+            // mean: on a connection with sustained fan-out and no idle gap,
+            // `control_rx`/`routing_rx` are *always* ready, so the ticker
+            // arm would never even get polled, its timer would never fire,
+            // no `Ping` would ever go out, no `Pong` would ever come back,
+            // and `timeout_ticker` in the read loop below would eventually
+            // tear down a connection that was alive and merely busy. Control
+            // is still preferred over routing whenever both have data —
+            // that ordering is unaffected, since the timer arm is a no-op
+            // the overwhelming majority of the time it's polled.
             let event = tokio::select! {
                 biased;
-                event = control_rx.recv() => event,
-                event = routing_rx.recv() => event,
                 _ = ping_ticker.tick() => {
                     if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
                         break;
                     }
                     continue;
                 }
+                event = control_rx.recv() => event,
+                event = routing_rx.recv() => event,
             };
             let Some(event) = event else { break };
             let Ok(json) = serde_json::to_string(&event) else {
@@ -360,6 +374,12 @@ async fn send_unread_summaries(app: &App, name: &str, control_tx: &registry::Sen
     let Ok(rooms) = app.store.rooms().await else {
         return;
     };
+    // One event for the whole connection, not one per room: an agent that
+    // belongs to many rooms with unread messages must not be able to
+    // exhaust its own control-plane queue at Register time just by having
+    // joined a lot of rooms — the exact defect this round fixed, via a
+    // different trigger. See `RoomUnread` / `FromBus::Unread`.
+    let mut unread = Vec::new();
     for room in rooms {
         if !room.members.iter().any(|m| m == name) {
             continue;
@@ -367,11 +387,14 @@ async fn send_unread_summaries(app: &App, name: &str, control_tx: &registry::Sen
         if let Ok(count) = app.store.unread_count(&room.name, name).await
             && count > 0
         {
-            let _ = control_tx.try_send(FromBus::Unread {
+            unread.push(RoomUnread {
                 room: room.name.clone(),
                 count,
             });
         }
+    }
+    if !unread.is_empty() {
+        let _ = control_tx.try_send(FromBus::Unread { rooms: unread });
     }
 }
 

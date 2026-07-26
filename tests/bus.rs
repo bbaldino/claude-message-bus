@@ -503,11 +503,121 @@ async fn reconnecting_gets_an_unread_summary_not_the_backlog() {
     let mut b2 = connect(port, "dashboard").await;
     next_event(&mut b2).await; // Registered
     match next_event(&mut b2).await {
-        FromBus::Unread { room, count } => {
-            assert_eq!(room, "protocol");
-            assert_eq!(count, 3, "summary, not replay");
+        FromBus::Unread { rooms } => {
+            assert_eq!(rooms.len(), 1);
+            assert_eq!(rooms[0].room, "protocol");
+            assert_eq!(rooms[0].count, 3, "summary, not replay");
         }
         other => panic!("expected Unread, got {other:?}"),
+    }
+}
+
+// Regression for fix round 3's second finding: `send_unread_summaries` used
+// to `try_send` one `FromBus::Unread` per room with unread messages. An
+// agent reconnecting into enough such rooms (CONTROL_CHANNEL_CAPACITY = 16)
+// could exceed the control channel's capacity purely from its own
+// Register-time burst — dropping a Registered, an Unread, or a Reply to
+// whatever command got pipelined right after registering. Same failure
+// family as fix round 2 (dropped control-plane event → stuck oneshot or
+// false unreachability), reached through a different door. The fix
+// coalesces all rooms into a single `FromBus::Unread { rooms }` event, which
+// is O(1) regardless of room count — bounded by construction, not estimate.
+#[tokio::test]
+async fn reconnect_unread_summary_is_one_event_regardless_of_room_count() {
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    let mut b = connect(port, "dashboard").await;
+    next_event(&mut a).await;
+    next_event(&mut b).await;
+
+    // Comfortably over CONTROL_CHANNEL_CAPACITY (16): the old per-room
+    // implementation would `try_send` this many separate `Unread` events
+    // (plus the `Registered` already ahead of them) into a 16-slot channel.
+    const ROOM_COUNT: usize = 20;
+    let rooms: Vec<String> = (0..ROOM_COUNT).map(|i| format!("room{i}")).collect();
+
+    for (i, room) in rooms.iter().enumerate() {
+        send(
+            &mut a,
+            &ToBus::Join {
+                req_id: i as u64,
+                room: room.clone(),
+            },
+        )
+        .await;
+        next_event(&mut a).await;
+        send(
+            &mut b,
+            &ToBus::Join {
+                req_id: 1000 + i as u64,
+                room: room.clone(),
+            },
+        )
+        .await;
+        next_event(&mut b).await;
+    }
+
+    drop(b); // dashboard goes away
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    for (i, room) in rooms.iter().enumerate() {
+        send(
+            &mut a,
+            &ToBus::Send {
+                req_id: 2000 + i as u64,
+                target: Target::Room { room: room.clone() },
+                text: "while you were out".into(),
+                done: false,
+            },
+        )
+        .await;
+        next_event(&mut a).await;
+    }
+
+    let mut b2 = connect(port, "dashboard").await;
+    next_event(&mut b2).await; // Registered
+
+    // The whole summary must be exactly one event, with every room
+    // represented — not the first of twenty separate ones.
+    match next_event(&mut b2).await {
+        FromBus::Unread { rooms: got } => {
+            assert_eq!(
+                got.len(),
+                ROOM_COUNT,
+                "expected one combined event listing all {ROOM_COUNT} rooms, got {} rooms: {got:?}",
+                got.len()
+            );
+            let mut seen: std::collections::HashMap<String, i64> =
+                got.into_iter().map(|r| (r.room, r.count)).collect();
+            for room in &rooms {
+                assert_eq!(
+                    seen.remove(room),
+                    Some(1),
+                    "room {room} should be represented with exactly 1 unread message"
+                );
+            }
+            assert!(
+                seen.is_empty(),
+                "unexpected extra rooms in summary: {seen:?}"
+            );
+        }
+        other => panic!("expected a single Unread event, got {other:?}"),
+    }
+
+    // A command pipelined right after registering — sharing the same
+    // control channel the Unread summary just went through — must still get
+    // its own reply.
+    send(&mut b2, &ToBus::ListRooms { req_id: 9999 }).await;
+    match tokio::time::timeout(std::time::Duration::from_secs(5), next_event(&mut b2)).await {
+        Ok(FromBus::Reply {
+            req_id,
+            result: ReplyResult::Rooms { .. },
+        }) => assert_eq!(req_id, 9999),
+        Ok(other) => panic!("expected a Reply to ListRooms, got {other:?}"),
+        Err(_) => panic!(
+            "the Reply to a command issued right after registering never arrived — \
+             the Register-time Unread burst must have exhausted the control channel"
+        ),
     }
 }
 
