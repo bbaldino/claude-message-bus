@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "msgbus": {
-      "command": "/home/bbaldino/work/claude-message-bus/target/debug/claude-bus",
+      "command": "claude-bus",
       "args": ["agent", "--bus", "ws://127.0.0.1:7777/ws"]
     }
   }
