@@ -18,6 +18,9 @@ pub async fn run(bus_url: String, name: String) -> anyhow::Result<()> {
     eprintln!("[agent] starting as \"{name}\", bus={bus_url}");
 
     let (to_bus, rx) = mpsc::unbounded_channel::<ToBus>();
+    // The bridge needs its own sender to ack delivered messages — a receiver
+    // cannot send.
+    let ack_tx = to_bus.clone();
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
 
     let handler = Handler {
@@ -43,7 +46,7 @@ pub async fn run(bus_url: String, name: String) -> anyhow::Result<()> {
             .unwrap_or_else(|| ".".to_string()),
         session_id: env.var("CLAUDE_CODE_SESSION_ID"),
     };
-    tokio::spawn(bridge::run(cfg, rx, peer, pending));
+    tokio::spawn(bridge::run(cfg, rx, ack_tx, peer, pending));
 
     service.waiting().await?;
     Ok(())

@@ -458,3 +458,183 @@ fn send_to_a_room_reports_both_delivered_and_queued_members() {
         "must echo the text sent: {text}"
     );
 }
+
+/// Poll until the bus reports `name` offline. A blind sleep after killing a
+/// process is a race: if the registry hasn't yet noticed the old connection
+/// close by the time the process reconnects, `Registry::attach` suffixes the
+/// new connection (e.g. `receiver#2`) instead of handing back the bare name.
+/// That name was never joined to any room, so it would never get an unread
+/// summary — silently hanging a test that waits on one, instead of failing
+/// fast.
+fn wait_until_offline(rt: &tokio::runtime::Runtime, port: u16, name: &str) {
+    rt.block_on(async {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        for _ in 0..100 {
+            let (mut ws, _) =
+                tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
+                    .await
+                    .unwrap();
+            ws.send(Message::text(
+                serde_json::json!({
+                    "type": "register", "name": "poller", "host": "pollhost", "cwd": "/w", "session_id": null
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+            let _ = ws.next().await; // Registered
+            ws.send(Message::text(
+                serde_json::json!({ "type": "list_agents", "req_id": 1 }).to_string(),
+            ))
+            .await
+            .unwrap();
+            if let Some(Ok(Message::Text(t))) = ws.next().await {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                let agents = v["result"]["agents"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let still_online = agents
+                    .iter()
+                    .any(|a| a["name"] == name && a["online"] == true);
+                if !still_online {
+                    return;
+                }
+            }
+            drop(ws);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        panic!("{name} never went offline according to the bus");
+    });
+}
+
+// Regression for the missing Ack producer: `bridge::dispatch` used to take an
+// unused `_rx` and nothing ever sent `ToBus::Ack`, so `Store::set_cursor` was
+// dead code and every reconnect's `unread_count` compared against cursor 0 —
+// reporting the room's *entire* history from other agents as unread, not
+// just what was genuinely missed. This drives a real agent process through
+// two live messages (which the bridge must inject and then ack), kills it,
+// sends three more while it's offline, then reconnects and asserts the
+// unread summary is 3, not 5.
+#[test]
+fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (_dir, port) = rt.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { claude_bus::bus::serve_on(listener, path).await.unwrap() });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        (dir, port)
+    });
+
+    {
+        // First session for "receiver": joins the room and is live for two
+        // messages, which the bridge injects and (if the fix holds) acks.
+        let mut receiver = Agent::start_with_bus(port, "receiver");
+        initialize(&mut receiver);
+        receiver
+            .send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        call_tool(
+            &mut receiver,
+            2,
+            "join",
+            serde_json::json!({ "room": "protocol" }),
+        );
+
+        rt.block_on(async {
+            use futures_util::SinkExt;
+            use tokio_tungstenite::tungstenite::Message;
+            // Two distinct senders, not one sender twice: `serve_on` runs
+            // with the production-default guards, whose rate limit is 2s
+            // per (room, agent) — sending twice from the same agent this
+            // close together would silently drop the second message.
+            for (name, text) in [("senderA", "live 0"), ("senderB", "live 1")] {
+                let (mut ws, _) =
+                    tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
+                        .await
+                        .unwrap();
+                ws.send(Message::text(
+                    serde_json::json!({
+                        "type": "register", "name": name, "host": "h", "cwd": "/w", "session_id": null
+                    })
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let msg = serde_json::json!({
+                    "type": "send", "req_id": 1,
+                    "target": { "kind": "room", "room": "protocol" },
+                    "text": text, "done": false
+                });
+                ws.send(Message::text(msg.to_string())).await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        });
+
+        // Drain the two channel notifications: proof the bridge actually
+        // injected them and therefore had the chance to ack.
+        receiver.next_notification("notifications/claude/channel");
+        receiver.next_notification("notifications/claude/channel");
+        // Give the bridge a moment to flush the Ack over the wire before the
+        // process is killed.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    } // receiver's Agent is dropped here: process killed, connection closes.
+
+    // Wait for the bus to actually notice the disconnect, rather than
+    // guessing with a fixed sleep — see `wait_until_offline`.
+    wait_until_offline(&rt, port, "receiver");
+
+    // While "receiver" is genuinely offline, three more messages arrive —
+    // again from three distinct agents, for the same rate-limit reason.
+    rt.block_on(async {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+        for (name, text) in [
+            ("senderC", "away 0"),
+            ("senderD", "away 1"),
+            ("senderE", "away 2"),
+        ] {
+            let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
+                .await
+                .unwrap();
+            ws.send(Message::text(
+                serde_json::json!({
+                    "type": "register", "name": name, "host": "h", "cwd": "/w", "session_id": null
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let msg = serde_json::json!({
+                "type": "send", "req_id": 1,
+                "target": { "kind": "room", "room": "protocol" },
+                "text": text, "done": false
+            });
+            ws.send(Message::text(msg.to_string())).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    });
+
+    // Reconnect and confirm the unread summary reflects only the 3 messages
+    // sent while genuinely offline — not those 3 plus the 2 already shown.
+    let mut receiver2 = Agent::start_with_bus(port, "receiver");
+    initialize(&mut receiver2);
+    receiver2.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    let note = receiver2.next_notification("notifications/claude/channel");
+    assert_eq!(note["params"]["meta"]["kind"], "unread");
+    assert_eq!(note["params"]["meta"]["room"], "protocol");
+    let content = note["params"]["content"].as_str().unwrap_or("");
+    assert!(
+        content.starts_with("3 "),
+        "expected exactly the 3 messages missed while offline (cursor should \
+         have advanced past the 2 already shown), got: {content:?}"
+    );
+}

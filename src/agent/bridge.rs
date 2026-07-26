@@ -25,17 +25,28 @@ pub struct BridgeConfig {
     pub session_id: Option<String>,
 }
 
+/// A connection that stayed up at least this long resets the backoff to its
+/// floor on the next drop, so a bus restart after hours of uptime does not
+/// wait up to 30s to reconnect just because of a stale prior outage.
+const STABLE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(60);
+const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
+
 pub async fn run(
     cfg: BridgeConfig,
     mut rx: mpsc::UnboundedReceiver<ToBus>,
+    tx: mpsc::UnboundedSender<ToBus>,
     peer: Peer<RoleServer>,
     pending: Pending,
 ) {
-    let mut backoff = Duration::from_secs(1);
+    let mut backoff = BACKOFF_FLOOR;
     loop {
-        match connect_once(&cfg, &mut rx, &peer, &pending).await {
+        let connected_at = std::time::Instant::now();
+        match connect_once(&cfg, &mut rx, &tx, &peer, &pending).await {
             Ok(()) => eprintln!("[agent] bus connection closed"),
             Err(e) => eprintln!("[agent] bus error: {e}"),
+        }
+        if connected_at.elapsed() >= STABLE_CONNECTION_THRESHOLD {
+            backoff = BACKOFF_FLOOR;
         }
         eprintln!("[agent] reconnecting in {:?}", backoff);
         tokio::time::sleep(backoff).await;
@@ -46,6 +57,7 @@ pub async fn run(
 async fn connect_once(
     cfg: &BridgeConfig,
     rx: &mut mpsc::UnboundedReceiver<ToBus>,
+    tx: &mpsc::UnboundedSender<ToBus>,
     peer: &Peer<RoleServer>,
     pending: &Pending,
 ) -> anyhow::Result<()> {
@@ -76,7 +88,7 @@ async fn connect_once(
                     Ok(e) => e,
                     Err(e) => { eprintln!("[agent] unparseable from bus: {e}: {text}"); continue }
                 };
-                dispatch(event, peer, pending, rx).await;
+                dispatch(event, peer, pending, tx).await;
             }
         }
     }
@@ -86,7 +98,7 @@ async fn dispatch(
     event: FromBus,
     peer: &Peer<RoleServer>,
     pending: &Pending,
-    _rx: &mut mpsc::UnboundedReceiver<ToBus>,
+    tx: &mpsc::UnboundedSender<ToBus>,
 ) {
     match event {
         FromBus::Message {
@@ -97,7 +109,7 @@ async fn dispatch(
             done,
         } => {
             eprintln!("[agent] recv ← {from} in {room} (msg {id})");
-            inject(
+            let injected = inject(
                 peer,
                 &text,
                 json!({
@@ -109,6 +121,25 @@ async fn dispatch(
                 }),
             )
             .await;
+            // Only advance the delivery cursor for messages that actually
+            // reached the transport; if injection failed, the model never
+            // saw it, so it must still show up as unread on the next
+            // reconnect rather than being silently skipped forever.
+            if injected {
+                if tx
+                    .send(ToBus::Ack {
+                        room: room.clone(),
+                        last_delivered_id: id,
+                    })
+                    .is_err()
+                {
+                    eprintln!(
+                        "[agent] failed to queue ack for msg {id} in {room}: bridge channel closed"
+                    );
+                }
+            } else {
+                eprintln!("[agent] not acking msg {id} in {room}: injection failed");
+            }
         }
         FromBus::Unread { room, count } => {
             eprintln!("[agent] {count} unread in {room}");
@@ -148,7 +179,10 @@ async fn dispatch(
     }
 }
 
-async fn inject(peer: &Peer<RoleServer>, content: &str, meta: serde_json::Value) {
+/// Returns whether the notification reached the transport — resolves when
+/// written, not when Claude processes it, but that's the only signal
+/// available, and it's what callers use to decide whether to ack.
+async fn inject(peer: &Peer<RoleServer>, content: &str, meta: serde_json::Value) -> bool {
     let notification = CustomNotification::new(
         "notifications/claude/channel",
         Some(json!({ "content": content, "meta": meta })),
@@ -157,8 +191,13 @@ async fn inject(peer: &Peer<RoleServer>, content: &str, meta: serde_json::Value)
         .send_notification(ServerNotification::CustomNotification(notification))
         .await
     {
-        // Resolves when written to the transport, not when Claude processes it.
-        Ok(()) => eprintln!("[agent] injected into session: {content:.80}"),
-        Err(e) => eprintln!("[agent] FAILED to inject: {e}"),
+        Ok(()) => {
+            eprintln!("[agent] injected into session: {content:.80}");
+            true
+        }
+        Err(e) => {
+            eprintln!("[agent] FAILED to inject: {e}");
+            false
+        }
     }
 }
