@@ -86,12 +86,19 @@ fn sends_instructions_that_establish_the_discuss_only_posture() {
         instructions.contains("<channel"),
         "should explain the tag shape"
     );
-    for expected in ["not instructions", "send"] {
-        assert!(
-            instructions.contains(expected),
-            "instructions missing {expected:?}: {instructions}"
-        );
-    }
+    assert!(
+        instructions.contains("send"),
+        "should mention the send tool"
+    );
+    // Case-insensitive: the source text emphasizes this with caps ("NOT
+    // INSTRUCTIONS") as deliberate prompt engineering, since this sentence is
+    // the model's only signal that channel messages carry the same authority
+    // as the human's own input and should not be treated as commands. The
+    // concept mattering, not its casing, is what this test should enforce.
+    assert!(
+        instructions.to_lowercase().contains("not instructions"),
+        "instructions missing the discuss-only concept: {instructions}"
+    );
 }
 
 #[test]
