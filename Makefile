@@ -16,6 +16,15 @@ PREFIX ?= $(HOME)/.local
 .PHONY: install uninstall where test
 
 ## Build in release mode and install to $(PREFIX)/bin.
+##
+## `cargo install` is release-by-default (you would have to pass --debug to get
+## otherwise) and builds into this workspace's target/release, so it shares the
+## cache with `cargo build --release` rather than rebuilding in a temp dir.
+##
+## The result is not stripped — that is cargo's default and worth keeping for a
+## long-running service, since a stripped binary gives useless panic backtraces.
+## Add `[profile.release] strip = true` to Cargo.toml if you want the ~4M
+## artifact instead of ~9M.
 install:
 	cargo install --path . --root "$(PREFIX)" --locked
 	@echo
