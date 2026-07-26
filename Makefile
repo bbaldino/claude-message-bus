@@ -14,7 +14,7 @@
 PREFIX ?= $(HOME)/.local
 BUS ?= ws://127.0.0.1:7777/ws
 
-.PHONY: install uninstall where test config config-project config-check bus-up bus-down bus-logs bus-nuke
+.PHONY: install uninstall where test deploy config config-project config-check bus-up bus-down bus-logs bus-nuke
 
 ## Build in release mode and install to $(PREFIX)/bin.
 ##
@@ -43,6 +43,22 @@ where:
 
 test:
 	cargo test
+
+## Rebuild and deploy both sides after a code change. The default for dev.
+##
+## The same source builds two independent things: the binary on your PATH (which
+## Claude Code spawns as `claude-bus agent`, and which you run as `tail`/`init`),
+## and the image inside the container. Neither command updates the other, and the
+## Docker build compiles its own copy rather than reusing target/ — so a change to
+## shared code like src/proto.rs needs both, or the agent and bus end up disagreeing
+## about the wire format at runtime with no compile error to warn you.
+deploy: install bus-up
+	@echo
+	@echo "Both sides deployed."
+	@echo
+	@echo "Claude Code sessions already running still hold the OLD agent binary —"
+	@echo "it is spawned once at session start. Restart a session to pick this up."
+	@echo "New sessions get it immediately."
 
 ## Bring the bus up, rebuilding first. Safe to re-run after any code change —
 ## it rebuilds the image, recreates the container, and leaves the data volume

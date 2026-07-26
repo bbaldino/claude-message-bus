@@ -3,10 +3,21 @@
 ## The bus
 
 ```bash
-make bus-up      # build the image and (re)create the container
-make bus-logs    # follow its output
-make bus-down    # stop and remove it — the data volume survives
+make deploy      # after a code change: rebuild and deploy both sides
+make bus-logs    # follow the bus's output
+make bus-down    # stop and remove the container — the data volume survives
 ```
+
+**`make deploy` is the one to remember during development.** The same source builds two
+independent things — the binary on your `PATH`, which Claude Code spawns as `claude-bus
+agent` and which you run as `tail`/`init`, and the image inside the container. `make
+install` updates only the first; `make bus-up` only the second, compiling its own copy
+rather than reusing `target/`. A change to shared code such as `src/proto.rs` needs both,
+or the agent and bus disagree about the wire format at runtime with no compile error to
+warn you.
+
+Sessions already open still hold the **old** agent binary — Claude Code spawns it once at
+session start. Restart a session to pick up a new one; new sessions get it immediately.
 
 `make bus-up` is safe to re-run after any code change: it rebuilds, recreates the
 container if the image actually changed, and leaves the data alone. That is the point of
