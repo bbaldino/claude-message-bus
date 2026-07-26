@@ -3,15 +3,26 @@
 ## The bus
 
 ```bash
-docker build -t claude-bus .
-docker run -d --name claude-bus \
-  -p 7777:7777 \
-  -v /mnt/user/appdata/claude-bus:/data \
-  --restart unless-stopped \
-  claude-bus
+make bus-up      # build the image and (re)create the container
+make bus-logs    # follow its output
+make bus-down    # stop and remove it — the data volume survives
 ```
 
-One volume holds `bus.db` and `blobs/`. Single process, single writer.
+`make bus-up` is safe to re-run after any code change: it rebuilds, recreates the
+container if the image actually changed, and leaves the data alone. That is the point of
+`compose.yaml` — doing this by hand means `stop`, `rm`, `build`, `run` with the right
+flags every time, which is easy to get half-right.
+
+One volume holds `bus.db` and `blobs/`. Single process, single writer. It is a named
+Docker volume by default so the database survives container recreation and reboots; on the
+NAS, swap it for a bind mount into your appdata (there is a commented example in
+`compose.yaml`) so it sits with your other service data and gets backed up with it.
+
+`make bus-nuke` removes the container *and* the volume — every room, message, and stored
+artifact. There is no undo.
+
+Plain `docker compose up -d --build` / `down` work identically if you would rather not go
+through make.
 
 ## Each project that should join the bus
 

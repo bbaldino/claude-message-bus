@@ -14,7 +14,7 @@
 PREFIX ?= $(HOME)/.local
 BUS ?= ws://127.0.0.1:7777/ws
 
-.PHONY: install uninstall where test config config-project config-check
+.PHONY: install uninstall where test config config-project config-check bus-up bus-down bus-logs bus-nuke
 
 ## Build in release mode and install to $(PREFIX)/bin.
 ##
@@ -43,6 +43,28 @@ where:
 
 test:
 	cargo test
+
+## Bring the bus up, rebuilding first. Safe to re-run after any code change —
+## it rebuilds the image, recreates the container, and leaves the data volume
+## alone. This replaces the stop/rm/build/run sequence that is easy to get
+## half-right by hand.
+bus-up:
+	docker compose up -d --build
+	@echo
+	@docker compose ps
+
+## Stop and remove the container. The named data volume survives, so bus.db and
+## blobs/ are still there next time. Use `make bus-nuke` to discard them too.
+bus-down:
+	docker compose down
+
+bus-logs:
+	docker compose logs -f
+
+## Remove the container AND its data volume. Destroys every room, message, and
+## stored artifact.
+bus-nuke:
+	docker compose down -v
 
 ## Thin wrappers over `claude-bus init` — see docs/DEPLOY.md for what each
 ## scope actually writes. All three honor BUS, e.g.:

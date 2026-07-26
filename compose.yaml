@@ -1,0 +1,33 @@
+# Running the bus.
+#
+#   make bus-up        build the image and (re)create the container
+#   make bus-logs      follow its output
+#   make bus-down      stop and remove it (the data volume survives)
+#
+# `make bus-up` is safe to re-run after any code change: it rebuilds, recreates
+# the container, and leaves the data volume alone. That is the whole reason this
+# file exists — the stop/rm/build/run sequence by hand is easy to get half-right.
+
+services:
+  bus:
+    build: .
+    image: claude-bus:latest
+    container_name: claude-bus
+    restart: unless-stopped
+    ports:
+      # Host:container. The bus binds 0.0.0.0 inside the container and has no
+      # auth by design, so publishing this port exposes it to the whole LAN —
+      # which is the intent, but worth knowing before it reaches a wider network.
+      - "7777:7777"
+    volumes:
+      # A named volume, so bus.db and blobs/ survive `bus-down`, container
+      # recreation, and reboots.
+      #
+      # On the NAS, swap this for a bind mount into your appdata so the database
+      # sits with your other service data and is covered by whatever backs that
+      # up — e.g.:
+      #     - /mnt/user/appdata/claude-bus:/data
+      - claude-bus-data:/data
+
+volumes:
+  claude-bus-data:
