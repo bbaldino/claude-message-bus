@@ -259,3 +259,235 @@ async fn a_room_name_containing_a_percent_encoded_slash_round_trips() {
         "expected the decoded name: {body}"
     );
 }
+
+#[tokio::test]
+async fn an_agent_page_shows_its_registration_history() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "lisa", "/w/caas", None)
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "agent_registered",
+                Some("caas"),
+                None,
+                serde_json::json!({"requested_name":"caas","effective_name":"caas","host":"lisa"}),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "agent_disconnected",
+                Some("caas"),
+                None,
+                serde_json::json!({"reason":"keepalive_timeout"}),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/agents/caas").await;
+    assert!(body.contains("agent_registered"));
+    assert!(
+        body.contains("keepalive_timeout"),
+        "the disconnect reason is the diagnostic"
+    );
+}
+
+#[tokio::test]
+async fn the_agents_list_links_to_the_agent_page_with_a_percent_encoded_href() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("weird agent?x=1", "lisa", "/w", None)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/agents").await;
+    assert!(
+        body.contains("href=\"/agents/weird%20agent%3Fx%3D1\""),
+        "href must be percent-encoded: {body}"
+    );
+    assert!(
+        body.contains(">weird agent?x=1</a>"),
+        "anchor text should read naturally (only HTML-escaping applies, and this name \
+         has no HTML-special characters): {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_files_page_lists_artifacts_with_uploader_and_size() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+        store
+            .put_file("protocol", "schema.json", b"{\"a\":1}", None, "caas")
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/rooms/protocol/files").await;
+    assert!(body.contains("schema.json"));
+    assert!(body.contains("caas"), "uploader must be shown");
+}
+
+#[tokio::test]
+async fn the_event_log_filters_by_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_event("ack", Some("caas"), Some("r"), serde_json::json!({}))
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "room_paused",
+                Some("caas"),
+                Some("r"),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let all = get(port, "/events").await;
+    assert!(all.contains("ack") && all.contains("room_paused"));
+
+    let filtered = get(port, "/events?kind=room_paused").await;
+    assert!(filtered.contains("room_paused"));
+    assert!(
+        !filtered.contains(">ack<"),
+        "the filter must actually exclude other kinds"
+    );
+}
+
+#[tokio::test]
+async fn the_event_log_filters_by_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("r"),
+                serde_json::json!({"tag": "from-caas"}),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "ack",
+                Some("other"),
+                Some("r"),
+                serde_json::json!({"tag": "from-other"}),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let filtered = get(port, "/events?agent=caas").await;
+    assert!(filtered.contains("from-caas"));
+    assert!(
+        !filtered.contains("from-other"),
+        "the agent filter must exclude events from other agents"
+    );
+}
+
+#[tokio::test]
+async fn the_event_log_filters_by_room() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({"tag": "in-protocol"}),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("other-room"),
+                serde_json::json!({"tag": "in-other-room"}),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let filtered = get(port, "/events?room=protocol").await;
+    assert!(filtered.contains("in-protocol"));
+    assert!(
+        !filtered.contains("in-other-room"),
+        "the room filter must exclude events from other rooms"
+    );
+}
+
+#[tokio::test]
+async fn the_event_log_combines_kind_and_agent_filters_with_and_semantics() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        // Matches both filters.
+        store
+            .append_event(
+                "room_paused",
+                Some("caas"),
+                Some("r"),
+                serde_json::json!({"tag": "match"}),
+            )
+            .await
+            .unwrap();
+        // Right kind, wrong agent.
+        store
+            .append_event(
+                "room_paused",
+                Some("other"),
+                Some("r"),
+                serde_json::json!({"tag": "wrong-agent"}),
+            )
+            .await
+            .unwrap();
+        // Right agent, wrong kind.
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("r"),
+                serde_json::json!({"tag": "wrong-kind"}),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let filtered = get(port, "/events?kind=room_paused&agent=caas").await;
+    // Detail JSON is rendered through `esc`, so the literal quotes come out as
+    // `&quot;` — assert on the tag value itself, not the raw JSON punctuation.
+    assert!(filtered.contains("match"));
+    assert!(
+        !filtered.contains("wrong-agent"),
+        "combined filters must exclude events matching only the kind"
+    );
+    assert!(
+        !filtered.contains("wrong-kind"),
+        "combined filters must exclude events matching only the agent"
+    );
+}
