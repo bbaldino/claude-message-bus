@@ -1,7 +1,8 @@
 # Hub and permission relay — Design
 
 **Date:** 2026-07-27
-**Status:** Approved for planning
+**Status:** Switchboard viable and needs no new code. **Permission relay: NOT VIABLE** —
+milestone 0 ran and returned a clean negative. See *Milestone 0 result*.
 **Builds on:** `2026-07-25-claude-message-bus-design.md`
 
 ## Problem
@@ -182,6 +183,51 @@ Before any of this is built, a throwaway probe must answer:
 If relay does not work, the switchboard still stands on its own: the hub remains useful
 for everything except approvals, and gated projects keep being answered at their own
 terminal.
+
+## Milestone 0 result — relay does not fire (2026-07-27)
+
+**Permission relay does not work for a development channel on this build.** Probe at
+`poc/relay-probe/`.
+
+Method: a Node MCP server declaring both `claude/channel` and
+`claude/channel/permission`, logging every field of any `permission_request` verbatim and
+auto-answering `allow` after six seconds. Run in a real interactive session launched with
+`--dangerously-load-development-channels server:relay-probe` and *without*
+`--dangerously-skip-permissions`, then asked to write a file and run a shell command.
+
+Result: a genuine `Write` tool-use dialog appeared on screen and **zero permission
+requests were relayed**, across 30+ seconds of listening confirmed by the probe's
+heartbeat.
+
+The first attempt had a real defect of our own and does not count as evidence: the probe
+declared `capabilities.tools = {}` with no `tools/list` handler, so Claude Code asked for
+the tool list and got `Method not found`. Since the documentation describes relay in the
+context of a *two-way* channel, a server advertising a capability it cannot answer was a
+credible cause. That was fixed — the probe now serves a real `probe_answer` tool, and
+`tools/list requested` appears in its log, confirming Claude Code queries it successfully
+— and the second run still relayed nothing.
+
+Most likely cause: relay is gated to the Anthropic-approved channel allowlist that custom
+channels are not on. `--dangerously-load-development-channels` bypasses that allowlist for
+*message delivery* but evidently not for the permission capability — which is consistent
+with the documentation's own warning, since relay lets a channel approve `Bash` in a
+session and is a far more dangerous thing to grant an unvetted server.
+
+Not determined, because the first question failed: whether
+`--dangerously-skip-permissions` suppresses every prompt, what the four fields actually
+contain, and whether a verdict would satisfy a dialog. All are moot while nothing fires.
+
+### What this changes
+
+The relay half of this design is dead for now. A worker in a gated session still stalls in
+its own terminal where the human cannot see it.
+
+The switchboard half is unaffected and still requires no new code. The practical gap is
+also narrower than it appears: sessions launched with `--dangerously-skip-permissions`
+never prompt, so they never stall. Only deliberately gated projects are affected.
+
+Worth revisiting if custom channels ever reach the approved allowlist, or if a future
+release documents relay working under the development flag.
 
 ## Out of scope
 
