@@ -2,6 +2,8 @@
 //! silently stop receiving messages — the notification is dropped with no error
 //! to the sender — so assert the shape explicitly rather than trusting it.
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -203,18 +205,18 @@ fn injects_bus_messages_as_channel_notifications() {
             .unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { claude_bus::bus::serve_on(listener, path).await.unwrap() });
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        common::wait_until_bus_ready(port).await;
         (dir, port)
     });
 
     let mut a = Agent::start_with_bus(port, "receiver");
     initialize(&mut a);
     a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    wait_until_online(&rt, port, "receiver");
 
     // A second agent, driven directly over the wire, sends to the first.
     rt.block_on(async {
-        use futures_util::SinkExt;
+        use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -223,14 +225,14 @@ fn injects_bus_messages_as_channel_notifications() {
             "type": "register", "name": "sender", "host": "h", "cwd": "/w", "session_id": null
         });
         ws.send(Message::text(reg.to_string())).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let _ = ws.next().await; // Registered: confirms the registration landed
         let msg = serde_json::json!({
             "type": "send", "req_id": 1,
             "target": { "kind": "agent", "name": "receiver" },
             "text": "wire format proposal", "done": false
         });
         ws.send(Message::text(msg.to_string())).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = ws.next().await; // Reply to Send: confirms the bus processed it
     });
 
     let note = a.next_notification("notifications/claude/channel");
@@ -281,14 +283,14 @@ fn send_reports_queued_when_the_recipient_is_offline() {
             .unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { claude_bus::bus::serve_on(listener, path).await.unwrap() });
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        common::wait_until_bus_ready(port).await;
         (dir, port)
     });
 
     let mut a = Agent::start_with_bus(port, "lonely");
     initialize(&mut a);
     a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    wait_until_online(&rt, port, "lonely");
 
     let text = call_tool(
         &mut a,
@@ -374,7 +376,7 @@ fn send_to_a_room_reports_both_delivered_and_queued_members() {
     // plausible-looking sentence.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (_dir, port, _watcher) = rt.block_on(async {
-        use futures_util::SinkExt;
+        use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
 
         let dir = tempfile::tempdir().unwrap();
@@ -384,7 +386,7 @@ fn send_to_a_room_reports_both_delivered_and_queued_members() {
             .unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { claude_bus::bus::serve_on(listener, path).await.unwrap() });
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        common::wait_until_bus_ready(port).await;
 
         let url = format!("ws://127.0.0.1:{port}/ws");
 
@@ -401,12 +403,14 @@ fn send_to_a_room_reports_both_delivered_and_queued_members() {
             ))
             .await
             .unwrap();
+        let _ = watcher.next().await; // Registered
         watcher
             .send(Message::text(
                 serde_json::json!({ "type": "join", "req_id": 1, "room": "standup" }).to_string(),
             ))
             .await
             .unwrap();
+        let _ = watcher.next().await; // Joined
 
         // "sleeper" joins the room, then disconnects: it will be offline
         // when the room send happens, so it must show up as queued.
@@ -420,15 +424,24 @@ fn send_to_a_room_reports_both_delivered_and_queued_members() {
             ))
             .await
             .unwrap();
+        let _ = sleeper.next().await; // Registered
         sleeper
             .send(Message::text(
                 serde_json::json!({ "type": "join", "req_id": 1, "room": "standup" }).to_string(),
             ))
             .await
             .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Read the Joined confirmation rather than guessing with a sleep:
+        // this proves the membership landed before "sleeper" disconnects.
+        let _ = sleeper.next().await; // Joined
         drop(sleeper);
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Poll for the disconnect's teardown to actually land, rather than
+        // guessing with a fixed sleep — a room `send` racing ahead of it
+        // would find "sleeper" still online and never report it as queued.
+        assert!(
+            common::wait_until(|| async { !common::agent_is_online(port, "sleeper").await }).await,
+            "sleeper never went offline after its connection was dropped"
+        );
 
         (dir, port, watcher)
     });
@@ -436,7 +449,7 @@ fn send_to_a_room_reports_both_delivered_and_queued_members() {
     let mut a = Agent::start_with_bus(port, "reporter");
     initialize(&mut a);
     a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    wait_until_online(&rt, port, "reporter");
 
     let text = call_tool(
         &mut a,
@@ -466,46 +479,23 @@ fn send_to_a_room_reports_both_delivered_and_queued_members() {
 /// summary — silently hanging a test that waits on one, instead of failing
 /// fast.
 fn wait_until_offline(rt: &tokio::runtime::Runtime, port: u16, name: &str) {
-    rt.block_on(async {
-        use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::tungstenite::Message;
-        for _ in 0..100 {
-            let (mut ws, _) =
-                tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
-                    .await
-                    .unwrap();
-            ws.send(Message::text(
-                serde_json::json!({
-                    "type": "register", "name": "poller", "host": "pollhost", "cwd": "/w", "session_id": null
-                })
-                .to_string(),
-            ))
-            .await
-            .unwrap();
-            let _ = ws.next().await; // Registered
-            ws.send(Message::text(
-                serde_json::json!({ "type": "list_agents", "req_id": 1 }).to_string(),
-            ))
-            .await
-            .unwrap();
-            if let Some(Ok(Message::Text(t))) = ws.next().await {
-                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
-                let agents = v["result"]["agents"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                let still_online = agents
-                    .iter()
-                    .any(|a| a["name"] == name && a["online"] == true);
-                if !still_online {
-                    return;
-                }
-            }
-            drop(ws);
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        panic!("{name} never went offline according to the bus");
-    });
+    let ok = rt.block_on(common::wait_until(|| async {
+        !common::agent_is_online(port, name).await
+    }));
+    assert!(ok, "{name} never went offline according to the bus");
+}
+
+/// Poll until the bus reports `name` online. The MCP agent process connects
+/// to the bus asynchronously in the background after
+/// `notifications/initialized`; a fixed sleep can expire before that
+/// handshake completes under load, letting a subsequent tool call or a
+/// message sent by another connection race a bus link that isn't up yet.
+fn wait_until_online(rt: &tokio::runtime::Runtime, port: u16, name: &str) {
+    let ok = rt.block_on(common::wait_until(|| common::agent_is_online(port, name)));
+    assert!(
+        ok,
+        "{name} never registered with the bus within the deadline"
+    );
 }
 
 // Regression for the missing Ack producer: `bridge::dispatch` used to take an
@@ -527,9 +517,10 @@ fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages()
             .unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { claude_bus::bus::serve_on(listener, path).await.unwrap() });
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        common::wait_until_bus_ready(port).await;
         (dir, port)
     });
+    let store_path = _dir.path().to_path_buf();
 
     {
         // First session for "receiver": joins the room and is live for two
@@ -538,7 +529,7 @@ fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages()
         initialize(&mut receiver);
         receiver
             .send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
-        std::thread::sleep(std::time::Duration::from_millis(800));
+        wait_until_online(&rt, port, "receiver");
         call_tool(
             &mut receiver,
             2,
@@ -547,7 +538,7 @@ fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages()
         );
 
         rt.block_on(async {
-            use futures_util::SinkExt;
+            use futures_util::{SinkExt, StreamExt};
             use tokio_tungstenite::tungstenite::Message;
             // Two distinct senders, not one sender twice: `serve_on` runs
             // with the production-default guards, whose rate limit is 2s
@@ -566,14 +557,14 @@ fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages()
                 ))
                 .await
                 .unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let _ = ws.next().await; // Registered
                 let msg = serde_json::json!({
                     "type": "send", "req_id": 1,
                     "target": { "kind": "room", "room": "protocol" },
                     "text": text, "done": false
                 });
                 ws.send(Message::text(msg.to_string())).await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let _ = ws.next().await; // Reply to Send
             }
         });
 
@@ -581,9 +572,21 @@ fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages()
         // injected them and therefore had the chance to ack.
         receiver.next_notification("notifications/claude/channel");
         receiver.next_notification("notifications/claude/channel");
-        // Give the bridge a moment to flush the Ack over the wire before the
-        // process is killed.
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Poll for the bridge to actually flush both Acks to the store
+        // before the process is killed, rather than guessing with a fixed
+        // sleep: these are the first two messages ever written to this
+        // fresh database, so their ids are deterministically 1 and 2.
+        let acked = rt.block_on(async {
+            let store = claude_bus::store::Store::open(&store_path).await.unwrap();
+            common::wait_until(|| async {
+                store.cursor("protocol", "receiver").await.unwrap_or(0) >= 2
+            })
+            .await
+        });
+        assert!(
+            acked,
+            "the bridge never flushed both Acks to the store before the process was killed"
+        );
     } // receiver's Agent is dropped here: process killed, connection closes.
 
     // Wait for the bus to actually notice the disconnect, rather than
@@ -593,7 +596,7 @@ fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages()
     // While "receiver" is genuinely offline, three more messages arrive —
     // again from three distinct agents, for the same rate-limit reason.
     rt.block_on(async {
-        use futures_util::SinkExt;
+        use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
         for (name, text) in [
             ("senderC", "away 0"),
@@ -611,14 +614,14 @@ fn ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages()
             ))
             .await
             .unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let _ = ws.next().await; // Registered
             let msg = serde_json::json!({
                 "type": "send", "req_id": 1,
                 "target": { "kind": "room", "room": "protocol" },
                 "text": text, "done": false
             });
             ws.send(Message::text(msg.to_string())).await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let _ = ws.next().await; // Reply to Send
         }
     });
 
@@ -661,14 +664,14 @@ fn send_reports_the_pause_not_a_bus_outage() {
                 .await
                 .unwrap()
         });
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        common::wait_until_bus_ready(port).await;
         (dir, port)
     });
 
     let mut a = Agent::start_with_bus(port, "runaway");
     initialize(&mut a);
     a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    wait_until_online(&rt, port, "runaway");
 
     // Consume the cap of 1.
     call_tool(

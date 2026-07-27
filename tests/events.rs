@@ -145,7 +145,7 @@ mod common;
 use claude_bus::proto::{FromBus, ReplyResult, Target, ToBus};
 use common::{
     connect, next_event, send, start_bus_with_dir, start_bus_with_guards_dir,
-    start_bus_with_keepalive_dir,
+    start_bus_with_keepalive_dir, wait_until,
 };
 
 #[tokio::test]
@@ -260,9 +260,12 @@ async fn an_ack_is_recorded() {
         },
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let store = Store::open(&store_dir).await.unwrap();
+    assert!(
+        wait_until(|| async { !store.events_of_kind("ack", 10).await.unwrap().is_empty() }).await,
+        "the Ack was never recorded as an event"
+    );
     let acks = store.events_of_kind("ack", 10).await.unwrap();
     assert_eq!(acks.len(), 1);
     assert_eq!(acks[0].detail["last_delivered_id"], 5);
@@ -319,9 +322,13 @@ async fn history_driven_cursor_advance_is_recorded_as_an_ack() {
     .await;
     next_event(&mut a).await; // Reply to History
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
+    // The cursor-advance-driven Ack is asynchronous and fire-and-forget;
+    // poll for it to land rather than guessing with a fixed sleep.
     let store = Store::open(&store_dir).await.unwrap();
+    assert!(
+        wait_until(|| async { !store.events_of_kind("ack", 10).await.unwrap().is_empty() }).await,
+        "history's cursor-advance Ack was never recorded as an event"
+    );
     let acks = store.events_of_kind("ack", 10).await.unwrap();
     assert_eq!(acks.len(), 1);
     assert_eq!(acks[0].agent.as_deref(), Some("caas"));
@@ -513,9 +520,19 @@ async fn a_closed_socket_is_recorded_as_socket_closed() {
     next_event(&mut a).await; // Registered
 
     drop(a);
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let store = Store::open(&store_dir).await.unwrap();
+    assert!(
+        wait_until(|| async {
+            !store
+                .events_of_kind("agent_disconnected", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        })
+        .await,
+        "the closed socket was never recorded as an agent_disconnected event"
+    );
     let disconnects = store
         .events_of_kind("agent_disconnected", 10)
         .await

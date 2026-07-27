@@ -1,6 +1,8 @@
 // Drives the real server over HTTP against a temp SQLite. Asserts rendered content,
 // not status codes: a page that returns 200 with an empty table has failed at its
 // only job.
+mod common;
+
 use claude_bus::store::Store;
 
 async fn start(dir: &std::path::Path) -> u16 {
@@ -10,7 +12,7 @@ async fn start(dir: &std::path::Path) -> u16 {
         .unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { claude_bus::bus::serve_on(listener, path).await.unwrap() });
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    common::wait_until_bus_ready(port).await;
     port
 }
 

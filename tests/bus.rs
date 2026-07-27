@@ -3,9 +3,9 @@ mod common;
 use claude_bus::proto::{FromBus, ReplyResult, Target, ToBus};
 use claude_bus::store::Store;
 use common::{
-    connect, connect_observer, flood_continuously, flood_message, next_event, next_non_flood_event,
-    pump_for, send, start_bus, start_bus_with_dir, start_bus_with_keepalive,
-    start_bus_with_registry,
+    agent_is_online, connect, connect_observer, flood_continuously, flood_message, next_event,
+    next_non_flood_event, pump_for, send, start_bus, start_bus_with_dir, start_bus_with_keepalive,
+    start_bus_with_registry, wait_until,
 };
 
 #[tokio::test]
@@ -333,7 +333,10 @@ async fn reconnecting_gets_an_unread_summary_not_the_backlog() {
     next_event(&mut b).await;
 
     drop(b); // dashboard goes away
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        wait_until(|| async { !agent_is_online(port, "dashboard").await }).await,
+        "dashboard never went offline after its connection was dropped"
+    );
 
     for i in 0..3 {
         send(
@@ -409,7 +412,10 @@ async fn reconnect_unread_summary_is_one_event_regardless_of_room_count() {
     }
 
     drop(b); // dashboard goes away
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        wait_until(|| async { !agent_is_online(port, "dashboard").await }).await,
+        "dashboard never went offline after its connection was dropped"
+    );
 
     for (i, room) in rooms.iter().enumerate() {
         send(
@@ -1339,7 +1345,10 @@ async fn history_after_reconnect_advances_the_cursor_past_what_it_returned() {
     next_event(&mut beta).await; // Joined
 
     drop(beta); // beta goes offline
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        wait_until(|| async { !agent_is_online(port, "beta").await }).await,
+        "beta never went offline after its connection was dropped"
+    );
 
     send(
         &mut alpha,
@@ -1388,13 +1397,11 @@ async fn history_after_reconnect_advances_the_cursor_past_what_it_returned() {
         other => panic!("expected a Reply to History, got {other:?}"),
     }
 
-    // Give the (asynchronous, fire-and-forget) cursor advance a moment to land.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
+    // The cursor advance is asynchronous and fire-and-forget; poll for it to
+    // land rather than guessing with a fixed sleep.
     let store = Store::open(&store_dir).await.unwrap();
-    assert_eq!(
-        store.unread_count("protocol", "beta").await.unwrap(),
-        0,
+    assert!(
+        wait_until(|| async { store.unread_count("protocol", "beta").await.unwrap() == 0 }).await,
         "history must advance beta's cursor past the message it was just shown, \
          or that message will be reported unread forever"
     );

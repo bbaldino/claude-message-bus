@@ -6,7 +6,7 @@
 
 #![allow(dead_code)] // not every helper is used by every test binary that includes this module.
 
-use claude_bus::proto::{FromBus, ToBus};
+use claude_bus::proto::{FromBus, ReplyResult, ToBus};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -34,8 +34,102 @@ async fn start_bus_full(
             .await
             .unwrap();
     });
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_until_bus_ready(port).await;
     (dir, port, path)
+}
+
+/// Poll an async condition until it holds or the deadline expires. Returns
+/// `false` on timeout so the caller can fail with its own descriptive
+/// message.
+///
+/// Trap to avoid at call sites: converting `sleep; assert!(x)` into
+/// `wait_until(|| x); assert!(x)` makes the assertion vacuous — once the
+/// poll succeeds the assert can never fail, a broken product just times out
+/// instead. Prefer `assert!(wait_until(...).await, "descriptive message")`
+/// so a broken product still fails loudly. And never use this to poll a
+/// *negative* claim ("X never happens") — polling until "X hasn't happened
+/// yet" succeeds instantly and proves nothing; those need a real elapsed
+/// wait so the forbidden thing has genuine opportunity to occur.
+pub async fn wait_until<F, Fut>(f: F) -> bool
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    wait_until_timeout(std::time::Duration::from_secs(5), f).await
+}
+
+/// Same as `wait_until`, but with an explicit deadline instead of the 5s
+/// default — used by `wait_until_bus_ready`, which wants longer.
+pub async fn wait_until_timeout<F, Fut>(timeout: std::time::Duration, f: F) -> bool
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if f().await {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// Poll `GET /` on `port` until the bus actually answers HTTP requests,
+/// instead of guessing with a fixed sleep after spawning the server task.
+///
+/// The `TcpListener` is bound *before* the server task is spawned, so the
+/// port accepts connections into the kernel backlog immediately — a bare
+/// TCP connect proves nothing about whether the bus is actually serving
+/// requests yet. The web UI is mounted on every `serve_on*` variant, so `/`
+/// is a valid readiness signal no matter which flavor of bus was started.
+pub async fn wait_until_bus_ready(port: u16) {
+    let ready = wait_until_timeout(std::time::Duration::from_secs(10), || async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
+            return false;
+        };
+        let req = b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        if stream.write_all(req).await.is_err() {
+            return false;
+        }
+        let mut buf = Vec::new();
+        // A short per-attempt read timeout: a connection accepted into the
+        // kernel backlog before the server's accept loop is actually
+        // running would otherwise just hang here instead of letting the
+        // outer poll retry with a fresh connection.
+        matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                stream.read_to_end(&mut buf),
+            )
+            .await,
+            Ok(Ok(_)) if buf.starts_with(b"HTTP/1.1 200")
+        )
+    })
+    .await;
+    assert!(
+        ready,
+        "bus on 127.0.0.1:{port} never answered GET / within the startup deadline"
+    );
+}
+
+/// One-shot check of whether the bus currently reports `name` as online.
+/// Connects as a throwaway probe agent and asks `ListAgents`. Meant to be
+/// driven through `wait_until`/`wait_until_timeout` — e.g. to confirm a
+/// disconnect's teardown has actually landed before an assertion that
+/// depends on it, rather than guessing with a fixed sleep.
+pub async fn agent_is_online(port: u16, name: &str) -> bool {
+    let mut probe = connect(port, "probe").await;
+    next_event(&mut probe).await; // Registered
+    send(&mut probe, &ToBus::ListAgents { req_id: 0 }).await;
+    matches!(
+        next_event(&mut probe).await,
+        FromBus::Reply { result: ReplyResult::Agents { agents }, .. }
+            if agents.iter().any(|a| a.name == name && a.online)
+    )
 }
 
 /// Same as `start_bus`, but also hands back the bus's data directory so a
