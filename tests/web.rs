@@ -66,3 +66,196 @@ async fn a_script_tag_in_a_room_name_is_escaped() {
     );
     assert!(body.contains("&lt;script&gt;"), "must be escaped instead");
 }
+
+#[tokio::test]
+async fn a_transcript_interleaves_messages_and_events_in_time_order() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+        store
+            .append_message("protocol", "caas", "FIRST_MESSAGE", false)
+            .await
+            .unwrap();
+        // now_ms() is millisecond-resolution. Three inserts back-to-back against a
+        // local SQLite temp file land well inside a single millisecond, so without a
+        // gap here the three rows tie on `created_at` and the assertions below would
+        // pass on the sort's tie-break (see `Entry::rank` in src/web/mod.rs) instead of
+        // proving real chronological interleaving. A short sleep makes the timestamps
+        // distinct so this test exercises what it claims to.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        store
+            .append_event(
+                "room_paused",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({"count": 20}),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        store
+            .append_message("protocol", "caas", "LAST_MESSAGE", false)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/rooms/protocol").await;
+    let first = body.find("FIRST_MESSAGE").expect("first message rendered");
+    let pause = body
+        .find("room_paused")
+        .expect("the pause event is shown inline");
+    let last = body.find("LAST_MESSAGE").expect("last message rendered");
+
+    assert!(
+        first < pause,
+        "the pause must appear after the first message"
+    );
+    assert!(
+        pause < last,
+        "and before the last — chronological, not grouped by type"
+    );
+}
+
+#[tokio::test]
+async fn a_script_tag_in_a_message_body_is_escaped() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+        store
+            .append_message("protocol", "caas", "<script>alert('xss')</script>", false)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/rooms/protocol").await;
+    assert!(
+        !body.contains("<script>alert"),
+        "an agent must not be able to inject script"
+    );
+    assert!(body.contains("&lt;script&gt;"));
+}
+
+#[tokio::test]
+async fn room_links_on_the_overview_page_are_percent_encoded_in_the_href() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room("weird room?x=1&y=2", "caas").await.unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/").await;
+    // The href must be percent-encoded so a browser treats the whole name as one path
+    // segment, not `weird` followed by a `?x=1&y=2` query string.
+    assert!(
+        body.contains("href=\"/rooms/weird%20room%3Fx%3D1%26y%3D2\""),
+        "href must be percent-encoded: {body}"
+    );
+    // The visible link text is only HTML-escaped, not percent-encoded, so it stays
+    // human-readable.
+    assert!(
+        body.contains("weird room?x=1&amp;y=2"),
+        "anchor text should read naturally: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_room_name_with_spaces_and_url_metacharacters_round_trips_to_its_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = "weird room?x=1&y=2#z";
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room(name, "caas").await.unwrap();
+        store
+            .append_message(name, "caas", "hello from a weird room", false)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/rooms/weird%20room%3Fx%3D1%26y%3D2%23z").await;
+    assert!(
+        body.contains("hello from a weird room"),
+        "expected the room's transcript: {body}"
+    );
+    // The page title/h1 is the decoded name, HTML-escaped.
+    assert!(
+        body.contains("weird room?x=1&amp;y=2#z"),
+        "expected the decoded name in the page: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_room_name_with_non_ascii_characters_round_trips_to_its_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = "café-日本語";
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room(name, "caas").await.unwrap();
+        store
+            .append_message(name, "caas", "hello from a non-ascii room", false)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    // percent-encode the name the same way the production helper does, byte-by-byte.
+    let encoded: String = name
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+
+    let body = get(port, &format!("/rooms/{encoded}")).await;
+    assert!(
+        body.contains("hello from a non-ascii room"),
+        "expected the room's transcript: {body}"
+    );
+    assert!(
+        body.contains(name),
+        "expected the decoded non-ascii name in the page: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_room_name_containing_a_percent_encoded_slash_round_trips() {
+    // Whether `%2F` in a path segment reaches the handler as a literal `/` (rather than
+    // being treated as introducing a new path segment, or rejected outright) is a
+    // property of the router, not of this crate's encoder — routers commonly
+    // special-case encoded slashes. Verified empirically rather than assumed: axum
+    // 0.8.9 matches `/rooms/{name}` against the still-*encoded* request path (so `%2F`
+    // does not introduce an extra segment boundary the way a literal `/` would), and
+    // only percent-decodes the captured segment afterwards, when building `Path<String>`.
+    // So a name containing a literal `/`, once percent-encoded by `encode_path_segment`,
+    // does round-trip through this route.
+    let dir = tempfile::tempdir().unwrap();
+    let name = "a/b";
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room(name, "caas").await.unwrap();
+        store
+            .append_message(name, "caas", "hello from a slashy room", false)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/rooms/a%2Fb").await;
+    assert!(
+        body.contains("hello from a slashy room"),
+        "expected the slashy room's transcript: {body}"
+    );
+    assert!(
+        body.contains("<h1>a/b</h1>"),
+        "expected the decoded name: {body}"
+    );
+}

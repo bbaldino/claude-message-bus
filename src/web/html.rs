@@ -22,6 +22,31 @@ pub fn esc(s: &str) -> String {
     out
 }
 
+/// Percent-encode a string for safe use as a single URL path segment (e.g. a room or
+/// agent name spliced into `/rooms/{name}`). Escapes every byte outside the unreserved
+/// set `A-Z a-z 0-9 - . _ ~` (RFC 3986 §2.3) — that includes `/`, so this encodes
+/// *one* segment and does not preserve internal slashes as separators. It operates on
+/// UTF-8 bytes, so multi-byte characters come out as one `%XX` per byte, which is the
+/// standard percent-encoding of UTF-8 text.
+///
+/// This is a distinct job from `esc`: `esc` makes a value safe as HTML, this makes a
+/// value safe as a URL path segment. A name that is escaped for the anchor text but
+/// spliced raw into `href` is still an injection — the query string / fragment
+/// characters `esc` doesn't touch (`?`, `#`, `&`) can still change what the link
+/// points at even though the HTML around it is well-formed.
+pub fn encode_path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Wrap a pre-rendered body in the shared page chrome. `body` is passed through
 /// verbatim; it is the caller's job to have escaped its parts.
 pub fn page(title: &str, body: &str) -> String {
@@ -77,6 +102,31 @@ mod tests {
         // Escaping < before & would turn "<" into "&lt;" and then into "&amp;lt;".
         assert_eq!(esc("<"), "&lt;");
         assert_eq!(esc("&lt;"), "&amp;lt;");
+    }
+
+    #[test]
+    fn encode_path_segment_leaves_unreserved_characters_alone() {
+        assert_eq!(encode_path_segment("abcXYZ019-._~"), "abcXYZ019-._~");
+    }
+
+    #[test]
+    fn encode_path_segment_escapes_a_literal_slash() {
+        // A `/` inside a name must not be allowed to introduce a path separator.
+        assert_eq!(encode_path_segment("a/b"), "a%2Fb");
+    }
+
+    #[test]
+    fn encode_path_segment_escapes_space_and_url_metacharacters() {
+        assert_eq!(encode_path_segment("a b"), "a%20b");
+        assert_eq!(encode_path_segment("a?b"), "a%3Fb");
+        assert_eq!(encode_path_segment("a#b"), "a%23b");
+        assert_eq!(encode_path_segment("a&b"), "a%26b");
+    }
+
+    #[test]
+    fn encode_path_segment_escapes_non_ascii_as_utf8_bytes() {
+        // "é" is 2 UTF-8 bytes (0xC3 0xA9); each byte is percent-encoded separately.
+        assert_eq!(encode_path_segment("café"), "caf%C3%A9");
     }
 
     #[test]
