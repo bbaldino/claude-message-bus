@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "relay-probe": {
+      "command": "node",
+      "args": ["/home/bbaldino/work/claude-message-bus/poc/relay-probe/relay-probe.mjs"]
+    }
+  }
+}
