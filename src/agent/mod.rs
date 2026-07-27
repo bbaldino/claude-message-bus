@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use rmcp::{ServiceExt, transport::stdio};
+use rmcp::{RoleServer, ServiceExt, transport::IntoTransport, transport::stdio};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::config::{EnvSource, RealEnv};
@@ -15,6 +15,21 @@ use bridge::BridgeConfig;
 use handler::{Handler, Pending};
 
 pub async fn run(bus_url: String, name: String) -> anyhow::Result<()> {
+    run_on(stdio(), bus_url, name).await
+}
+
+/// Same as `run`, but takes the MCP transport directly instead of grabbing the
+/// process's real stdin/stdout via `stdio()`. `rmcp::transport::stdio()` is
+/// nothing more than `(tokio::io::stdin(), tokio::io::stdout())`, and rmcp has
+/// a blanket `impl<Role, R, W> IntoTransport<Role, ..> for (R, W)` wherever `R:
+/// AsyncRead` and `W: AsyncWrite` — so a `tokio::io::duplex()` half drops in
+/// just as well as the process's real pipes. That's what lets tests drive this
+/// exact handler and bridge code in-process, without spawning a child.
+pub async fn run_on<T, E, A>(transport: T, bus_url: String, name: String) -> anyhow::Result<()>
+where
+    T: IntoTransport<RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
     eprintln!("[agent] starting as \"{name}\", bus={bus_url}");
 
     let (to_bus, rx) = mpsc::unbounded_channel::<ToBus>();
@@ -32,7 +47,7 @@ pub async fn run(bus_url: String, name: String) -> anyhow::Result<()> {
 
     // Serve MCP before touching the network: session startup must never block
     // on the bus being reachable.
-    let service = handler.serve(stdio()).await?;
+    let service = handler.serve(transport).await?;
     let peer = service.peer().clone();
 
     let env = RealEnv;

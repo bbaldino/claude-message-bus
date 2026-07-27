@@ -8,10 +8,175 @@
 
 use claude_bus::proto::{FromBus, ReplyResult, ToBus};
 use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_tungstenite::tungstenite::Message;
 
 pub type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// How an `InProcessAgent`'s copy of `agent::run_on` gets driven.
+enum Runner {
+    /// Spawned with plain `tokio::spawn` onto whatever runtime is calling
+    /// `InProcessAgent::start` — the common case. This is required (not just
+    /// convenient) for anything that wants `tokio::time::pause()` to reach
+    /// the 10s timeout in `Handler::request`: time pausing is a per-runtime
+    /// setting, and `#[tokio::test(start_paused = true)]` only pauses the
+    /// test's own runtime, so the agent has to run on that same runtime for
+    /// the pause to apply to it.
+    Shared(tokio::task::JoinHandle<()>),
+    /// Spawned onto a dedicated `Runtime` this agent owns outright. See
+    /// `InProcessAgent::start_isolated` for why a test would want this
+    /// instead.
+    Isolated(tokio::runtime::Runtime),
+}
+
+/// In-process replacement for spawning `claude-bus agent` as a child process
+/// and speaking MCP over its stdin/stdout pipes. Wires a `tokio::io::duplex()`
+/// pair straight into `claude_bus::agent::run_on` in place of the process's
+/// real stdio — same `Handler`, same `bridge`, same rmcp codec and JSON-RPC
+/// framing, just without the process boundary. The bus side is untouched: a
+/// real `start_bus*` over a real socket is still what this agent connects to.
+///
+/// Deliberately raw, not rmcp's own client machinery: tests read and write
+/// newline-delimited JSON directly, exactly as the old subprocess-driven
+/// tests did (and exactly what rmcp's own codec puts on the wire — see
+/// `JsonRpcMessageCodec` — so this is the real wire format, not a shortcut).
+/// That keeps every existing assertion — tool names, capability shape,
+/// instructions text, notification meta keys — byte-for-byte unchanged; only
+/// the transport underneath moved.
+pub struct InProcessAgent {
+    to_agent: tokio::io::DuplexStream,
+    from_agent: BufReader<tokio::io::DuplexStream>,
+    runner: Option<Runner>,
+}
+
+impl InProcessAgent {
+    /// Spawns `agent::run_on` onto the caller's current Tokio runtime (must
+    /// be called from inside one, e.g. a `#[tokio::test]` body), wired to a
+    /// fresh pair of duplex pipes.
+    pub fn start(bus_url: impl Into<String>, name: impl Into<String>) -> Self {
+        let (to_agent, from_agent, agent_stdin, agent_stdout) = Self::pipes();
+        let bus_url = bus_url.into();
+        let name = name.into();
+        let task = tokio::spawn(Self::run(agent_stdin, agent_stdout, bus_url, name));
+        Self {
+            to_agent,
+            from_agent,
+            runner: Some(Runner::Shared(task)),
+        }
+    }
+
+    /// Same as `start`, but on a small dedicated `Runtime` that gets torn
+    /// down (not just have this one task aborted) on `Drop`.
+    ///
+    /// `agent::run_on` spawns the bus-reconnecting bridge as its own
+    /// top-level task, independent of the MCP service task it returns a
+    /// handle to. A real killed process takes every task with it for free —
+    /// the OS just closes every file descriptor, bridge's WebSocket
+    /// included. Aborting only the service task's `JoinHandle` does not: the
+    /// bridge keeps running, and the bus connection it holds open stays up,
+    /// on whatever runtime it was spawned onto. Giving this agent its own
+    /// `Runtime` and calling `shutdown_background` on the whole thing is what
+    /// makes "drop the harness" actually behave like "kill the process" from
+    /// the bus's point of view — which
+    /// `ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages`
+    /// depends on to see its dropped agent go offline.
+    pub fn start_isolated(bus_url: impl Into<String>, name: impl Into<String>) -> Self {
+        let (to_agent, from_agent, agent_stdin, agent_stdout) = Self::pipes();
+        let bus_url = bus_url.into();
+        let name = name.into();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("build agent runtime");
+        runtime.spawn(Self::run(agent_stdin, agent_stdout, bus_url, name));
+        Self {
+            to_agent,
+            from_agent,
+            runner: Some(Runner::Isolated(runtime)),
+        }
+    }
+
+    /// One duplex pair stands in for the agent's stdin (test writes, agent
+    /// reads), another for its stdout (agent writes, test reads) — mirrors
+    /// the two separate pipes a real child process would have.
+    #[allow(clippy::type_complexity)]
+    fn pipes() -> (
+        tokio::io::DuplexStream,
+        BufReader<tokio::io::DuplexStream>,
+        tokio::io::DuplexStream,
+        tokio::io::DuplexStream,
+    ) {
+        let (to_agent, agent_stdin) = tokio::io::duplex(64 * 1024);
+        let (agent_stdout, from_agent) = tokio::io::duplex(64 * 1024);
+        (
+            to_agent,
+            BufReader::new(from_agent),
+            agent_stdin,
+            agent_stdout,
+        )
+    }
+
+    async fn run(
+        agent_stdin: tokio::io::DuplexStream,
+        agent_stdout: tokio::io::DuplexStream,
+        bus_url: String,
+        name: String,
+    ) {
+        if let Err(e) = claude_bus::agent::run_on((agent_stdin, agent_stdout), bus_url, name).await
+        {
+            eprintln!("[InProcessAgent] run_on exited with an error: {e}");
+        }
+    }
+
+    pub async fn send(&mut self, v: serde_json::Value) {
+        let line = format!("{v}\n");
+        self.to_agent
+            .write_all(line.as_bytes())
+            .await
+            .expect("write to agent stdin");
+    }
+
+    pub async fn next_json(&mut self) -> serde_json::Value {
+        let mut line = String::new();
+        self.from_agent
+            .read_line(&mut line)
+            .await
+            .expect("read agent stdout");
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("bad json {line:?}: {e}"))
+    }
+
+    /// Read agent stdout until a notification with the given method appears.
+    pub async fn next_notification(&mut self, method: &str) -> serde_json::Value {
+        for _ in 0..50 {
+            let v = self.next_json().await;
+            if v["method"] == method {
+                return v;
+            }
+        }
+        panic!("never saw a {method} notification");
+    }
+}
+
+impl Drop for InProcessAgent {
+    fn drop(&mut self) {
+        match self.runner.take() {
+            // Aborting just the service task is all `start` offers: the
+            // bridge task (and its bus connection) lives on until whatever
+            // runtime it shares with the rest of the test tears down at the
+            // test's end. Fine for every test except the one that spawns via
+            // `start_isolated` instead.
+            Some(Runner::Shared(task)) => task.abort(),
+            // `shutdown_background` (rather than a plain `drop`, which blocks
+            // the current thread waiting for tasks to finish) tears the
+            // runtime down immediately, taking the bridge task and its live
+            // WebSocket connection with it — even mid-reconnect-backoff.
+            Some(Runner::Isolated(rt)) => rt.shutdown_background(),
+            None => {}
+        }
+    }
+}
 
 /// Common plumbing behind all the `start_bus*` variants below: bind an
 /// ephemeral port, spawn the bus on it with the given `Guards`/`Keepalive`/
@@ -87,7 +252,6 @@ where
 /// is a valid readiness signal no matter which flavor of bus was started.
 pub async fn wait_until_bus_ready(port: u16) {
     let ready = wait_until_timeout(std::time::Duration::from_secs(10), || async move {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
             return false;
         };
