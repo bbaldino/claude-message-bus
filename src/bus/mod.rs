@@ -163,6 +163,7 @@ pub async fn serve_on_full(
     let router = Router::new()
         .route("/ws", get(upgrade))
         .route("/human-active", axum::routing::post(human_active))
+        .merge(crate::web::routes())
         .with_state(app);
     axum::serve(listener, router).await?;
     Ok(())

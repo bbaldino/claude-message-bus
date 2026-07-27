@@ -5,3 +5,4 @@ pub mod init;
 pub mod proto;
 pub mod store;
 pub mod tail;
+pub(crate) mod web;
