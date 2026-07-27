@@ -244,6 +244,22 @@ impl Store {
         Ok(rows.iter().map(message_row).collect())
     }
 
+    /// The most recent `limit` messages across every room, newest first.
+    ///
+    /// `history` answers "what happened in this room"; this answers "what is happening
+    /// at all", which is the question an overview page exists for. Newest-first because
+    /// the caller is scanning for the latest activity, not reading a conversation.
+    pub async fn recent_messages(&self, limit: i64) -> anyhow::Result<Vec<MessageRow>> {
+        let rows = sqlx::query(
+            "SELECT id, room, from_agent, body, done, created_at
+             FROM messages ORDER BY id DESC LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(message_row).collect())
+    }
+
     pub async fn cursor(&self, room: &str, agent: &str) -> anyhow::Result<i64> {
         let row = sqlx::query(
             "SELECT last_delivered_id FROM cursors WHERE room = ?1 AND agent_name = ?2",

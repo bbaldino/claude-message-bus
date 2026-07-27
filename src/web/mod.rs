@@ -96,6 +96,20 @@ fn summarize(kind: &str, detail: &serde_json::Value) -> String {
     }
 }
 
+/// Shorten a message body for a scannable table cell, on a character boundary.
+///
+/// Byte slicing would panic partway through a multi-byte character, and message bodies
+/// are model output — non-ASCII is ordinary, not exotic. The full text is one click away
+/// in the room transcript, so truncating here costs nothing.
+fn truncate(s: &str, max: usize) -> String {
+    let flat = s.replace('\n', " ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let kept: String = flat.chars().take(max).collect();
+    format!("{}…", kept.trim_end())
+}
+
 /// The compact JSON for a non-empty detail object, or empty string for `{}`.
 fn raw_detail(detail: &serde_json::Value) -> String {
     match detail.as_object() {
@@ -150,6 +164,7 @@ pub fn routes() -> Router<App> {
 async fn overview(State(app): State<App>) -> Html<String> {
     let agents = app.store.agents().await.unwrap_or_default();
     let rooms = app.store.rooms().await.unwrap_or_default();
+    let messages = app.store.recent_messages(20).await.unwrap_or_default();
     let events = app.store.events(20).await.unwrap_or_default();
 
     // See `agents()`: liveness comes from the registry, not the persisted column.
@@ -179,6 +194,25 @@ async fn overview(State(app): State<App>) -> Html<String> {
     // The sort direction is stated because it is not guessable from the data: a send and
     // the ack it provokes land milliseconds apart, so newest-first puts the ack *above*
     // the message it acknowledges, which reads as backwards until you know the rule.
+    // What is actually being said, not just that something was said. The event log
+    // records that a message was sent and whether it was delivered or queued, but not
+    // its text — so without this the overview can't answer "what are they talking
+    // about" without guessing a room to click into.
+    b.push_str(
+        "</table><h2>recent messages <span class=\"note\">newest first</span></h2>\
+         <table><tr><th>when<th>room<th>from<th>message</tr>",
+    );
+    for m in &messages {
+        b.push_str(&format!(
+            "<tr><td class=\"when\">{w}</td><td><a href=\"/rooms/{p}\">{r}</a></td>\
+             <td>{f}</td><td>{t}</td></tr>",
+            w = esc(&fmt_time(m.created_at)),
+            p = encode_path_segment(&m.room),
+            r = esc(&m.room),
+            f = esc(&m.from_agent),
+            t = esc(&truncate(&m.body, 90)),
+        ));
+    }
     b.push_str(
         "</table><h2>recent events <span class=\"note\">newest first</span></h2>\
          <table><tr><th>when<th>kind<th>agent<th>room<th>detail</tr>",

@@ -629,3 +629,59 @@ async fn the_agents_page_does_not_show_ghosts_from_a_previous_bus() {
         "it should be shown as offline: {body}"
     );
 }
+
+#[tokio::test]
+async fn the_overview_shows_recent_message_text_across_rooms() {
+    // The event log records that a message was sent and whether it was delivered, but
+    // not what it said. Without this the overview can't answer "what are they talking
+    // about" without guessing which room to open.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+        store.join_room("other", "dashboard").await.unwrap();
+        store
+            .append_message("protocol", "caas", "SETTLED_ON_THE_SCHEMA", false)
+            .await
+            .unwrap();
+        store
+            .append_message("other", "dashboard", "UNRELATED_CHATTER", false)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/").await;
+    assert!(
+        body.contains("SETTLED_ON_THE_SCHEMA"),
+        "message text must appear on the overview: {body}"
+    );
+    assert!(
+        body.contains("UNRELATED_CHATTER"),
+        "and it spans rooms, not just one: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_long_message_is_truncated_without_splitting_a_character() {
+    // Message bodies are model output, so non-ASCII is ordinary. Byte slicing would
+    // panic partway through a multi-byte character and take the whole page down.
+    let dir = tempfile::tempdir().unwrap();
+    let long = "é".repeat(400);
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+        store
+            .append_message("protocol", "caas", &long, false)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/").await;
+    assert!(body.contains('…'), "should be visibly truncated: {body}");
+    assert!(
+        !body.contains(&long),
+        "the full 400-character body must not be inlined on the overview"
+    );
+}
