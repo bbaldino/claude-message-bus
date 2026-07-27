@@ -1,9 +1,11 @@
 mod common;
 
 use claude_bus::proto::{FromBus, ReplyResult, Target, ToBus};
+use claude_bus::store::Store;
 use common::{
     connect, connect_observer, flood_continuously, flood_message, next_event, next_non_flood_event,
-    pump_for, send, start_bus, start_bus_with_keepalive, start_bus_with_registry,
+    pump_for, send, start_bus, start_bus_with_dir, start_bus_with_keepalive,
+    start_bus_with_registry,
 };
 
 #[tokio::test]
@@ -1299,4 +1301,190 @@ async fn a_real_agents_registration_and_membership_are_unaffected_by_a_concurren
         }
         other => panic!("expected a Reply to ListAgents, got {other:?}"),
     }
+}
+
+// --- Bug 2: cursor advance on history ---
+
+// The real regression: a message that arrived while `beta` was offline is
+// queued_for beta, beta reconnects and reads it via `history`, but nothing
+// ever advanced beta's cursor — so the message stays "unread" forever on
+// every future reconnect. This drives that exact sequence end to end over
+// the WebSocket and confirms `history` is what closes the gap.
+#[tokio::test]
+async fn history_after_reconnect_advances_the_cursor_past_what_it_returned() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+
+    let mut alpha = connect(port, "alpha").await;
+    next_event(&mut alpha).await; // Registered
+    let mut beta = connect(port, "beta").await;
+    next_event(&mut beta).await; // Registered
+
+    send(
+        &mut alpha,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut alpha).await; // Joined
+    send(
+        &mut beta,
+        &ToBus::Join {
+            req_id: 2,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut beta).await; // Joined
+
+    drop(beta); // beta goes offline
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    send(
+        &mut alpha,
+        &ToBus::Send {
+            req_id: 3,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "while you were out".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut alpha).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { queued_for, .. },
+            ..
+        } => assert_eq!(queued_for, vec!["beta".to_string()]),
+        other => panic!("expected a Reply to Send, got {other:?}"),
+    }
+
+    let mut beta2 = connect(port, "beta").await;
+    next_event(&mut beta2).await; // Registered
+    match next_event(&mut beta2).await {
+        FromBus::Unread { rooms } => assert_eq!(rooms[0].count, 1),
+        other => panic!("expected an Unread summary, got {other:?}"),
+    }
+
+    send(
+        &mut beta2,
+        &ToBus::History {
+            req_id: 10,
+            room: "protocol".into(),
+            limit: 10,
+        },
+    )
+    .await;
+    match next_event(&mut beta2).await {
+        FromBus::Reply {
+            result: ReplyResult::History { messages },
+            ..
+        } => {
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].text, "while you were out");
+        }
+        other => panic!("expected a Reply to History, got {other:?}"),
+    }
+
+    // Give the (asynchronous, fire-and-forget) cursor advance a moment to land.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    assert_eq!(
+        store.unread_count("protocol", "beta").await.unwrap(),
+        0,
+        "history must advance beta's cursor past the message it was just shown, \
+         or that message will be reported unread forever"
+    );
+}
+
+// Regression constraint: `reply_history` is shared with the observer
+// (`tail`) path, which has no cursor of its own. The cursor advance must
+// live in the `ToBus::History` arm that has `me`, not inside
+// `reply_history` itself — otherwise a `tail` watcher reading a room would
+// move a real agent's cursor. This test would pass even with no cursor
+// advance implemented at all, which is why `history_after_reconnect_...`
+// above exists to prove the advance actually happens; this one exists to
+// prove it never happens for the wrong caller.
+#[tokio::test]
+async fn an_observers_history_call_does_not_move_any_agents_cursor() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+
+    let mut alpha = connect(port, "alpha").await;
+    next_event(&mut alpha).await;
+    let mut beta = connect(port, "beta").await;
+    next_event(&mut beta).await;
+
+    send(
+        &mut alpha,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut alpha).await;
+    send(
+        &mut beta,
+        &ToBus::Join {
+            req_id: 2,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut beta).await;
+
+    send(
+        &mut alpha,
+        &ToBus::Send {
+            req_id: 3,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "hello".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut alpha).await; // Sent reply
+    next_event(&mut beta).await; // routed Message, delivered live (not via history)
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let alpha_before = store.cursor("protocol", "alpha").await.unwrap();
+    let beta_before = store.cursor("protocol", "beta").await.unwrap();
+
+    let mut watcher = connect_observer(port, "tail-watcher").await;
+    next_event(&mut watcher).await; // Observing
+
+    send(
+        &mut watcher,
+        &ToBus::History {
+            req_id: 99,
+            room: "protocol".into(),
+            limit: 10,
+        },
+    )
+    .await;
+    match next_event(&mut watcher).await {
+        FromBus::Reply {
+            result: ReplyResult::History { messages },
+            ..
+        } => assert_eq!(messages.len(), 1),
+        other => panic!("expected a Reply to History, got {other:?}"),
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    assert_eq!(
+        store.cursor("protocol", "alpha").await.unwrap(),
+        alpha_before,
+        "an observer's history call must not move alpha's cursor"
+    );
+    assert_eq!(
+        store.cursor("protocol", "beta").await.unwrap(),
+        beta_before,
+        "an observer's history call must not move beta's cursor"
+    );
 }

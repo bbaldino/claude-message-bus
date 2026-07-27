@@ -268,6 +268,67 @@ async fn an_ack_is_recorded() {
     assert_eq!(acks[0].detail["last_delivered_id"], 5);
 }
 
+// The cursor-advance-on-history fix must be as visible in the log as a
+// regular Ack: a cursor that moves with no event would reintroduce the
+// invisible-state bug this project was built to catch, just through a
+// different door than the explicit ToBus::Ack the other `an_ack_is_recorded`
+// test covers.
+#[tokio::test]
+async fn history_driven_cursor_advance_is_recorded_as_an_ack() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await; // Registered
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await; // Joined
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "hi".into(),
+            done: false,
+        },
+    )
+    .await;
+    let msg_id = match next_event(&mut a).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { msg_id, .. },
+            ..
+        } => msg_id,
+        other => panic!("expected a Reply to Send, got {other:?}"),
+    };
+
+    send(
+        &mut a,
+        &ToBus::History {
+            req_id: 3,
+            room: "protocol".into(),
+            limit: 10,
+        },
+    )
+    .await;
+    next_event(&mut a).await; // Reply to History
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let acks = store.events_of_kind("ack", 10).await.unwrap();
+    assert_eq!(acks.len(), 1);
+    assert_eq!(acks[0].agent.as_deref(), Some("caas"));
+    assert_eq!(acks[0].room.as_deref(), Some("protocol"));
+    assert_eq!(acks[0].detail["last_delivered_id"], msg_id);
+}
+
 #[tokio::test]
 async fn a_paused_room_is_recorded() {
     let (_d, port, store_dir) = start_bus_with_dir().await;

@@ -213,7 +213,27 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
             req_id,
             room,
             limit,
-        } => reply_history(app, control_tx, req_id, &room, limit).await,
+        } => {
+            // The cursor means "delivered to this agent"; the unread summary
+            // on reconnect is just a count, not delivery, but `history`'s
+            // reply genuinely hands the messages to the model — so this is
+            // the moment delivery happens for the catch-up path. Deliberately
+            // *not* inside `reply_history`: that function is shared with
+            // `handle_observer`'s `ToBus::History` arm, which has no `me` and
+            // must never move a real agent's cursor.
+            if let Some(max_id) = reply_history(app, control_tx, req_id, &room, limit).await {
+                let _ = app.store.set_cursor(&room, me, max_id).await;
+                let _ = app
+                    .store
+                    .append_event(
+                        "ack",
+                        Some(me),
+                        Some(&room),
+                        json!({ "last_delivered_id": max_id }),
+                    )
+                    .await;
+            }
+        }
 
         ToBus::ListRooms { req_id } => reply_list_rooms(app, control_tx, req_id).await,
 
@@ -391,13 +411,26 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
 /// carry no membership check today (that is deliberately separate work), so
 /// there is nothing agent-specific about this beyond who is allowed to call
 /// it.
+///
+/// Returns the highest message id actually sent in the reply (`None` if no
+/// reply with messages went out, e.g. the room doesn't exist or has no
+/// messages), so a caller that knows a delivery-cursor-owning `me` — i.e.
+/// the `ToBus::History` arm in `handle`, not `handle_observer` — can advance
+/// that agent's cursor to exactly what it was shown. `limit` may be smaller
+/// than the number of unread messages, in which case the caller only ever
+/// saw the most recent `limit` of them; returning the true max of *those*
+/// keeps the cursor honest rather than jumping to the room's newest message.
+/// This function deliberately never touches the cursor itself: it is called
+/// from `handle_observer` too, for a `tail` watcher that has no cursor at
+/// all, and moving one from here would move a real agent's cursor just by
+/// virtue of someone watching the room.
 pub(crate) async fn reply_history(
     app: &App,
     control_tx: &registry::Sender,
     req_id: u64,
     room: &str,
     limit: i64,
-) {
+) -> Option<i64> {
     let members = app.store.room_members(room).await.unwrap_or_default();
     if members.is_empty() {
         let _ = control_tx.try_send(FromBus::Error {
@@ -407,13 +440,11 @@ pub(crate) async fn reply_history(
                 known_rooms(app).await
             ),
         });
-        return;
+        return None;
     }
-    let messages = app
-        .store
-        .history(room, limit)
-        .await
-        .unwrap_or_default()
+    let rows = app.store.history(room, limit).await.unwrap_or_default();
+    let max_id = rows.iter().map(|m| m.id).max();
+    let messages = rows
         .into_iter()
         .map(|m| HistoryItem {
             id: m.id,
@@ -427,6 +458,7 @@ pub(crate) async fn reply_history(
         req_id,
         result: ReplyResult::History { messages },
     });
+    max_id
 }
 
 /// Shared by a registered agent's `ListRooms` and an observer's — see

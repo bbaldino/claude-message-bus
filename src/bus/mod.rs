@@ -520,7 +520,14 @@ async fn handle_observer(
             req_id,
             room,
             limit,
-        } => commands::reply_history(app, control_tx, req_id, &room, limit).await,
+        } => {
+            // An observer has no cursor of its own — `reply_history`
+            // deliberately never moves one, so the returned max id is
+            // discarded here rather than fed to `set_cursor` the way the
+            // registered-agent `ToBus::History` arm in `commands::handle`
+            // does.
+            let _ = commands::reply_history(app, control_tx, req_id, &room, limit).await;
+        }
 
         ToBus::ListRooms { req_id } => commands::reply_list_rooms(app, control_tx, req_id).await,
 

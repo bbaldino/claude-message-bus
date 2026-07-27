@@ -145,6 +145,37 @@ async fn cursor_starts_at_zero_and_advances() {
     assert_eq!(store.cursor("protocol", "dashboard").await.unwrap(), id);
 }
 
+// A stale or out-of-order ack (or a history call that only saw an older
+// window of messages) must never resurrect already-read messages as unread
+// by dragging the cursor backwards.
+#[tokio::test]
+async fn set_cursor_never_moves_backwards() {
+    let (_d, store) = seeded().await;
+    let first = store
+        .append_message("protocol", "caas", "one", false)
+        .await
+        .unwrap();
+    let second = store
+        .append_message("protocol", "caas", "two", false)
+        .await
+        .unwrap();
+
+    store
+        .set_cursor("protocol", "dashboard", second)
+        .await
+        .unwrap();
+    store
+        .set_cursor("protocol", "dashboard", first)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.cursor("protocol", "dashboard").await.unwrap(),
+        second,
+        "a lower id must not move the cursor backwards"
+    );
+}
+
 #[tokio::test]
 async fn unread_counts_only_messages_past_the_cursor() {
     let (_d, store) = seeded().await;

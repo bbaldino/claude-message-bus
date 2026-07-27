@@ -239,10 +239,14 @@ impl Store {
         Ok(row.map(|r| r.get("last_delivered_id")).unwrap_or(0))
     }
 
+    /// Never regresses: a stale or out-of-order ack (or a `history` call that
+    /// only saw an older window of messages) must not drag the cursor
+    /// backwards and silently resurrect already-read messages as unread.
     pub async fn set_cursor(&self, room: &str, agent: &str, id: i64) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO cursors (room, agent_name, last_delivered_id) VALUES (?1, ?2, ?3)
-             ON CONFLICT(room, agent_name) DO UPDATE SET last_delivered_id = ?3",
+             ON CONFLICT(room, agent_name) DO UPDATE SET
+               last_delivered_id = MAX(last_delivered_id, ?3)",
         )
         .bind(room)
         .bind(agent)
