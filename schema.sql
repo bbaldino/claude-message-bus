@@ -50,3 +50,15 @@ CREATE TABLE IF NOT EXISTS cursors (
   last_delivered_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (room, agent_name)
 );
+
+CREATE TABLE IF NOT EXISTS events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at  INTEGER NOT NULL,
+  kind        TEXT NOT NULL,
+  agent       TEXT,
+  room        TEXT,
+  detail_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS events_room_id  ON events(room, id);
+CREATE INDEX IF NOT EXISTS events_agent_id ON events(agent, id);
+CREATE INDEX IF NOT EXISTS events_kind_id  ON events(kind, id);

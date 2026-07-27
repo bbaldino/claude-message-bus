@@ -7,6 +7,9 @@ use anyhow::Context;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
+mod events;
+pub use events::EventRow;
+
 mod files;
 pub use files::{FileRow, MAX_BLOB_BYTES};
 
@@ -72,6 +75,12 @@ impl Store {
     }
 
     pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    /// Test-only accessor. Production code goes through the typed methods.
+    #[doc(hidden)]
+    pub fn pool_for_test(&self) -> &SqlitePool {
         &self.pool
     }
 
