@@ -47,6 +47,29 @@ pub fn encode_path_segment(s: &str) -> String {
     out
 }
 
+/// Render a millisecond epoch timestamp as local wall-clock time.
+///
+/// Local rather than UTC because every reader of these pages is sitting at the machine
+/// (or on the LAN) where the events happened, and "when did this actually happen" is the
+/// question the column exists to answer. The date is omitted when the timestamp falls on
+/// today, which is the common case on a dashboard and keeps the column narrow.
+///
+/// Output contains only digits, `-` and `:`, so it needs no escaping — but callers pass
+/// it through `esc` anyway rather than special-casing one column.
+pub fn fmt_time(ms: i64) -> String {
+    let Some(utc) = chrono::DateTime::from_timestamp_millis(ms) else {
+        // Out of range rather than merely odd: render something honest instead of
+        // panicking a whole page over one bad row.
+        return format!("t={ms}");
+    };
+    let local = utc.with_timezone(&chrono::Local);
+    if local.date_naive() == chrono::Local::now().date_naive() {
+        local.format("%H:%M:%S").to_string()
+    } else {
+        local.format("%m-%d %H:%M:%S").to_string()
+    }
+}
+
 /// Wrap a pre-rendered body in the shared page chrome. `body` is passed through
 /// verbatim; it is the caller's job to have escaped its parts.
 pub fn page(title: &str, body: &str) -> String {
@@ -61,18 +84,28 @@ pub fn page(title: &str, body: &str) -> String {
     )
 }
 
+// A light palette. Deliberately plain: this is an interim scheme pending a proper UI
+// pass, so it aims to be legible and unobtrusive rather than designed. Monospace
+// throughout because almost every value on these pages is an identifier, a timestamp,
+// or a hash, and proportional type makes columns of those harder to scan.
 const CSS: &str = "\
-body{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;background:#111;color:#ddd}\
-nav{padding:.6rem 1rem;background:#000;border-bottom:1px solid #333}\
-nav a{color:#8ab4f8;margin-right:1rem;text-decoration:none}\
-main{padding:1rem;max-width:60rem}\
-table{border-collapse:collapse;width:100%}\
-td,th{text-align:left;padding:.3rem .6rem;border-bottom:1px solid #222;vertical-align:top}\
-th{color:#888;font-weight:normal}\
-a{color:#8ab4f8}\
+body{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;background:#f7f7f8;color:#1f2328}\
+nav{padding:.6rem 1rem;background:#fff;border-bottom:1px solid #d8dade}\
+nav a{color:#0b57d0;margin-right:1rem;text-decoration:none}\
+nav a:hover{text-decoration:underline}\
+main{padding:1rem;max-width:72rem}\
+h1{font-size:1.25rem;margin:.2rem 0 .8rem}\
+h2{font-size:1rem;margin:1.4rem 0 .4rem;color:#57606a}\
+table{border-collapse:collapse;width:100%;background:#fff;border:1px solid #e3e5e8}\
+td,th{text-align:left;padding:.35rem .6rem;border-bottom:1px solid #eceef1;vertical-align:top}\
+tr:last-child td{border-bottom:none}\
+th{color:#57606a;font-weight:600;background:#fbfbfc;white-space:nowrap}\
+a{color:#0b57d0}\
 .msg{white-space:pre-wrap}\
-.ev{color:#888;font-style:italic}\
-.off{color:#666}\
+.ev{color:#57606a;font-style:italic}\
+.off{color:#8c959f}\
+.when{color:#6e7781;white-space:nowrap}\
+.detail{color:#424a53}\
 ";
 
 #[cfg(test)]
