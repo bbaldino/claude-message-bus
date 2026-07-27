@@ -142,7 +142,7 @@ async fn malformed_detail_json_does_not_poison_reads() {
 
 mod common;
 
-use claude_bus::proto::{FromBus, Target, ToBus};
+use claude_bus::proto::{FromBus, ReplyResult, Target, ToBus};
 use common::{
     connect, next_event, send, start_bus_with_dir, start_bus_with_guards_dir,
     start_bus_with_keepalive_dir,
@@ -176,6 +176,54 @@ async fn a_send_records_delivery_outcome_per_recipient() {
         "recipient was offline"
     );
     assert_eq!(sent[0].detail["delivered_to"].as_array().unwrap().len(), 0);
+}
+
+// The write discipline's first, non-negotiable rule: a logging failure must never fail
+// the operation being logged. `append_event`'s result is discarded with `let _ =` at
+// every one of its ten call sites specifically so that a broken event log can never
+// take the bus operation it accompanies down with it — but nothing asserted that until
+// now. This drops the `events` table out from under a live bus, then drives a real
+// `Send`, and confirms the message still lands in `messages` and the sender still gets
+// its normal `Sent` reply.
+#[tokio::test]
+async fn a_broken_event_log_does_not_break_the_send_it_would_have_logged() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await; // Registered
+
+    // Open a second `Store` against the same database and drop `events` out from under
+    // the running bus. `Store::open` re-applies the (idempotent) schema first, which is
+    // harmless here since every table but the one we're about to drop already exists.
+    let store = Store::open(&store_dir).await.unwrap();
+    sqlx::query("DROP TABLE events")
+        .execute(store.pool_for_test())
+        .await
+        .unwrap();
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "still works".into(),
+            done: false,
+        },
+    )
+    .await;
+
+    match next_event(&mut a).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { room, .. },
+            ..
+        } => assert_eq!(room, "protocol"),
+        other => panic!("expected a normal Sent reply despite the broken event log, got {other:?}"),
+    }
+
+    let history = store.history("protocol", 10).await.unwrap();
+    assert_eq!(history.len(), 1, "the message must still be recorded");
+    assert_eq!(history[0].body, "still works");
 }
 
 #[tokio::test]

@@ -441,6 +441,106 @@ async fn the_event_log_filters_by_room() {
 }
 
 #[tokio::test]
+async fn the_event_log_agent_cell_links_to_its_own_filtered_view() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_event(
+                "ack",
+                Some("weird agent?x=1"),
+                Some("r"),
+                serde_json::json!({"tag": "from-caas"}),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "ack",
+                Some("other"),
+                Some("r"),
+                serde_json::json!({"tag": "from-other"}),
+            )
+            .await
+            .unwrap();
+        // Nullable: an event with no agent must not render as a link.
+        store
+            .append_event("resumed", None, None, serde_json::json!({}))
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/events").await;
+    assert!(
+        body.contains("href=\"/events?agent=weird%20agent%3Fx%3D1\">weird agent?x=1</a>"),
+        "the agent cell must link to its own filtered view, percent-encoded in the href \
+         and HTML-escaped as anchor text, exactly like the kind column: {body}"
+    );
+    assert!(
+        !body.contains("href=\"/events?agent=\""),
+        "an event with no agent must not become a link to an empty filter: {body}"
+    );
+
+    let filtered = get(port, "/events?agent=weird%20agent%3Fx%3D1").await;
+    assert!(filtered.contains("from-caas"));
+    assert!(
+        !filtered.contains("from-other"),
+        "following the agent link must exclude events from other agents"
+    );
+}
+
+#[tokio::test]
+async fn the_event_log_room_cell_links_to_its_own_filtered_view() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("weird room&y=2"),
+                serde_json::json!({"tag": "in-protocol"}),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("other-room"),
+                serde_json::json!({"tag": "in-other-room"}),
+            )
+            .await
+            .unwrap();
+        // Nullable: an event with no room must not render as a link.
+        store
+            .append_event("resumed", None, None, serde_json::json!({}))
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/events").await;
+    assert!(
+        body.contains("href=\"/events?room=weird%20room%26y%3D2\">weird room&amp;y=2</a>"),
+        "the room cell must link to its own filtered view, percent-encoded in the href \
+         and HTML-escaped as anchor text, exactly like the kind column: {body}"
+    );
+    assert!(
+        !body.contains("href=\"/events?room=\""),
+        "an event with no room must not become a link to an empty filter: {body}"
+    );
+
+    let filtered = get(port, "/events?room=weird%20room%26y%3D2").await;
+    assert!(filtered.contains("in-protocol"));
+    assert!(
+        !filtered.contains("in-other-room"),
+        "following the room link must exclude events from other rooms"
+    );
+}
+
+#[tokio::test]
 async fn the_event_log_combines_kind_and_agent_filters_with_and_semantics() {
     let dir = tempfile::tempdir().unwrap();
     {

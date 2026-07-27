@@ -164,7 +164,11 @@ event log, filterable by kind, agent, and room.
 It performs no writes. With no authentication on the bus, anything the UI could do would
 be available to anything that can reach the port — so it does nothing.
 
-Three known gaps, all deliberate:
+Known gaps against the original design. This list is not exhaustive of every idea in the
+design doc, but everything below is real — verified against the current code, not
+inferred from the plan.
+
+Deliberate design decisions:
 
 - **No file download.** The files page lists artifacts but does not serve their bytes.
   Serving agent-uploaded content from the same origin as the UI would let an agent upload
@@ -182,6 +186,29 @@ Three known gaps, all deliberate:
   actually exist, because events outside that 500-row window never get a chance to match
   the second filter. A single filter, or no filter, always sees the full log up to the
   500-row page and is not affected.
+
+Spec commitments that did not ship. These are not decisions — they are things the design
+doc promised that the build simply didn't get to:
+
+- **`message_injected` is not recorded.** The design's event-kinds table lists 11 kinds;
+  10 shipped. This one — carrying `msg_id` and whether the channel notification was
+  written — never made it into the plan or the code. It matters more than the others: it
+  is the kind that would distinguish "delivered to the socket but injection failed, so no
+  ack was owed" from "acks have no producer at all", and that second defect is the reason
+  this log records everything in the first place. Diagnosis is still possible without it,
+  just coarser. It presumably fell out because the agent that does the injecting is a
+  separate process speaking only `ToBus` to the bus — recording this event needs a new
+  protocol message, not just a store call, and that addition never got planned.
+- **`/agents` does not show "last seen".** The design promises it. The column already
+  exists in the `agents` table and is written on every `set_online`, but it is not on the
+  `AgentRow` the store hands back and so it is not on any page.
+- **Rooms are not ordered by last activity.** The design says `/` shows "rooms by last
+  activity" and `/rooms` shows "last activity"; both actually order by room name.
+- **Pages do not auto-refresh.** The design says "No SSE initially. Live views
+  auto-refresh on a short interval." Nothing refreshes anywhere — every page is a
+  manual-reload snapshot. This is a deliberate deferral, not a step toward adding SSE: a
+  plain `<meta http-equiv="refresh">` on the overview and agents pages would close it
+  without any JavaScript, and is the more likely next step than streaming.
 
 Events accumulate with no retention policy. At LAN volumes that is fine for a long time,
 but nothing prunes them.

@@ -196,7 +196,7 @@ async fn agent(State(app): State<App>, Path(name): Path<String>) -> Html<String>
     let rooms = app.store.rooms().await.unwrap_or_default();
     let mine: Vec<&str> = rooms
         .iter()
-        .filter(|r| r.members.iter().any(|m| *m == name))
+        .filter(|r| r.members.contains(&name))
         .map(|r| r.name.as_str())
         .collect();
     let evs = app
@@ -276,6 +276,25 @@ async fn events_page(
 
     let mut b = String::from("<h1>events</h1><table><tr><th>kind<th>agent<th>room<th>detail</tr>");
     for e in &evs {
+        // `agent` and `room` are nullable, so an event without one gets a plain empty
+        // cell rather than a link to `/events?agent=` or `/events?room=`, which would
+        // filter to nothing meaningful.
+        let agent_cell = match e.agent.as_deref() {
+            Some(a) => format!(
+                "<a href=\"/events?agent={ap}\">{a}</a>",
+                ap = encode_path_segment(a),
+                a = esc(a),
+            ),
+            None => String::new(),
+        };
+        let room_cell = match e.room.as_deref() {
+            Some(r) => format!(
+                "<a href=\"/events?room={rp}\">{r}</a>",
+                rp = encode_path_segment(r),
+                r = esc(r),
+            ),
+            None => String::new(),
+        };
         b.push_str(&format!(
             "<tr><td><a href=\"/events?kind={kp}\">{k}</a></td><td>{a}</td><td>{r}</td><td>{d}</td></tr>",
             // A query *value* isn't a path segment, but percent-encoding it against the
@@ -287,8 +306,8 @@ async fn events_page(
             // avoids adding a near-duplicate helper for one call site.
             kp = encode_path_segment(&e.kind),
             k = esc(&e.kind),
-            a = esc(e.agent.as_deref().unwrap_or("")),
-            r = esc(e.room.as_deref().unwrap_or("")),
+            a = agent_cell,
+            r = room_cell,
             d = esc(&e.detail.to_string()),
         ));
     }
