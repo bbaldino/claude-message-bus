@@ -254,8 +254,12 @@ async fn a_room_name_containing_a_percent_encoded_slash_round_trips() {
         body.contains("hello from a slashy room"),
         "expected the slashy room's transcript: {body}"
     );
+    // Anchored to the `<h1>` rather than searching the whole page, so this still proves
+    // the *decoded* name reached the handler: had decoding failed the heading would read
+    // `<h1>a%2Fb`. Deliberately not matched against the closing tag — the heading also
+    // carries a sort-direction note — but the check is no weaker for it.
     assert!(
-        body.contains("<h1>a/b</h1>"),
+        body.contains("<h1>a/b"),
         "expected the decoded name: {body}"
     );
 }

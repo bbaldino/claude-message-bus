@@ -173,8 +173,11 @@ async fn overview(State(app): State<App>) -> Html<String> {
             m = esc(&r.members.join(", ")),
         ));
     }
+    // The sort direction is stated because it is not guessable from the data: a send and
+    // the ack it provokes land milliseconds apart, so newest-first puts the ack *above*
+    // the message it acknowledges, which reads as backwards until you know the rule.
     b.push_str(
-        "</table><h2>recent events</h2>\
+        "</table><h2>recent events <span class=\"note\">newest first</span></h2>\
          <table><tr><th>when<th>kind<th>agent<th>room<th>detail</tr>",
     );
     for e in &events {
@@ -262,7 +265,11 @@ async fn room(State(app): State<App>, Path(name): Path<String>) -> Html<String> 
     entries.sort_by_key(|e| (e.at(), e.rank()));
 
     let mut b = format!(
-        "<h1>{n}</h1><p><a href=\"/rooms/{p}/files\">files</a></p>\
+        // Opposite direction to the event tables, and deliberately so: a transcript is
+        // read as a conversation, top to bottom. Labelled because the other pages sort
+        // the other way and switching between them without a cue is disorienting.
+        "<h1>{n} <span class=\"note\">oldest first</span></h1>\
+         <p><a href=\"/rooms/{p}/files\">files</a></p>\
          <table><tr><th>when<th>who<th>what</tr>",
         n = esc(&name),
         p = encode_path_segment(&name),
@@ -346,7 +353,10 @@ async fn agent(State(app): State<App>, Path(name): Path<String>) -> Html<String>
             n = esc(r),
         ));
     }
-    b.push_str("</ul><h2>activity</h2><table><tr><th>when<th>kind<th>room<th>detail</tr>");
+    b.push_str(
+        "</ul><h2>activity <span class=\"note\">newest first</span></h2>\
+         <table><tr><th>when<th>kind<th>room<th>detail</tr>",
+    );
     for e in &evs {
         b.push_str(&format!(
             "<tr><td class=\"when\">{w}</td><td>{k}</td><td>{r}</td>{d}</tr>",
@@ -408,8 +418,10 @@ async fn events_page(
         evs.retain(|e| e.room.as_deref() == Some(r));
     }
 
-    let mut b =
-        String::from("<h1>events</h1><table><tr><th>when<th>kind<th>agent<th>room<th>detail</tr>");
+    let mut b = String::from(
+        "<h1>events <span class=\"note\">newest first</span></h1>\
+         <table><tr><th>when<th>kind<th>agent<th>room<th>detail</tr>",
+    );
     for e in &evs {
         // `agent` and `room` are nullable, so an event without one gets a plain empty
         // cell rather than a link to `/events?agent=` or `/events?room=`, which would

@@ -54,8 +54,14 @@ pub fn encode_path_segment(s: &str) -> String {
 /// question the column exists to answer. The date is omitted when the timestamp falls on
 /// today, which is the common case on a dashboard and keeps the column narrow.
 ///
-/// Output contains only digits, `-` and `:`, so it needs no escaping — but callers pass
-/// it through `esc` anyway rather than special-casing one column.
+/// **Milliseconds are shown deliberately.** `created_at` has millisecond resolution and
+/// the bus routinely writes several rows inside one second — a send and the ack it
+/// provokes, for instance. Truncating to seconds made consecutive rows look simultaneous,
+/// so a correctly ordered table read as though its rows were shuffled. The extra three
+/// digits are what let a reader confirm the order rather than doubt it.
+///
+/// Output contains only digits, `-`, `:` and `.`, so it needs no escaping — but callers
+/// pass it through `esc` anyway rather than special-casing one column.
 pub fn fmt_time(ms: i64) -> String {
     let Some(utc) = chrono::DateTime::from_timestamp_millis(ms) else {
         // Out of range rather than merely odd: render something honest instead of
@@ -64,9 +70,9 @@ pub fn fmt_time(ms: i64) -> String {
     };
     let local = utc.with_timezone(&chrono::Local);
     if local.date_naive() == chrono::Local::now().date_naive() {
-        local.format("%H:%M:%S").to_string()
+        local.format("%H:%M:%S%.3f").to_string()
     } else {
-        local.format("%m-%d %H:%M:%S").to_string()
+        local.format("%m-%d %H:%M:%S%.3f").to_string()
     }
 }
 
@@ -106,11 +112,31 @@ a{color:#0b57d0}\
 .off{color:#8c959f}\
 .when{color:#6e7781;white-space:nowrap}\
 .detail{color:#424a53}\
+.note{font-weight:400;font-size:.8rem;color:#8c959f}\
 ";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_timestamp_shows_milliseconds_so_ordering_is_legible() {
+        // The bus writes several rows inside one second (a send and the ack it
+        // provokes). At second resolution those render identically and a correctly
+        // ordered table reads as shuffled — this precision is what lets a reader
+        // confirm the order instead of doubting it.
+        let a = fmt_time(1_785_000_000_123);
+        let b = fmt_time(1_785_000_000_124);
+        assert_ne!(a, b, "1ms apart must not render identically: {a} vs {b}");
+        assert!(a.contains('.'), "expected fractional seconds: {a}");
+    }
+
+    #[test]
+    fn an_out_of_range_timestamp_does_not_panic_the_page() {
+        // One bad row must not take down a whole view.
+        let s = fmt_time(i64::MAX);
+        assert!(s.contains(&i64::MAX.to_string()), "{s}");
+    }
 
     #[test]
     fn escapes_every_character_that_can_break_out_of_html() {
