@@ -12,6 +12,9 @@ into a live session rather than waiting to be polled.
 - `claude-bus agent` — spawned per session by Claude Code as a stdio MCP server.
 - `claude-bus tail <room>` — watch a conversation; the only view showing both halves.
 
+The bus also serves a read-only web UI on its own port for reading conversations and bus
+behaviour after the fact — see `docs/DEPLOY.md`.
+
 See `docs/DEPLOY.md` to run it, and `docs/superpowers/specs/` for the design and the
 reasoning behind it. `docs/poc-transcript.md` is a real unattended negotiation between two
 agents, from the prototype that proved the idea.

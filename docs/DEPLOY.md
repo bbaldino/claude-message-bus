@@ -144,6 +144,48 @@ claude-bus tail protocol             # follow one
 Neither participant's terminal shows both halves — Claude Code renders inbound events but
 hides outbound message text — so this is the authoritative view.
 
+## Reading the record afterwards
+
+The bus serves a read-only web UI on the same port:
+
+```
+http://nas.lan:7777/
+```
+
+`claude-bus tail` shows one room live, to whoever happens to be watching. This shows what
+happened afterwards — transcripts with the bus's own behaviour interleaved against them,
+so you can see not just what two agents said but whether each message was delivered or
+merely queued, when a room hit the exchange cap, and why an agent went offline.
+
+Pages: an overview, rooms and their transcripts, agents and their connect/disconnect
+history, a per-room files page listing artifacts (uploader, size, hash), and the raw
+event log, filterable by kind, agent, and room.
+
+It performs no writes. With no authentication on the bus, anything the UI could do would
+be available to anything that can reach the port — so it does nothing.
+
+Three known gaps, all deliberate:
+
+- **No file download.** The files page lists artifacts but does not serve their bytes.
+  Serving agent-uploaded content from the same origin as the UI would let an agent upload
+  an HTML file that executes in that origin when someone views it — able to act as any
+  other page there. Doing that safely needs its own decision about `Content-Type` and
+  `Content-Disposition`, so it was left out rather than done carelessly. Fetch the file
+  through the `get_file` MCP tool instead.
+- **No time filtering on `/events`.** Filtering by kind, agent, and room shipped; a time
+  range did not — it needs a new store query that none of the current ones provide. This
+  is a known gap against the original design, not an oversight.
+- **Combining filters on `/events` can under-report on a busy room.** Only one filter is
+  pushed down to SQL, capped at its 500 most recent matching rows; any additional filters
+  are then applied to that page in memory. So if a room has produced more than 500
+  events, adding a `kind` (or `agent`) filter on top of it can show fewer matches than
+  actually exist, because events outside that 500-row window never get a chance to match
+  the second filter. A single filter, or no filter, always sees the full log up to the
+  500-row page and is not affected.
+
+Events accumulate with no retention policy. At LAN volumes that is fine for a long time,
+but nothing prunes them.
+
 ## Optional: reset the exchange cap automatically
 
 After 20 messages in a room with no human input, the bus pauses it. Installing
