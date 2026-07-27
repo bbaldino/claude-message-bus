@@ -21,12 +21,31 @@ impl EnvSource for RealEnv {
             .map(|p| p.to_string_lossy().into_owned())
     }
     fn hostname(&self) -> String {
-        std::fs::read_to_string("/etc/hostname")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "unknown".to_string())
+        // `/proc/sys/kernel/hostname` reflects the running kernel hostname —
+        // correct on every Linux host, including one whose static
+        // `/etc/hostname` was never set (the normal state for a systemd
+        // machine using DHCP, and for many containers). `/etc/hostname` is
+        // consulted only as a fallback for the rare case `/proc` isn't
+        // mounted.
+        let kernel = std::fs::read_to_string("/proc/sys/kernel/hostname").ok();
+        let etc = std::fs::read_to_string("/etc/hostname").ok();
+        choose_hostname([kernel.as_deref(), etc.as_deref()])
     }
+}
+
+/// Picks the first non-empty (after trimming) candidate, in source-priority
+/// order, falling back to `"unknown"` if every candidate is absent, empty, or
+/// whitespace-only. Pure and filesystem-free so the source-selection logic
+/// — the part that actually shipped broken — is unit-testable without
+/// touching real files.
+fn choose_hostname<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> String {
+    candidates
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 #[derive(Debug, Default, Clone)]
@@ -165,5 +184,41 @@ mod tests {
         let mut env = FakeEnv::new();
         env.cwd = None;
         assert_eq!(resolve_name(&args(None, None), &env), "agent");
+    }
+
+    #[test]
+    fn choose_hostname_prefers_the_first_source() {
+        assert_eq!(
+            choose_hostname([Some("kernel-host"), Some("etc-host")]),
+            "kernel-host"
+        );
+    }
+
+    #[test]
+    fn choose_hostname_falls_through_an_empty_first_source() {
+        assert_eq!(choose_hostname([Some(""), Some("etc-host")]), "etc-host");
+    }
+
+    #[test]
+    fn choose_hostname_falls_through_a_whitespace_only_first_source() {
+        assert_eq!(
+            choose_hostname([Some("   \n"), Some("etc-host")]),
+            "etc-host"
+        );
+    }
+
+    #[test]
+    fn choose_hostname_falls_back_to_unknown_when_everything_is_empty() {
+        assert_eq!(choose_hostname([Some(""), Some("  ")]), "unknown");
+    }
+
+    #[test]
+    fn choose_hostname_falls_back_to_unknown_when_nothing_is_present() {
+        assert_eq!(choose_hostname([None, None]), "unknown");
+    }
+
+    #[test]
+    fn choose_hostname_trims_the_winning_value() {
+        assert_eq!(choose_hostname([Some("  myhost\n")]), "myhost");
     }
 }
