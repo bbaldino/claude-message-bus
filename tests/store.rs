@@ -377,3 +377,33 @@ async fn files_are_scoped_to_their_room() {
     assert!(store.get_file("other", "k.txt").await.unwrap().is_none());
     assert_eq!(store.list_files("other").await.unwrap().len(), 0);
 }
+
+#[tokio::test]
+async fn mark_all_offline_clears_ghosts_left_by_a_bus_that_died() {
+    // A bus process killed mid-connection never runs its per-connection teardown, so
+    // `set_online(false)` never fires and the row keeps claiming the agent is online.
+    // Nothing else reconciles it, so without this the agent list shows ghosts forever.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    store
+        .upsert_agent("ghost", "hardac", "/w/g", None)
+        .await
+        .unwrap();
+    store.set_online("ghost", true).await.unwrap();
+    assert!(
+        store
+            .agents()
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.name == "ghost" && a.online),
+        "precondition: the agent is recorded online"
+    );
+
+    store.mark_all_offline().await.unwrap();
+
+    assert!(
+        store.agents().await.unwrap().iter().all(|a| !a.online),
+        "a freshly started bus has no live connections, so nothing may claim online"
+    );
+}

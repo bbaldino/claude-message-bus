@@ -122,6 +122,22 @@ impl Store {
         Ok(())
     }
 
+    /// Mark every agent offline. Called once when a bus starts.
+    ///
+    /// `online` is persisted, but the connection registry that actually knows who is
+    /// connected is in memory and therefore empty at startup — so any row still claiming
+    /// `online` is stale by definition. It gets that way whenever a bus process dies
+    /// without running its per-connection teardown (a kill, a crash, `docker compose up
+    /// --build` recreating the container), which skips the `set_online(false)` that a
+    /// graceful disconnect would have performed. Without this reconciliation those rows
+    /// stay `online` forever, and the agent list shows ghosts that no longer exist.
+    pub async fn mark_all_offline(&self) -> anyhow::Result<()> {
+        sqlx::query("UPDATE agents SET online = 0 WHERE online != 0")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn agents(&self) -> anyhow::Result<Vec<AgentRow>> {
         let rows =
             sqlx::query("SELECT name, host, cwd, session_id, online FROM agents ORDER BY name")

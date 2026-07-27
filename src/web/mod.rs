@@ -152,16 +152,19 @@ async fn overview(State(app): State<App>) -> Html<String> {
     let rooms = app.store.rooms().await.unwrap_or_default();
     let events = app.store.events(20).await.unwrap_or_default();
 
+    // See `agents()`: liveness comes from the registry, not the persisted column.
+    let live = app.registry.online().await;
     let mut b = String::new();
     b.push_str("<h1>overview</h1><h2>agents</h2><table><tr><th>name<th>host<th>state</tr>");
     for a in &agents {
+        let online = live.contains(&a.name);
         b.push_str(&format!(
             "<tr><td><a href=\"/agents/{p}\">{n}</a></td><td>{h}</td><td class=\"{c}\">{s}</td></tr>",
             p = encode_path_segment(&a.name),
             n = esc(&a.name),
             h = esc(&a.host),
-            c = if a.online { "" } else { "off" },
-            s = if a.online { "online" } else { "offline" },
+            c = if online { "" } else { "off" },
+            s = if online { "online" } else { "offline" },
         ));
     }
     b.push_str("</table><h2>rooms</h2><table><tr><th>room<th>members</tr>");
@@ -317,15 +320,22 @@ async fn room_files(State(app): State<App>, Path(name): Path<String>) -> Html<St
 
 async fn agents(State(app): State<App>) -> Html<String> {
     let agents = app.store.agents().await.unwrap_or_default();
+    // Liveness comes from the in-memory registry, not the persisted `online` column —
+    // the same source the `agents` MCP tool uses. The column is a cache that can only be
+    // written by a graceful teardown, so a bus killed mid-connection leaves it claiming
+    // agents are online that are not. Reading the registry keeps this page and the tool
+    // from disagreeing about who is connected.
+    let live = app.registry.online().await;
     let mut b = String::from("<h1>agents</h1><table><tr><th>name<th>host<th>state</tr>");
     for a in &agents {
+        let online = live.contains(&a.name);
         b.push_str(&format!(
             "<tr><td><a href=\"/agents/{p}\">{n}</a></td><td>{h}</td><td class=\"{c}\">{s}</td></tr>",
             p = encode_path_segment(&a.name),
             n = esc(&a.name),
             h = esc(&a.host),
-            c = if a.online { "" } else { "off" },
-            s = if a.online { "online" } else { "offline" },
+            c = if online { "" } else { "off" },
+            s = if online { "online" } else { "offline" },
         ));
     }
     b.push_str("</table>");

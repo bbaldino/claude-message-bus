@@ -597,3 +597,35 @@ async fn the_event_log_combines_kind_and_agent_filters_with_and_semantics() {
         "combined filters must exclude events matching only the agent"
     );
 }
+
+#[tokio::test]
+async fn the_agents_page_does_not_show_ghosts_from_a_previous_bus() {
+    // The regression: `online` is persisted, but the registry that knows who is actually
+    // connected is in memory. A bus killed mid-connection leaves the column claiming an
+    // agent is online; a later bus reading that column reports a ghost. This asserts the
+    // page reflects the live registry (and the startup reconciliation), not the column.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("ghost", "hardac", "/w/g", None)
+            .await
+            .unwrap();
+        store.set_online("ghost", true).await.unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/agents").await;
+    assert!(
+        body.contains("ghost"),
+        "the agent is still known, just not connected: {body}"
+    );
+    assert!(
+        !body.contains(">online<"),
+        "nothing is connected to this freshly started bus: {body}"
+    );
+    assert!(
+        body.contains(">offline<"),
+        "it should be shown as offline: {body}"
+    );
+}

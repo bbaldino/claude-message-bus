@@ -154,8 +154,13 @@ pub async fn serve_on_full(
     keepalive: Keepalive,
     registry: Registry,
 ) -> anyhow::Result<()> {
+    let store = Store::open(&data_dir).await?;
+    // A bus that is only now starting has no live connections, so any row left claiming
+    // `online` is a ghost from a process that died without running its teardown.
+    // Reconcile before serving rather than letting the stale rows be read as truth.
+    store.mark_all_offline().await?;
     let app = App {
-        store: Arc::new(Store::open(&data_dir).await?),
+        store: Arc::new(store),
         registry,
         guards,
         keepalive,
