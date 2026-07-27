@@ -15,6 +15,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::{Router, routing::get};
 use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::proto::{FromBus, ReplyResult, RoomUnread, ToBus};
@@ -278,6 +279,13 @@ async fn connection(socket: WebSocket, app: App) {
     let mut timeout_ticker = tokio::time::interval(app.keepalive.ping_interval);
     timeout_ticker.tick().await; // skip the immediate first tick
 
+    // Which of the two ways out of the loop below actually happened, for the
+    // `agent_disconnected` event at teardown. Defaults to the ordinary case
+    // (the socket closing); the keepalive-timeout branch overwrites it right
+    // before its own `break` so a ghost agent (one whose socket vanished
+    // without closing) is distinguishable in the log from a clean hangup.
+    let mut disconnect_reason: &'static str = "socket_closed";
+
     loop {
         tokio::select! {
             incoming = stream.next() => {
@@ -342,6 +350,20 @@ async fn connection(socket: WebSocket, app: App) {
                     let _ = app
                         .store
                         .upsert_agent(&effective, host, cwd, session_id.as_deref())
+                        .await;
+                    let _ = app
+                        .store
+                        .append_event(
+                            "agent_registered",
+                            Some(&effective),
+                            None,
+                            json!({
+                                "requested_name": name,
+                                "effective_name": &effective,
+                                "host": host,
+                                "session_id": session_id,
+                            }),
+                        )
                         .await;
                     me = Some(effective.clone());
                     let _ = control_tx.try_send(FromBus::Registered {
@@ -408,6 +430,7 @@ async fn connection(socket: WebSocket, app: App) {
                             app.keepalive.pong_timeout
                         );
                     }
+                    disconnect_reason = "keepalive_timeout";
                     break;
                 }
             }
@@ -417,6 +440,15 @@ async fn connection(socket: WebSocket, app: App) {
     if let Some(name) = me {
         app.registry.detach(&name).await;
         let _ = app.store.set_online(&name, false).await;
+        let _ = app
+            .store
+            .append_event(
+                "agent_disconnected",
+                Some(&name),
+                None,
+                json!({ "reason": disconnect_reason }),
+            )
+            .await;
         eprintln!("disconnected: {name}");
     } else if let Some(id) = observer {
         // No `Store` state was ever created for an observer (see

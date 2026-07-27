@@ -137,3 +137,319 @@ async fn malformed_detail_json_does_not_poison_reads() {
     let evs = store.events(10).await.unwrap();
     assert_eq!(evs.len(), 2, "the bad row must not sink the query");
 }
+
+// --- Task 3: events written by the running bus, driven over WebSocket ---
+
+mod common;
+
+use claude_bus::proto::{FromBus, Target, ToBus};
+use common::{
+    connect, next_event, send, start_bus_with_dir, start_bus_with_guards_dir,
+    start_bus_with_keepalive_dir,
+};
+
+#[tokio::test]
+async fn a_send_records_delivery_outcome_per_recipient() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await; // Registered
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent {
+                name: "ghost".into(),
+            },
+            text: "hello".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut a).await; // Sent reply
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let sent: Vec<_> = store.events_of_kind("message_sent", 10).await.unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].detail["queued_for"][0], "ghost",
+        "recipient was offline"
+    );
+    assert_eq!(sent[0].detail["delivered_to"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn registration_records_both_requested_and_effective_name() {
+    // The caas -> caas#2 collision must be visible in the log rather than inferred.
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    let mut b = connect(port, "caas").await; // same name, same host
+    next_event(&mut b).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let regs = store.events_of_kind("agent_registered", 10).await.unwrap();
+    assert_eq!(regs.len(), 2);
+    let collided = regs
+        .iter()
+        .find(|e| e.detail["effective_name"] != e.detail["requested_name"]);
+    let collided = collided.expect("the second registration should differ");
+    assert_eq!(collided.detail["requested_name"], "caas");
+    assert_eq!(collided.detail["effective_name"], "caas#2");
+}
+
+#[tokio::test]
+async fn an_ack_is_recorded() {
+    // The Ack defect was invisible precisely because nothing recorded acks.
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Ack {
+            room: "protocol".into(),
+            last_delivered_id: 5,
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let acks = store.events_of_kind("ack", 10).await.unwrap();
+    assert_eq!(acks.len(), 1);
+    assert_eq!(acks[0].detail["last_delivered_id"], 5);
+}
+
+#[tokio::test]
+async fn a_paused_room_is_recorded() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+
+    for i in 0..21 {
+        send(
+            &mut a,
+            &ToBus::Send {
+                req_id: 100 + i,
+                target: Target::Room {
+                    room: "loop".into(),
+                },
+                text: format!("m{i}"),
+                done: false,
+            },
+        )
+        .await;
+        next_event(&mut a).await;
+    }
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let paused = store.events_of_kind("room_paused", 10).await.unwrap();
+    assert_eq!(paused.len(), 1);
+    assert_eq!(paused[0].room.as_deref(), Some("loop"));
+}
+
+#[tokio::test]
+async fn a_join_is_recorded() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await; // Joined reply
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let joined = store.events_of_kind("room_joined", 10).await.unwrap();
+    assert_eq!(joined.len(), 1);
+    assert_eq!(joined[0].agent.as_deref(), Some("caas"));
+    assert_eq!(joined[0].room.as_deref(), Some("protocol"));
+}
+
+#[tokio::test]
+async fn a_resume_is_recorded() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+
+    send(
+        &mut a,
+        &ToBus::Resume {
+            req_id: 1,
+            room: "loop".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await; // Resumed reply
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let resumed = store.events_of_kind("resumed", 10).await.unwrap();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].room.as_deref(), Some("loop"));
+}
+
+#[tokio::test]
+async fn a_rate_limited_send_is_recorded() {
+    // `start_bus_with_dir` deliberately disables the rate limit (other tests
+    // send bursts on purpose), so this test brings its own `Guards` with the
+    // rate limit enabled.
+    let guards = claude_bus::bus::delivery::Guards::new(
+        claude_bus::bus::delivery::DEFAULT_CAP,
+        claude_bus::bus::delivery::DEFAULT_MIN_INTERVAL_MS,
+    );
+    let (_d, port, store_dir) = start_bus_with_guards_dir(guards).await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+
+    // The rate limit rejects a second send to the same room from the same
+    // agent that arrives too soon after the first.
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "first".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut a).await; // Sent reply
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "immediately after".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut a).await {
+        FromBus::Error { .. } => {}
+        other => panic!("expected the second send to be rate limited, got {other:?}"),
+    }
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let limited = store.events_of_kind("rate_limited", 10).await.unwrap();
+    assert_eq!(limited.len(), 1);
+    assert_eq!(limited[0].room.as_deref(), Some("protocol"));
+    assert!(limited[0].detail["retry_in_ms"].as_i64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn a_stored_and_fetched_file_are_recorded() {
+    use base64::Engine;
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await;
+
+    let content = base64::engine::general_purpose::STANDARD.encode(b"schema goes here");
+    send(
+        &mut a,
+        &ToBus::PutFile {
+            req_id: 2,
+            room: "protocol".into(),
+            key: "schema.txt".into(),
+            content_b64: content,
+            content_type: Some("text/plain".into()),
+        },
+    )
+    .await;
+    next_event(&mut a).await; // FileStored reply
+
+    send(
+        &mut a,
+        &ToBus::GetFile {
+            req_id: 3,
+            room: "protocol".into(),
+            key: "schema.txt".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await; // FileContent reply
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let stored = store.events_of_kind("file_stored", 10).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].detail["key"], "schema.txt");
+
+    let fetched = store.events_of_kind("file_fetched", 10).await.unwrap();
+    assert_eq!(fetched.len(), 1);
+    assert_eq!(fetched[0].detail["key"], "schema.txt");
+}
+
+#[tokio::test]
+async fn a_closed_socket_is_recorded_as_socket_closed() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await; // Registered
+
+    drop(a);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let disconnects = store
+        .events_of_kind("agent_disconnected", 10)
+        .await
+        .unwrap();
+    assert_eq!(disconnects.len(), 1);
+    assert_eq!(disconnects[0].agent.as_deref(), Some("caas"));
+    assert_eq!(disconnects[0].detail["reason"], "socket_closed");
+}
+
+// Regression for the specific defect this event exists to diagnose: a
+// hardcoded single reason would make a lost socket indistinguishable from a
+// keepalive timeout, and a ghost agent is only diagnosable if the two are
+// told apart. Uses the same millisecond-scale `Keepalive` knobs as
+// `tests/bus.rs`'s `a_peer_that_stops_answering_pings_is_detached_and_reads_as_queued`
+// so this doesn't have to sleep for the production 30s/90s cadence.
+#[tokio::test]
+async fn a_keepalive_timeout_is_recorded_as_keepalive_timeout() {
+    let (_d, port, store_dir) = start_bus_with_keepalive_dir(
+        std::time::Duration::from_millis(50),
+        std::time::Duration::from_millis(150),
+    )
+    .await;
+
+    // `victim` registers and is then never read from again, so
+    // tokio-tungstenite never gets the chance to auto-reply to the bus's
+    // Pings with a Pong (that reply is only flushed on the next read/write
+    // call). The connection is kept alive (not dropped) for the whole test:
+    // this must be detected by ping/pong silence, not by the socket closing.
+    let mut victim = connect(port, "victim").await;
+    next_event(&mut victim).await; // Registered
+
+    // A few ping/timeout cycles at 50ms/150ms, comfortably long enough for
+    // the bus to have pinged, waited, and given up at least once.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let disconnects = store
+        .events_of_kind("agent_disconnected", 10)
+        .await
+        .unwrap();
+    assert_eq!(disconnects.len(), 1);
+    assert_eq!(disconnects[0].agent.as_deref(), Some("victim"));
+    assert_eq!(disconnects[0].detail["reason"], "keepalive_timeout");
+
+    drop(victim);
+}

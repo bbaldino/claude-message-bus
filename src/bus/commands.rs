@@ -5,6 +5,7 @@
 //! this module adds to over time.
 
 use base64::Engine;
+use serde_json::json;
 
 use super::App;
 use super::delivery::GuardVerdict;
@@ -57,6 +58,10 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
                 return;
             }
             let members = app.store.room_members(&room).await.unwrap_or_default();
+            let _ = app
+                .store
+                .append_event("room_joined", Some(me), Some(&room), json!({}))
+                .await;
             let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Joined { room, members },
@@ -74,6 +79,15 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
             match app.guards.check(&room, me, now_ms()).await {
                 GuardVerdict::Allow => {}
                 GuardVerdict::RateLimited { retry_in_ms } => {
+                    let _ = app
+                        .store
+                        .append_event(
+                            "rate_limited",
+                            Some(me),
+                            Some(&room),
+                            json!({ "retry_in_ms": retry_in_ms }),
+                        )
+                        .await;
                     let _ = control_tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message: format!("rate limited; retry in {retry_in_ms} ms"),
@@ -81,6 +95,15 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
                     return;
                 }
                 GuardVerdict::Paused { count } => {
+                    let _ = app
+                        .store
+                        .append_event(
+                            "room_paused",
+                            Some(me),
+                            Some(&room),
+                            json!({ "count": count }),
+                        )
+                        .await;
                     let pause_reason = format!(
                         "{count} messages in this room with no human input. \
                          Tell your human, and call resume once they say to continue."
@@ -160,6 +183,21 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
                 )
                 .await;
 
+            let _ = app
+                .store
+                .append_event(
+                    "message_sent",
+                    Some(me),
+                    Some(&room),
+                    json!({
+                        "msg_id": msg_id,
+                        "delivered_to": &delivered_to,
+                        "queued_for": &queued_for,
+                        "done": done,
+                    }),
+                )
+                .await;
+
             let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Sent {
@@ -222,6 +260,15 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
                 .await
             {
                 Ok(f) => {
+                    let _ = app
+                        .store
+                        .append_event(
+                            "file_stored",
+                            Some(me),
+                            Some(&room),
+                            json!({ "key": &f.key, "size": f.size, "sha256": &f.sha256 }),
+                        )
+                        .await;
                     let _ = control_tx.try_send(FromBus::Reply {
                         req_id,
                         result: ReplyResult::FileStored {
@@ -242,6 +289,15 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
 
         ToBus::GetFile { req_id, room, key } => match app.store.get_file(&room, &key).await {
             Ok(Some((meta, bytes))) => {
+                let _ = app
+                    .store
+                    .append_event(
+                        "file_fetched",
+                        Some(me),
+                        Some(&room),
+                        json!({ "key": &key }),
+                    )
+                    .await;
                 let _ = control_tx.try_send(FromBus::Reply {
                     req_id,
                     result: ReplyResult::FileContent {
@@ -303,6 +359,10 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
 
         ToBus::Resume { req_id, room } => {
             app.guards.reset(&room).await;
+            let _ = app
+                .store
+                .append_event("resumed", Some(me), Some(&room), json!({}))
+                .await;
             let _ = control_tx.try_send(FromBus::Reply {
                 req_id,
                 result: ReplyResult::Resumed { room },
@@ -314,6 +374,15 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
             last_delivered_id,
         } => {
             let _ = app.store.set_cursor(&room, me, last_delivered_id).await;
+            let _ = app
+                .store
+                .append_event(
+                    "ack",
+                    Some(me),
+                    Some(&room),
+                    json!({ "last_delivered_id": last_delivered_id }),
+                )
+                .await;
         }
     }
 }
