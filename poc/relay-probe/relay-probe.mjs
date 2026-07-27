@@ -16,6 +16,7 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { writeFileSync, appendFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -56,6 +57,42 @@ const mcp = new Server(
       'need you to do anything special. Behave normally.',
   },
 )
+
+// The first attempt declared `tools: {}` with no `tools/list` handler, so Claude Code
+// asked for the tool list and got "Method not found" — and no permission prompt was ever
+// relayed, despite a real Write dialog being on screen. The docs describe relay in the
+// context of a *two-way* channel, i.e. one that actually exposes a reply tool, so a
+// server advertising a capability it cannot answer is the prime suspect. This tool exists
+// to make the probe genuinely two-way; it is also a useful escape hatch for answering a
+// prompt by hand.
+mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+  log('tools/list requested')
+  return {
+    tools: [{
+      name: 'probe_answer',
+      description: 'Answer a relayed permission request by id',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          request_id: { type: 'string', description: 'The request_id from the prompt' },
+          behavior: { type: 'string', description: '"allow" or "deny"' },
+        },
+        required: ['request_id', 'behavior'],
+      },
+    }],
+  }
+})
+
+mcp.setRequestHandler(CallToolRequestSchema, async req => {
+  if (req.params.name !== 'probe_answer') throw new Error(`unknown tool: ${req.params.name}`)
+  const { request_id, behavior } = req.params.arguments ?? {}
+  log(`probe_answer called: ${request_id} -> ${behavior}`)
+  await mcp.notification({
+    method: 'notifications/claude/channel/permission',
+    params: { request_id, behavior },
+  })
+  return { content: [{ type: 'text', text: `sent ${behavior} for ${request_id}` }] }
+})
 
 // Claude Code -> us, when a permission dialog opens.
 const PermissionRequestSchema = z.object({
