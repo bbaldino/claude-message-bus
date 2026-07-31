@@ -1,0 +1,18 @@
+[workspace]
+# Application shipped as a container image, not a library. Never publish.
+publish = false
+
+# REQUIRED alongside publish = false. release-plz normally derives the previous
+# version from crates.io; a crate never published there has nothing to compare
+# against, so every run is treated as the first release and the version never
+# advances — silently. This makes git tags the baseline instead.
+git_only = true
+
+# Cut a GitHub release alongside the tag so the changelog is visible there.
+git_release_enable = true
+
+# MUST be bare. This package is `claude-bus` inside a [workspace], so the
+# default tag would be `claude-bus-v0.1.0` — which matches neither
+# publish-image.yml's `tags: ['v*.*.*']` filter nor the baseline release-plz
+# looks for. Tag created, no image built, no error reported.
+git_tag_name = "v{{version}}"
