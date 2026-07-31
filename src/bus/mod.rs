@@ -321,6 +321,7 @@ async fn connection(socket: WebSocket, app: App) {
                     host,
                     cwd,
                     session_id,
+                    human: _human,
                 } = &cmd
                 {
                     // A connection registers exactly once. Accepting a second

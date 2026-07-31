@@ -39,6 +39,7 @@ async fn a_second_register_on_one_connection_is_refused_and_identity_is_unchange
             host: "testhost".into(),
             cwd: "/w/caas".into(),
             session_id: None,
+            human: false,
         },
     )
     .await;

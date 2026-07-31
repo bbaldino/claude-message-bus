@@ -488,3 +488,30 @@ async fn the_migration_is_idempotent() {
     let second = Store::open(dir.path()).await.unwrap();
     assert_eq!(second.agents().await.unwrap().len(), 1);
 }
+
+#[test]
+fn a_register_payload_without_the_human_field_still_deserializes() {
+    // This is exactly the payload an already-running agent binary sends. Claude Code
+    // does not respawn stdio MCP servers mid-session, so those binaries cannot be
+    // updated without restarting their sessions — if this ever fails, shipping the
+    // change silently disconnects every live agent.
+    let old = r#"{"type":"register","name":"caas","host":"hardac","cwd":"/w","session_id":null}"#;
+    let parsed: claude_bus::proto::ToBus = serde_json::from_str(old).unwrap();
+    match parsed {
+        claude_bus::proto::ToBus::Register { name, human, .. } => {
+            assert_eq!(name, "caas");
+            assert!(!human, "an absent field must mean not human");
+        }
+        other => panic!("expected Register, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_register_payload_with_human_true_round_trips() {
+    let new = r#"{"type":"register","name":"bbaldino","host":"hardac","cwd":"/w","session_id":null,"human":true}"#;
+    let parsed: claude_bus::proto::ToBus = serde_json::from_str(new).unwrap();
+    match parsed {
+        claude_bus::proto::ToBus::Register { human, .. } => assert!(human),
+        other => panic!("expected Register, got {other:?}"),
+    }
+}

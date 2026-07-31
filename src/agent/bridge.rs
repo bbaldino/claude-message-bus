@@ -70,6 +70,7 @@ async fn connect_once(
         host: cfg.host.clone(),
         cwd: cfg.cwd.clone(),
         session_id: cfg.session_id.clone(),
+        human: false,
     };
     sink.send(Message::text(serde_json::to_string(&register)?))
         .await?;

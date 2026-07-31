@@ -383,6 +383,7 @@ pub async fn connect(port: u16, name: &str) -> Ws {
         host: "testhost".into(),
         cwd: format!("/w/{name}"),
         session_id: Some(format!("sess-{name}")),
+        human: false,
     };
     ws.send(Message::text(serde_json::to_string(&reg).unwrap()))
         .await

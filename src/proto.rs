@@ -22,6 +22,12 @@ pub enum ToBus {
         host: String,
         cwd: String,
         session_id: Option<String>,
+        /// Absent on the wire means `false`, which is what makes this change safe to
+        /// deploy under running agents: Claude Code spawns a stdio MCP server once at
+        /// session start and never respawns it, so agent binaries in flight when this
+        /// ships keep sending the old payload shape indefinitely.
+        #[serde(default)]
+        human: bool,
     },
     Join {
         req_id: u64,
