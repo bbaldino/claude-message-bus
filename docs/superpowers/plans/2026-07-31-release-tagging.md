@@ -107,8 +107,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked
+      - run: cargo +nightly fmt --check
+      - run: cargo +stable clippy --all-targets --all-features -- -D warnings
+      - run: cargo +stable test --locked
 
   publish:
     needs: test
@@ -151,9 +158,21 @@ jobs:
           cache-to: type=gha,mode=max
 ```
 
-If `cargo test --locked` is too slow or needs extra setup for your suite, adjust
-the `test` job to match how you actually run tests — but keep the job and the
-`needs: test` gate.
+**Run the clippy pass locally first.** `-D warnings` makes lints blocking, and CI
+uses the newest stable toolchain — which on caas caught four lints its local
+(older) toolchain wasn't flagging (`collapsible_match`, `len_zero`,
+`useless_conversion`, `unused_imports`). They're mechanical but they block the
+first push, so clear them in one commit before Step 4:
+
+```bash
+cargo +nightly fmt --check
+cargo +stable clippy --all-targets --all-features -- -D warnings
+cargo +stable test --locked
+```
+
+If your suite needs extra setup (the bus tests spawn processes and bind ports),
+adjust the test step to match how you actually run it — but keep all three
+checks and the `needs: test` gate.
 
 - [ ] **Step 3: Verify it parses**
 
