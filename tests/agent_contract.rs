@@ -700,3 +700,20 @@ async fn send_reports_the_pause_not_a_bus_outage() {
         "must not claim the bus is unreachable: {text}"
     );
 }
+
+#[test]
+fn instructions_distinguish_a_humans_request_from_an_agents() {
+    let instructions = claude_bus::agent::instructions::for_agent("tester");
+    assert!(
+        instructions.contains("human=\"true\""),
+        "the model must be told which attribute carries origin: {instructions}"
+    );
+    assert!(
+        instructions.to_lowercase().contains("not instructions"),
+        "the agent-origin restraint must survive: {instructions}"
+    );
+    assert!(
+        instructions.contains("human=\"false\""),
+        "and must be scoped to agent-origin rather than all inbound: {instructions}"
+    );
+}
