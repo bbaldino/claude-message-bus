@@ -2264,8 +2264,9 @@ async fn a_configured_relayers_message_carries_human_authority() {
 
 #[tokio::test]
 async fn an_unconfigured_agent_gets_no_relay_authority() {
-    // Only the configured name is a relayer. This is what stops an agent that read a
-    // malicious page from escalating to every other worker.
+    // Only a name in the configured relayer set gets relay stamping, no matter what
+    // the sender's text claims. Agents cannot grant themselves or each other the
+    // human's authority — that grant lives solely in the bus's configuration.
     let (_d, port) = start_bus_with_relayers(["hub".to_string()]).await;
     let mut a = connect(port, "caas").await;
     next_event(&mut a).await;
