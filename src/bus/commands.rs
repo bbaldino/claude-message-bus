@@ -27,7 +27,13 @@ async fn known_rooms(app: &App) -> String {
     }
 }
 
-pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registry::Sender) {
+pub(crate) async fn handle(
+    app: &App,
+    me: &str,
+    cmd: ToBus,
+    control_tx: &registry::Sender,
+    is_human: bool,
+) {
     match cmd {
         ToBus::Register { .. } => {}
 
@@ -76,7 +82,7 @@ pub(crate) async fn handle(app: &App, me: &str, cmd: ToBus, control_tx: &registr
         } => {
             let room = rooms::resolve(&target, me);
 
-            match app.guards.check(&room, me, now_ms()).await {
+            match app.guards.check(&room, me, now_ms(), is_human).await {
                 GuardVerdict::Allow => {}
                 GuardVerdict::RateLimited { retry_in_ms } => {
                     let _ = app

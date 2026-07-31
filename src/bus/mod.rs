@@ -438,7 +438,7 @@ async fn connection(socket: WebSocket, app: App) {
                     continue;
                 };
 
-                commands::handle(&app, &name, cmd, &control_tx).await;
+                commands::handle(&app, &name, cmd, &control_tx, is_human).await;
             }
             _ = timeout_ticker.tick() => {
                 if last_pong.elapsed() > app.keepalive.pong_timeout {

@@ -61,9 +61,27 @@ impl Guards {
     /// earlier than their configured `cap` / `min_interval_ms`. A
     /// `RateLimited` or `Paused` verdict does not mutate anything, so
     /// retrying a rejected attempt is always free.
-    pub async fn check(&self, room: &str, agent: &str, now_ms: i64) -> GuardVerdict {
+    pub async fn check(
+        &self,
+        room: &str,
+        agent: &str,
+        now_ms: i64,
+        is_human: bool,
+    ) -> GuardVerdict {
         let mut rooms = self.rooms.lock().await;
         let state = rooms.entry(room.to_string()).or_default();
+
+        // Both guards exist to stop agents talking to each other unattended. A human
+        // speaking is the condition they were watching for, so it clears the counter
+        // outright rather than consuming from it — which also un-pauses a room that
+        // had already hit the cap. Returning early likewise skips the rate limit: a
+        // person typing is not a runaway loop, and throttling someone mid-interjection
+        // would be maddening.
+        if is_human {
+            state.exchanges = 0;
+            state.last_send.insert(agent.to_string(), now_ms);
+            return GuardVerdict::Allow;
+        }
 
         if state.exchanges >= self.cap {
             return GuardVerdict::Paused {
@@ -111,7 +129,7 @@ mod tests {
     async fn allows_normal_traffic() {
         let g = Guards::new(20, 0);
         assert!(matches!(
-            g.check("r", "caas", 1000).await,
+            g.check("r", "caas", 1000, false).await,
             GuardVerdict::Allow
         ));
     }
@@ -120,10 +138,10 @@ mod tests {
     async fn rate_limits_a_too_fast_second_message() {
         let g = Guards::new(20, 2000);
         assert!(matches!(
-            g.check("r", "caas", 1000).await,
+            g.check("r", "caas", 1000, false).await,
             GuardVerdict::Allow
         ));
-        match g.check("r", "caas", 1500).await {
+        match g.check("r", "caas", 1500, false).await {
             GuardVerdict::RateLimited { retry_in_ms } => assert_eq!(retry_in_ms, 1500),
             other => panic!("expected rate limit, got {other:?}"),
         }
@@ -132,15 +150,15 @@ mod tests {
     #[tokio::test]
     async fn rate_limit_is_per_agent_per_room() {
         let g = Guards::new(20, 2000);
-        g.check("r", "caas", 1000).await;
+        g.check("r", "caas", 1000, false).await;
         // A different agent in the same room is unaffected.
         assert!(matches!(
-            g.check("r", "dashboard", 1000).await,
+            g.check("r", "dashboard", 1000, false).await,
             GuardVerdict::Allow
         ));
         // The same agent in a different room is unaffected.
         assert!(matches!(
-            g.check("other", "caas", 1000).await,
+            g.check("other", "caas", 1000, false).await,
             GuardVerdict::Allow
         ));
     }
@@ -150,11 +168,11 @@ mod tests {
         let g = Guards::new(3, 0);
         for i in 0..3 {
             assert!(
-                matches!(g.check("r", "caas", i).await, GuardVerdict::Allow),
+                matches!(g.check("r", "caas", i, false).await, GuardVerdict::Allow),
                 "message {i} should pass"
             );
         }
-        match g.check("r", "caas", 99).await {
+        match g.check("r", "caas", 99, false).await {
             GuardVerdict::Paused { count } => assert_eq!(count, 3),
             other => panic!("expected pause, got {other:?}"),
         }
@@ -163,13 +181,16 @@ mod tests {
     #[tokio::test]
     async fn the_cap_counts_the_room_not_the_individual_agent() {
         let g = Guards::new(2, 0);
-        assert!(matches!(g.check("r", "caas", 0).await, GuardVerdict::Allow));
         assert!(matches!(
-            g.check("r", "dashboard", 1).await,
+            g.check("r", "caas", 0, false).await,
             GuardVerdict::Allow
         ));
         assert!(matches!(
-            g.check("r", "caas", 2).await,
+            g.check("r", "dashboard", 1, false).await,
+            GuardVerdict::Allow
+        ));
+        assert!(matches!(
+            g.check("r", "caas", 2, false).await,
             GuardVerdict::Paused { .. }
         ));
     }
@@ -177,22 +198,28 @@ mod tests {
     #[tokio::test]
     async fn reset_clears_a_pause() {
         let g = Guards::new(1, 0);
-        g.check("r", "caas", 0).await;
+        g.check("r", "caas", 0, false).await;
         assert!(matches!(
-            g.check("r", "caas", 1).await,
+            g.check("r", "caas", 1, false).await,
             GuardVerdict::Paused { .. }
         ));
         g.reset("r").await;
-        assert!(matches!(g.check("r", "caas", 2).await, GuardVerdict::Allow));
+        assert!(matches!(
+            g.check("r", "caas", 2, false).await,
+            GuardVerdict::Allow
+        ));
     }
 
     #[tokio::test]
     async fn reset_does_not_bypass_the_rate_limit() {
         let g = Guards::new(1, 2000);
         // Consume the cap and record caas's last send time at t=0.
-        assert!(matches!(g.check("r", "caas", 0).await, GuardVerdict::Allow));
         assert!(matches!(
-            g.check("r", "caas", 100).await,
+            g.check("r", "caas", 0, false).await,
+            GuardVerdict::Allow
+        ));
+        assert!(matches!(
+            g.check("r", "caas", 100, false).await,
             GuardVerdict::Paused { .. }
         ));
 
@@ -202,7 +229,7 @@ mod tests {
         // caas retries immediately: the pause is lifted, but it is still
         // within min_interval_ms of its last real send, so this must be
         // rate-limited, not a free pass through Allow.
-        match g.check("r", "caas", 150).await {
+        match g.check("r", "caas", 150, false).await {
             GuardVerdict::RateLimited { retry_in_ms } => assert_eq!(retry_in_ms, 1850),
             other => panic!("expected rate limit, got {other:?}"),
         }
@@ -213,12 +240,12 @@ mod tests {
         let g = Guards::default();
         for i in 0..20 {
             assert!(matches!(
-                g.check("r", "a", i * 10_000).await,
+                g.check("r", "a", i * 10_000, false).await,
                 GuardVerdict::Allow
             ));
         }
         assert!(matches!(
-            g.check("r", "a", 999_999).await,
+            g.check("r", "a", 999_999, false).await,
             GuardVerdict::Paused { .. }
         ));
     }

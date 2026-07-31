@@ -5,7 +5,7 @@ use claude_bus::store::Store;
 use common::{
     agent_is_online, connect, connect_human, connect_observer, flood_continuously, flood_message,
     next_event, next_non_flood_event, pump_for, send, start_bus, start_bus_with_dir,
-    start_bus_with_keepalive, start_bus_with_registry, wait_until,
+    start_bus_with_guards_dir, start_bus_with_keepalive, start_bus_with_registry, wait_until,
 };
 
 #[tokio::test]
@@ -1650,4 +1650,245 @@ async fn an_agents_room_membership_survives_disconnection() {
             .contains(&"caas".to_string()),
         "an agent stays a member after disconnecting"
     );
+}
+
+#[tokio::test]
+async fn a_human_send_resets_the_exchange_counter() {
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Join {
+            req_id: 1,
+            room: "loop".into(),
+        },
+    )
+    .await;
+    next_event(&mut h).await;
+
+    // Nineteen agent sends: one short of the cap.
+    for i in 0..19 {
+        send(
+            &mut a,
+            &ToBus::Send {
+                req_id: 100 + i,
+                target: Target::Room {
+                    room: "loop".into(),
+                },
+                text: format!("m{i}"),
+                done: false,
+            },
+        )
+        .await;
+        next_event(&mut a).await;
+    }
+
+    // The human speaks, which is the signal the cap was built to detect.
+    send(
+        &mut h,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "loop".into(),
+            },
+            text: "still here".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut h).await;
+    // `a` is a room member too, so the human's broadcast fans out to it just
+    // like any other room message — drain that notification before treating
+    // `a`'s own queue as carrying only replies to its own sends.
+    match next_event(&mut a).await {
+        FromBus::Message { from, .. } if from == "bbaldino" => {}
+        other => panic!("expected the human's broadcast fanned out to caas, got {other:?}"),
+    }
+
+    // The counter is back to zero, so the agent gets a full cap's worth again.
+    for i in 0..19 {
+        send(
+            &mut a,
+            &ToBus::Send {
+                req_id: 200 + i,
+                target: Target::Room {
+                    room: "loop".into(),
+                },
+                text: format!("n{i}"),
+                done: false,
+            },
+        )
+        .await;
+        match next_event(&mut a).await {
+            FromBus::Reply {
+                result: ReplyResult::Sent { .. },
+                ..
+            } => {}
+            other => panic!("send {i} after the human spoke should have been allowed: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_human_can_send_into_a_paused_room_and_unpauses_it() {
+    // The important one. A pause exists because no human was present; a human
+    // arriving is exactly the condition that should clear it. If the human's send
+    // bounced, they could not rescue the conversation.
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+
+    // Drive the room past the cap.
+    for i in 0..21 {
+        send(
+            &mut a,
+            &ToBus::Send {
+                req_id: 100 + i,
+                target: Target::Room {
+                    room: "loop".into(),
+                },
+                text: format!("m{i}"),
+                done: false,
+            },
+        )
+        .await;
+        // The last of these 21 sends is itself the one that trips the cap, so
+        // (like the explicit "still going" check below) it enqueues a second,
+        // resolving `Error` behind its `Paused` notice. Drain that too so it
+        // isn't mistaken later for the reply to an unrelated request.
+        if let FromBus::Paused { .. } = next_event(&mut a).await {
+            next_event(&mut a).await;
+        }
+    }
+    // Confirm it really is paused for an agent.
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 300,
+            target: Target::Room {
+                room: "loop".into(),
+            },
+            text: "still going".into(),
+            done: false,
+        },
+    )
+    .await;
+    // A `Paused` verdict enqueues two events for this one request: the
+    // conversational `Paused` notice, then the resolving `Error` that
+    // unblocks the caller's outstanding request (see `commands::handle`'s
+    // `GuardVerdict::Paused` arm). Drain both, not just whichever arrives
+    // first, so a leftover doesn't get mistaken later for a reply to a
+    // different request.
+    match next_event(&mut a).await {
+        FromBus::Paused { .. } => match next_event(&mut a).await {
+            FromBus::Error { .. } => {}
+            other => panic!("expected the resolving Error after Paused, got {other:?}"),
+        },
+        FromBus::Error { .. } => {}
+        other => panic!("precondition: the room should be paused for an agent, got {other:?}"),
+    }
+
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Join {
+            req_id: 1,
+            room: "loop".into(),
+        },
+    )
+    .await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "loop".into(),
+            },
+            text: "hold on, let me look".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut h).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { .. },
+            ..
+        } => {}
+        other => panic!("a human must be able to speak into a paused room: {other:?}"),
+    }
+    // `a` is a room member too, so the human's broadcast fans out to it just
+    // like any other room message — drain that notification before treating
+    // `a`'s own queue as carrying only replies to its own sends.
+    match next_event(&mut a).await {
+        FromBus::Message { from, .. } if from == "bbaldino" => {}
+        other => panic!("expected the human's broadcast fanned out to caas, got {other:?}"),
+    }
+
+    // And the room is open again for the agent.
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 301,
+            target: Target::Room {
+                room: "loop".into(),
+            },
+            text: "ok".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut a).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { .. },
+            ..
+        } => {}
+        other => panic!("the room should have un-paused: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_human_is_not_rate_limited() {
+    // start_bus_with_keepalive is not what we want here; use the rate-limited variant.
+    let guards =
+        claude_bus::bus::delivery::Guards::new(claude_bus::bus::delivery::DEFAULT_CAP, 5_000);
+    let (_d, port, _path) = start_bus_with_guards_dir(guards).await;
+
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Join {
+            req_id: 1,
+            room: "demo".into(),
+        },
+    )
+    .await;
+    next_event(&mut h).await;
+
+    for i in 0..3 {
+        send(
+            &mut h,
+            &ToBus::Send {
+                req_id: 10 + i,
+                target: Target::Room {
+                    room: "demo".into(),
+                },
+                text: format!("typing fast {i}"),
+                done: false,
+            },
+        )
+        .await;
+        match next_event(&mut h).await {
+            FromBus::Reply {
+                result: ReplyResult::Sent { .. },
+                ..
+            } => {}
+            other => panic!("a person typing is not a runaway loop: {other:?}"),
+        }
+    }
 }
