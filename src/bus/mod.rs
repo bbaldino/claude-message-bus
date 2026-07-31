@@ -270,12 +270,10 @@ async fn connection(socket: WebSocket, app: App) {
     // membership was ephemeral) and by every send (to decide whether the guards
     // apply). A connection registers exactly once, so this never changes after.
     //
-    // Nothing in this function reads the initial `false` yet — the teardown
-    // and per-send readers land in later tasks — so clippy sees a write that
-    // is always overwritten before use. Silenced rather than removed: the
-    // initializer has to exist so the variable is definitely assigned on
-    // every path, including a connection that never registers.
-    #[allow(unused_assignments)]
+    // The initializer has to exist so the variable is definitely assigned on
+    // every path, including a connection that never registers — the teardown
+    // below only reads it when `me` is `Some`, which is exactly when it was
+    // actually set.
     let mut is_human = false;
     // Set instead of `me` when this connection identified via `Observe`
     // rather than `Register`. The two are mutually exclusive for the
@@ -460,6 +458,10 @@ async fn connection(socket: WebSocket, app: App) {
     if let Some(name) = me {
         app.registry.detach(&name).await;
         let _ = app.store.set_online(&name, false).await;
+        if is_human {
+            // Ephemeral by design — see `leave_all_rooms`.
+            let _ = app.store.leave_all_rooms(&name).await;
+        }
         let _ = app
             .store
             .append_event(

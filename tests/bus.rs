@@ -1530,3 +1530,124 @@ async fn an_ordinary_agent_is_not_recorded_as_human() {
     let agents = store.agents().await.unwrap();
     assert!(!agents.iter().find(|a| a.name == "caas").unwrap().is_human);
 }
+
+#[tokio::test]
+async fn a_humans_room_membership_ends_when_they_disconnect() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "demo".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await;
+
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Join {
+            req_id: 2,
+            room: "demo".into(),
+        },
+    )
+    .await;
+    next_event(&mut h).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    assert!(
+        store
+            .room_members("demo")
+            .await
+            .unwrap()
+            .contains(&"bbaldino".to_string()),
+        "precondition: the human is a member while connected"
+    );
+
+    drop(h); // the human closes their terminal
+    assert!(
+        wait_until(|| async {
+            let s = Store::open(&store_dir).await.unwrap();
+            !s.room_members("demo")
+                .await
+                .unwrap()
+                .contains(&"bbaldino".to_string())
+        })
+        .await,
+        "the human's membership must not outlive their connection"
+    );
+
+    // And the agent must not be told a departed human is a pending recipient.
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 3,
+            target: Target::Room {
+                room: "demo".into(),
+            },
+            text: "anyone there?".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut a).await {
+        FromBus::Reply {
+            result:
+                ReplyResult::Sent {
+                    delivered_to,
+                    queued_for,
+                    ..
+                },
+            ..
+        } => {
+            assert!(
+                !queued_for.contains(&"bbaldino".to_string()),
+                "queued_for: {queued_for:?}"
+            );
+            assert!(
+                !delivered_to.contains(&"bbaldino".to_string()),
+                "delivered_to: {delivered_to:?}"
+            );
+        }
+        other => panic!("expected a Sent reply, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_agents_room_membership_survives_disconnection() {
+    // The contrast that makes the human case meaningful: agents stay members so
+    // messages queue for them while they are away.
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "demo".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await;
+
+    drop(a);
+    assert!(
+        wait_until(|| async { !agent_is_online(port, "caas").await }).await,
+        "caas never went offline"
+    );
+
+    let store = Store::open(&store_dir).await.unwrap();
+    assert!(
+        store
+            .room_members("demo")
+            .await
+            .unwrap()
+            .contains(&"caas".to_string()),
+        "an agent stays a member after disconnecting"
+    );
+}

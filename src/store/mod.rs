@@ -222,6 +222,20 @@ impl Store {
         Ok(rows.into_iter().map(|r| r.get("agent_name")).collect())
     }
 
+    /// Drop every room membership held by `agent`.
+    ///
+    /// Used for humans only. An agent's membership is durable — that is what makes
+    /// messages queue for it while it is away — but a human dipping into a room is not
+    /// a subscriber, and leaving them a member would report them in `queued_for` on
+    /// every later send, telling agents a reply was pending from someone who had gone.
+    pub async fn leave_all_rooms(&self, agent: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM room_members WHERE agent_name = ?1")
+            .bind(agent)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn rooms(&self) -> anyhow::Result<Vec<RoomRow>> {
         let rows = sqlx::query("SELECT name, mode FROM rooms ORDER BY name")
             .fetch_all(&self.pool)
