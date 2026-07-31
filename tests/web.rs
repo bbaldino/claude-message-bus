@@ -76,7 +76,7 @@ async fn a_transcript_interleaves_messages_and_events_in_time_order() {
         let store = Store::open(dir.path()).await.unwrap();
         store.join_room("protocol", "caas").await.unwrap();
         store
-            .append_message("protocol", "caas", "FIRST_MESSAGE", false)
+            .append_message("protocol", "caas", "FIRST_MESSAGE", false, false)
             .await
             .unwrap();
         // now_ms() is millisecond-resolution. Three inserts back-to-back against a
@@ -97,7 +97,7 @@ async fn a_transcript_interleaves_messages_and_events_in_time_order() {
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         store
-            .append_message("protocol", "caas", "LAST_MESSAGE", false)
+            .append_message("protocol", "caas", "LAST_MESSAGE", false, false)
             .await
             .unwrap();
     }
@@ -127,7 +127,13 @@ async fn a_script_tag_in_a_message_body_is_escaped() {
         let store = Store::open(dir.path()).await.unwrap();
         store.join_room("protocol", "caas").await.unwrap();
         store
-            .append_message("protocol", "caas", "<script>alert('xss')</script>", false)
+            .append_message(
+                "protocol",
+                "caas",
+                "<script>alert('xss')</script>",
+                false,
+                false,
+            )
             .await
             .unwrap();
     }
@@ -173,7 +179,7 @@ async fn a_room_name_with_spaces_and_url_metacharacters_round_trips_to_its_trans
         let store = Store::open(dir.path()).await.unwrap();
         store.join_room(name, "caas").await.unwrap();
         store
-            .append_message(name, "caas", "hello from a weird room", false)
+            .append_message(name, "caas", "hello from a weird room", false, false)
             .await
             .unwrap();
     }
@@ -199,7 +205,7 @@ async fn a_room_name_with_non_ascii_characters_round_trips_to_its_transcript() {
         let store = Store::open(dir.path()).await.unwrap();
         store.join_room(name, "caas").await.unwrap();
         store
-            .append_message(name, "caas", "hello from a non-ascii room", false)
+            .append_message(name, "caas", "hello from a non-ascii room", false, false)
             .await
             .unwrap();
     }
@@ -245,7 +251,7 @@ async fn a_room_name_containing_a_percent_encoded_slash_round_trips() {
         let store = Store::open(dir.path()).await.unwrap();
         store.join_room(name, "caas").await.unwrap();
         store
-            .append_message(name, "caas", "hello from a slashy room", false)
+            .append_message(name, "caas", "hello from a slashy room", false, false)
             .await
             .unwrap();
     }
@@ -641,11 +647,11 @@ async fn the_overview_shows_recent_message_text_across_rooms() {
         store.join_room("protocol", "caas").await.unwrap();
         store.join_room("other", "dashboard").await.unwrap();
         store
-            .append_message("protocol", "caas", "SETTLED_ON_THE_SCHEMA", false)
+            .append_message("protocol", "caas", "SETTLED_ON_THE_SCHEMA", false, false)
             .await
             .unwrap();
         store
-            .append_message("other", "dashboard", "UNRELATED_CHATTER", false)
+            .append_message("other", "dashboard", "UNRELATED_CHATTER", false, false)
             .await
             .unwrap();
     }
@@ -672,7 +678,7 @@ async fn a_long_message_is_truncated_without_splitting_a_character() {
         let store = Store::open(dir.path()).await.unwrap();
         store.join_room("protocol", "caas").await.unwrap();
         store
-            .append_message("protocol", "caas", &long, false)
+            .append_message("protocol", "caas", &long, false, false)
             .await
             .unwrap();
     }

@@ -141,7 +141,11 @@ pub(crate) async fn handle(
                 let _ = app.store.join_room(&room, name).await;
             }
 
-            let msg_id = match app.store.append_message(&room, me, &text, done).await {
+            let msg_id = match app
+                .store
+                .append_message(&room, me, &text, done, false)
+                .await
+            {
                 Ok(id) => id,
                 Err(e) => {
                     let _ = control_tx.try_send(FromBus::Error {
@@ -460,6 +464,7 @@ pub(crate) async fn reply_history(
             text: m.body,
             done: m.done,
             created_at: m.created_at,
+            human: m.human,
         })
         .collect();
     let _ = control_tx.try_send(FromBus::Reply {

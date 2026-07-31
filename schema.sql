@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS messages (
   from_agent TEXT NOT NULL,
   body       TEXT NOT NULL,
   done       INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  human      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS messages_room_id ON messages(room, id);
 

@@ -102,6 +102,11 @@ pub struct HistoryItem {
     pub text: String,
     pub done: bool,
     pub created_at: i64,
+    /// Whether a human sent this. Carried on history as well as on the live event
+    /// because a worker that was offline catches up through `history` — the reconnect
+    /// path sends only an `Unread` summary, never a replay.
+    #[serde(default)]
+    pub human: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

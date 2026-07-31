@@ -83,22 +83,38 @@ impl Store {
     /// `schema.sql` is all `CREATE TABLE IF NOT EXISTS`, which covers a fresh file but
     /// does nothing for a database created before a column existed — and the deployed
     /// bus keeps its data in a named Docker volume that long outlives any one binary.
-    ///
-    /// SQLite has no `ADD COLUMN IF NOT EXISTS`, so this asks `PRAGMA table_info` what
-    /// is actually there rather than issuing the `ALTER` and swallowing the resulting
-    /// error — an error whose message is not part of any stability guarantee, and which
-    /// would hide a genuinely failed migration behind the same catch.
     async fn migrate(&self) -> anyhow::Result<()> {
-        let cols = sqlx::query("PRAGMA table_info(agents)")
+        self.add_column_if_missing("agents", "is_human", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        self.add_column_if_missing("messages", "human", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
+        Ok(())
+    }
+
+    /// SQLite has no `ADD COLUMN IF NOT EXISTS`, so this asks `PRAGMA table_info` what is
+    /// actually there rather than issuing the `ALTER` and swallowing the resulting error —
+    /// an error whose message is not part of any stability guarantee, and which would hide
+    /// a genuinely failed migration behind the same catch.
+    async fn add_column_if_missing(
+        &self,
+        table: &str,
+        column: &str,
+        ddl: &str,
+    ) -> anyhow::Result<()> {
+        // `table` and `column` are compile-time literals from `migrate`, never user input;
+        // PRAGMA and ALTER take no bind parameters for identifiers. `AssertSqlSafe` is
+        // sqlx's speed bump against building dynamic SQL from untrusted data, not a
+        // statement that these strings are literally static.
+        let cols = sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA table_info({table})")))
             .fetch_all(&self.pool)
             .await?;
-        let has_is_human = cols
-            .iter()
-            .any(|r| r.get::<String, _>("name") == "is_human");
-        if !has_is_human {
-            sqlx::query("ALTER TABLE agents ADD COLUMN is_human INTEGER NOT NULL DEFAULT 0")
-                .execute(&self.pool)
-                .await?;
+        let present = cols.iter().any(|r| r.get::<String, _>("name") == column);
+        if !present {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {ddl}"
+            )))
+            .execute(&self.pool)
+            .await?;
         }
         Ok(())
     }
@@ -273,17 +289,19 @@ impl Store {
         from: &str,
         body: &str,
         done: bool,
+        human: bool,
     ) -> anyhow::Result<i64> {
         self.ensure_room(room).await?;
         let res = sqlx::query(
-            "INSERT INTO messages (room, from_agent, body, done, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO messages (room, from_agent, body, done, created_at, human)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
         .bind(room)
         .bind(from)
         .bind(body)
         .bind(done as i64)
         .bind(now_ms())
+        .bind(human)
         .execute(self.pool())
         .await?;
         Ok(res.last_insert_rowid())
@@ -294,7 +312,7 @@ impl Store {
     pub async fn history(&self, room: &str, limit: i64) -> anyhow::Result<Vec<MessageRow>> {
         let rows = sqlx::query(
             "SELECT * FROM (
-               SELECT id, room, from_agent, body, done, created_at
+               SELECT id, room, from_agent, body, done, created_at, human
                FROM messages WHERE room = ?1 ORDER BY id DESC LIMIT ?2
              ) ORDER BY id ASC",
         )
@@ -312,7 +330,7 @@ impl Store {
     /// the caller is scanning for the latest activity, not reading a conversation.
     pub async fn recent_messages(&self, limit: i64) -> anyhow::Result<Vec<MessageRow>> {
         let rows = sqlx::query(
-            "SELECT id, room, from_agent, body, done, created_at
+            "SELECT id, room, from_agent, body, done, created_at, human
              FROM messages ORDER BY id DESC LIMIT ?1",
         )
         .bind(limit)
@@ -366,7 +384,7 @@ impl Store {
     pub async fn undelivered(&self, room: &str, agent: &str) -> anyhow::Result<Vec<MessageRow>> {
         let cursor = self.cursor(room, agent).await?;
         let rows = sqlx::query(
-            "SELECT id, room, from_agent, body, done, created_at
+            "SELECT id, room, from_agent, body, done, created_at, human
              FROM messages WHERE room = ?1 AND id > ?2 AND from_agent != ?3 ORDER BY id ASC",
         )
         .bind(room)
@@ -386,6 +404,7 @@ pub struct MessageRow {
     pub body: String,
     pub done: bool,
     pub created_at: i64,
+    pub human: bool,
 }
 
 fn message_row(r: &sqlx::sqlite::SqliteRow) -> MessageRow {
@@ -396,5 +415,6 @@ fn message_row(r: &sqlx::sqlite::SqliteRow) -> MessageRow {
         body: r.get("body"),
         done: r.get::<i64, _>("done") != 0,
         created_at: r.get("created_at"),
+        human: r.get::<i64, _>("human") != 0,
     }
 }

@@ -100,11 +100,11 @@ async fn state_persists_across_reopen() {
 async fn message_ids_increase_monotonically() {
     let (_d, store) = seeded().await;
     let a = store
-        .append_message("protocol", "caas", "first", false)
+        .append_message("protocol", "caas", "first", false, false)
         .await
         .unwrap();
     let b = store
-        .append_message("protocol", "dashboard", "second", false)
+        .append_message("protocol", "dashboard", "second", false, false)
         .await
         .unwrap();
     assert!(b > a, "ids must increase: {a} then {b}");
@@ -115,7 +115,7 @@ async fn history_returns_oldest_first_and_respects_limit() {
     let (_d, store) = seeded().await;
     for i in 0..5 {
         store
-            .append_message("protocol", "caas", &format!("msg{i}"), false)
+            .append_message("protocol", "caas", &format!("msg{i}"), false, false)
             .await
             .unwrap();
     }
@@ -138,7 +138,7 @@ async fn cursor_starts_at_zero_and_advances() {
     let (_d, store) = seeded().await;
     assert_eq!(store.cursor("protocol", "dashboard").await.unwrap(), 0);
     let id = store
-        .append_message("protocol", "caas", "hi", false)
+        .append_message("protocol", "caas", "hi", false, false)
         .await
         .unwrap();
     store.set_cursor("protocol", "dashboard", id).await.unwrap();
@@ -152,11 +152,11 @@ async fn cursor_starts_at_zero_and_advances() {
 async fn set_cursor_never_moves_backwards() {
     let (_d, store) = seeded().await;
     let first = store
-        .append_message("protocol", "caas", "one", false)
+        .append_message("protocol", "caas", "one", false, false)
         .await
         .unwrap();
     let second = store
-        .append_message("protocol", "caas", "two", false)
+        .append_message("protocol", "caas", "two", false, false)
         .await
         .unwrap();
 
@@ -180,15 +180,15 @@ async fn set_cursor_never_moves_backwards() {
 async fn unread_counts_only_messages_past_the_cursor() {
     let (_d, store) = seeded().await;
     let first = store
-        .append_message("protocol", "caas", "one", false)
+        .append_message("protocol", "caas", "one", false, false)
         .await
         .unwrap();
     store
-        .append_message("protocol", "caas", "two", false)
+        .append_message("protocol", "caas", "two", false, false)
         .await
         .unwrap();
     store
-        .append_message("protocol", "caas", "three", false)
+        .append_message("protocol", "caas", "three", false, false)
         .await
         .unwrap();
 
@@ -208,11 +208,11 @@ async fn unread_counts_only_messages_past_the_cursor() {
     // dashboard's own message must not inflate its own unread count — only
     // caas's later message should count.
     store
-        .append_message("protocol", "dashboard", "self-sent", false)
+        .append_message("protocol", "dashboard", "self-sent", false, false)
         .await
         .unwrap();
     store
-        .append_message("protocol", "caas", "four", false)
+        .append_message("protocol", "caas", "four", false, false)
         .await
         .unwrap();
     assert_eq!(
@@ -226,11 +226,11 @@ async fn unread_counts_only_messages_past_the_cursor() {
 async fn undelivered_returns_exactly_the_messages_past_the_cursor() {
     let (_d, store) = seeded().await;
     let first = store
-        .append_message("protocol", "caas", "one", false)
+        .append_message("protocol", "caas", "one", false, false)
         .await
         .unwrap();
     store
-        .append_message("protocol", "caas", "two", false)
+        .append_message("protocol", "caas", "two", false, false)
         .await
         .unwrap();
     store
@@ -245,11 +245,11 @@ async fn undelivered_returns_exactly_the_messages_past_the_cursor() {
     // dashboard's own message must not be delivered back to itself, even
     // though it is past dashboard's cursor.
     store
-        .append_message("protocol", "dashboard", "self-sent", false)
+        .append_message("protocol", "dashboard", "self-sent", false, false)
         .await
         .unwrap();
     store
-        .append_message("protocol", "caas", "three", false)
+        .append_message("protocol", "caas", "three", false, false)
         .await
         .unwrap();
     let pending = store.undelivered("protocol", "dashboard").await.unwrap();
@@ -264,7 +264,7 @@ async fn undelivered_returns_exactly_the_messages_past_the_cursor() {
 async fn done_flag_round_trips() {
     let (_d, store) = seeded().await;
     store
-        .append_message("protocol", "caas", "settled", true)
+        .append_message("protocol", "caas", "settled", true, false)
         .await
         .unwrap();
     let msgs = store.history("protocol", 10).await.unwrap();
@@ -535,4 +535,62 @@ async fn a_room_that_was_never_created_does_not_exist() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).await.unwrap();
     assert!(!store.room_exists("nonesuch").await.unwrap());
+}
+
+#[tokio::test]
+async fn a_message_records_whether_a_human_sent_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    store.join_room("protocol", "caas").await.unwrap();
+    store
+        .append_message("protocol", "bbaldino", "please refactor this", false, true)
+        .await
+        .unwrap();
+    store
+        .append_message("protocol", "caas", "on it", false, false)
+        .await
+        .unwrap();
+
+    let rows = store.history("protocol", 10).await.unwrap();
+    let human = rows.iter().find(|m| m.from_agent == "bbaldino").unwrap();
+    let agent = rows.iter().find(|m| m.from_agent == "caas").unwrap();
+    assert!(human.human, "a human's message must be marked");
+    assert!(!agent.human, "an agent's must not be");
+}
+
+#[tokio::test]
+async fn the_migration_adds_the_message_origin_column_to_an_older_database() {
+    // The deployed bus's volume already holds a `messages` table without this
+    // column. Simulate that shape, then open a Store over it.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("bus.db");
+    {
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.display()))
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE messages (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL,
+               from_agent TEXT NOT NULL, body TEXT NOT NULL,
+               done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (room, from_agent, body, done, created_at)
+             VALUES ('protocol', 'caas', 'from before the column existed', 0, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+    }
+
+    let store = Store::open(dir.path()).await.unwrap();
+
+    let rows = store.history("protocol", 10).await.unwrap();
+    assert_eq!(rows.len(), 1, "existing data must survive the migration");
+    assert_eq!(rows[0].body, "from before the column existed");
+    assert!(!rows[0].human, "a pre-existing row defaults to not human");
 }
