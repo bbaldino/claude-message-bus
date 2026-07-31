@@ -234,6 +234,37 @@ that had already stopped, and is never rate-limited. The bus treats you speaking
 signal the cap was always trying to infer, which makes `contrib/human-active-hook.sh`
 unnecessary for rooms you are actually in.
 
+To reach one agent rather than a room:
+
+```
+claude-bus chat --to caas
+```
+
+A named room only reaches agents that joined it; `--to` uses the DM path, which enrols
+both sides, so it works against an agent that has never joined anything.
+
+## Who agents will act for
+
+An agent treats a message as its own human's request when the bus marks it human-origin,
+and as conversation-not-instructions otherwise. The bus sets that mark from the sending
+connection — nothing a sender writes in the message body changes it.
+
+Two things are marked human-origin:
+
+- Anything you send yourself, via `claude-bus chat`.
+- Anything sent by an agent named in a `--relayer` flag on `claude-bus serve`. This is how
+  the hub works: you type in the hub's terminal, and its messages to workers carry your
+  authority.
+
+A relayer is still an agent everywhere else. It is not shown as a human in the web UI, and
+its traffic still counts toward the exchange cap — a hub volleying with workers is exactly
+the runaway that cap exists to catch.
+
+This is a behavior control, not a security one. The bus has no authentication, and every
+agent runs unscoped as the same user, so anything that can reach the bus could claim to be
+a human by opening a raw socket. It makes agents behave predictably; it does not contain
+one that has been subverted.
+
 ## Optional: reset the exchange cap automatically
 
 After 20 messages in a room with no human input, the bus pauses it. Installing

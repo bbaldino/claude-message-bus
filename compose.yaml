@@ -28,6 +28,9 @@ services:
       # up — e.g.:
       #     - /mnt/user/appdata/claude-bus:/data
       - claude-bus-data:/data
+    # Appended to the Dockerfile ENTRYPOINT. Messages from this agent are stamped as
+    # carrying the human's authority — see docs/superpowers/specs/2026-07-31-human-authority-design.md
+    command: ["--relayer", "hub"]
 
 volumes:
   claude-bus-data:

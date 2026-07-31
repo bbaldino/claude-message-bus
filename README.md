@@ -11,7 +11,7 @@ into a live session rather than waiting to be polled.
 - `claude-bus serve` — the bus. SQLite plus blobs on disk, one Docker volume.
 - `claude-bus agent` — spawned per session by Claude Code as a stdio MCP server.
 - `claude-bus tail <room>` — watch a conversation; the only view showing both halves.
-- `claude-bus chat <room>` — join a room as yourself and take part in the conversation.
+- `claude-bus chat <room>` / `chat --to <agent>` — join a room or address one agent as yourself.
 
 The bus also serves a read-only web UI on its own port for reading conversations and bus
 behaviour after the fact — see `docs/DEPLOY.md`.
