@@ -355,7 +355,7 @@ async fn connection(socket: WebSocket, app: App) {
                     let effective = app.registry.attach(name, host, routing_tx.clone()).await;
                     let _ = app
                         .store
-                        .upsert_agent(&effective, host, cwd, session_id.as_deref())
+                        .upsert_agent(&effective, host, cwd, session_id.as_deref(), false)
                         .await;
                     let _ = app
                         .store

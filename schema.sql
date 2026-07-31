@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS agents (
   session_id   TEXT,
   connected_at INTEGER NOT NULL,
   last_seen    INTEGER NOT NULL,
-  online       INTEGER NOT NULL DEFAULT 0
+  online       INTEGER NOT NULL DEFAULT 0,
+  is_human     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS rooms (

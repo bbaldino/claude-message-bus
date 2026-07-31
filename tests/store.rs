@@ -18,7 +18,7 @@ async fn seeded() -> (tempfile::TempDir, Store) {
 async fn registers_an_agent_and_lists_it() {
     let (_d, store) = temp_store().await;
     store
-        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-1"))
+        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-1"), false)
         .await
         .unwrap();
     store.set_online("caas", true).await.unwrap();
@@ -35,11 +35,11 @@ async fn registers_an_agent_and_lists_it() {
 async fn reregistering_updates_rather_than_duplicates() {
     let (_d, store) = temp_store().await;
     store
-        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-1"))
+        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-1"), false)
         .await
         .unwrap();
     store
-        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-2"))
+        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-2"), false)
         .await
         .unwrap();
 
@@ -386,7 +386,7 @@ async fn mark_all_offline_clears_ghosts_left_by_a_bus_that_died() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).await.unwrap();
     store
-        .upsert_agent("ghost", "hardac", "/w/g", None)
+        .upsert_agent("ghost", "hardac", "/w/g", None, false)
         .await
         .unwrap();
     store.set_online("ghost", true).await.unwrap();
@@ -406,4 +406,85 @@ async fn mark_all_offline_clears_ghosts_left_by_a_bus_that_died() {
         store.agents().await.unwrap().iter().all(|a| !a.online),
         "a freshly started bus has no live connections, so nothing may claim online"
     );
+}
+
+#[tokio::test]
+async fn a_fresh_database_has_the_is_human_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    store
+        .upsert_agent("bbaldino", "hardac", "/w", None, true)
+        .await
+        .unwrap();
+    let agents = store.agents().await.unwrap();
+    let me = agents.iter().find(|a| a.name == "bbaldino").unwrap();
+    assert!(me.is_human, "the flag must round-trip through the store");
+}
+
+#[tokio::test]
+async fn an_agent_defaults_to_not_human() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    store
+        .upsert_agent("caas", "hardac", "/w", None, false)
+        .await
+        .unwrap();
+    let agents = store.agents().await.unwrap();
+    assert!(!agents.iter().find(|a| a.name == "caas").unwrap().is_human);
+}
+
+#[tokio::test]
+async fn the_migration_adds_the_column_to_a_database_that_predates_it() {
+    // The real case: the deployed bus's volume already holds an `agents` table
+    // without this column. Simulate it by creating the old shape by hand, then
+    // opening a Store over it the way a freshly deployed binary would.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("bus.db");
+    {
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.display()))
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE agents (
+               name TEXT PRIMARY KEY, host TEXT NOT NULL, cwd TEXT NOT NULL,
+               session_id TEXT, connected_at INTEGER NOT NULL,
+               last_seen INTEGER NOT NULL, online INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agents (name, host, cwd, connected_at, last_seen, online)
+             VALUES ('caas', 'hardac', '/w', 1, 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+    }
+
+    let store = Store::open(dir.path()).await.unwrap();
+
+    let agents = store.agents().await.unwrap();
+    let caas = agents.iter().find(|a| a.name == "caas").unwrap();
+    assert!(!caas.is_human, "a pre-existing row defaults to not human");
+    assert_eq!(
+        caas.host, "hardac",
+        "existing data must survive the migration"
+    );
+}
+
+#[tokio::test]
+async fn the_migration_is_idempotent() {
+    // Opening the same database twice must not fail on a duplicate column.
+    let dir = tempfile::tempdir().unwrap();
+    let first = Store::open(dir.path()).await.unwrap();
+    first
+        .upsert_agent("caas", "hardac", "/w", None, false)
+        .await
+        .unwrap();
+    drop(first);
+
+    let second = Store::open(dir.path()).await.unwrap();
+    assert_eq!(second.agents().await.unwrap().len(), 1);
 }

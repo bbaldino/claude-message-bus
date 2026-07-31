@@ -22,6 +22,7 @@ pub struct AgentRow {
     pub cwd: String,
     pub session_id: Option<String>,
     pub online: bool,
+    pub is_human: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +72,35 @@ impl Store {
                 .with_context(|| format!("applying schema statement: {sql}"))?;
         }
 
-        Ok(Self { pool, blobs_dir })
+        let store = Self { pool, blobs_dir };
+        store.migrate().await?;
+
+        Ok(store)
+    }
+
+    /// Bring an existing database up to the current schema.
+    ///
+    /// `schema.sql` is all `CREATE TABLE IF NOT EXISTS`, which covers a fresh file but
+    /// does nothing for a database created before a column existed — and the deployed
+    /// bus keeps its data in a named Docker volume that long outlives any one binary.
+    ///
+    /// SQLite has no `ADD COLUMN IF NOT EXISTS`, so this asks `PRAGMA table_info` what
+    /// is actually there rather than issuing the `ALTER` and swallowing the resulting
+    /// error — an error whose message is not part of any stability guarantee, and which
+    /// would hide a genuinely failed migration behind the same catch.
+    async fn migrate(&self) -> anyhow::Result<()> {
+        let cols = sqlx::query("PRAGMA table_info(agents)")
+            .fetch_all(&self.pool)
+            .await?;
+        let has_is_human = cols
+            .iter()
+            .any(|r| r.get::<String, _>("name") == "is_human");
+        if !has_is_human {
+            sqlx::query("ALTER TABLE agents ADD COLUMN is_human INTEGER NOT NULL DEFAULT 0")
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
     }
 
     pub(crate) fn pool(&self) -> &SqlitePool {
@@ -94,19 +123,21 @@ impl Store {
         host: &str,
         cwd: &str,
         session_id: Option<&str>,
+        is_human: bool,
     ) -> anyhow::Result<()> {
         let now = now_ms();
         sqlx::query(
-            "INSERT INTO agents (name, host, cwd, session_id, connected_at, last_seen, online)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1)
+            "INSERT INTO agents (name, host, cwd, session_id, connected_at, last_seen, online, is_human)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, ?6)
              ON CONFLICT(name) DO UPDATE SET
-               host = ?2, cwd = ?3, session_id = ?4, last_seen = ?5, online = 1",
+               host = ?2, cwd = ?3, session_id = ?4, last_seen = ?5, online = 1, is_human = ?6",
         )
         .bind(name)
         .bind(host)
         .bind(cwd)
         .bind(session_id)
         .bind(now)
+        .bind(is_human)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -139,10 +170,11 @@ impl Store {
     }
 
     pub async fn agents(&self) -> anyhow::Result<Vec<AgentRow>> {
-        let rows =
-            sqlx::query("SELECT name, host, cwd, session_id, online FROM agents ORDER BY name")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query(
+            "SELECT name, host, cwd, session_id, online, is_human FROM agents ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows
             .into_iter()
             .map(|r| AgentRow {
@@ -151,6 +183,7 @@ impl Store {
                 cwd: r.get("cwd"),
                 session_id: r.get("session_id"),
                 online: r.get::<i64, _>("online") != 0,
+                is_human: r.get::<i64, _>("is_human") != 0,
             })
             .collect())
     }
