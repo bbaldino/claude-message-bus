@@ -2085,3 +2085,135 @@ async fn history_for_a_room_that_never_existed_is_still_an_error() {
         other => panic!("expected an error for an unknown room, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_humans_message_reaches_an_agent_marked_as_human() {
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await;
+
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "please refactor this".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut h).await; // Sent
+
+    match next_event(&mut a).await {
+        FromBus::Message { from, human, .. } => {
+            assert_eq!(from, "bbaldino");
+            assert!(human, "the worker must be able to tell a person asked");
+        }
+        other => panic!("expected a Message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_agents_message_is_not_marked_as_human() {
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await;
+
+    let mut b = connect(port, "dashboard").await;
+    next_event(&mut b).await;
+    send(
+        &mut b,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "could you refactor this".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut b).await;
+
+    match next_event(&mut a).await {
+        FromBus::Message { human, .. } => assert!(!human, "an agent is not a human"),
+        other => panic!("expected a Message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn history_reports_the_origin_of_each_message() {
+    // The catch-up path: a worker that was offline learns origin from `history`.
+    let (_d, port) = start_bus().await;
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "please refactor this".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut h).await;
+
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::History {
+            req_id: 3,
+            room: "protocol".into(),
+            limit: 10,
+        },
+    )
+    .await;
+    match reply_to(&mut a, 3).await {
+        FromBus::Reply {
+            result: ReplyResult::History { messages },
+            ..
+        } => {
+            let m = messages
+                .iter()
+                .find(|m| m.from == "bbaldino")
+                .expect("the human's message");
+            assert!(m.human, "catch-up must preserve origin: {messages:?}");
+        }
+        other => panic!("expected History, got {other:?}"),
+    }
+}

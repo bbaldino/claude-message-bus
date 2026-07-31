@@ -108,6 +108,7 @@ async fn dispatch(
             from,
             text,
             done,
+            ..
         } => {
             eprintln!("[agent] recv ← {from} in {room} (msg {id})");
             let injected = inject(

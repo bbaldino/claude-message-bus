@@ -489,6 +489,7 @@ pub fn flood_message() -> FromBus {
         from: "attacker".into(),
         text: "x".into(),
         done: false,
+        human: false,
     }
 }
 

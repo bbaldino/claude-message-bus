@@ -205,6 +205,11 @@ pub enum FromBus {
         from: String,
         text: String,
         done: bool,
+        /// Set by the bus from the sending connection, never by the sender. Absent on
+        /// the wire means `false` so an agent binary that predates this field keeps
+        /// deserializing — the same constraint that governs `Register.human`.
+        #[serde(default)]
+        human: bool,
     },
     /// Sent on reconnect instead of replaying the backlog. One event per
     /// connection, not per room — see `RoomUnread` — so a reconnecting
@@ -326,6 +331,7 @@ mod tests {
             from: "caas".into(),
             text: "hi".into(),
             done: false,
+            human: false,
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["type"], "message");

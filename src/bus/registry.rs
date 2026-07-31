@@ -449,6 +449,7 @@ mod tests {
                 from: "caas".into(),
                 text: "hi".into(),
                 done: false,
+                human: false,
             },
         )
         .await;
@@ -471,6 +472,7 @@ mod tests {
                 from: "caas".into(),
                 text: "hi".into(),
                 done: false,
+                human: false,
             },
         )
         .await;
@@ -497,6 +499,7 @@ mod tests {
                 from: "caas".into(),
                 text: "hi".into(),
                 done: false,
+                human: false,
             },
         )
         .await;

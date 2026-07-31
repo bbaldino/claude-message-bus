@@ -135,6 +135,11 @@ pub(crate) async fn handle(
                 }
             }
 
+            // One binding, three uses (the row, the member fan-out, the observer
+            // fan-out). Computed from the connection, never from anything the sender
+            // put in the payload.
+            let human_origin = is_human;
+
             // A DM auto-creates its room and enrolls both sides.
             let _ = app.store.join_room(&room, me).await;
             if let Target::Agent { name } = &target {
@@ -143,7 +148,7 @@ pub(crate) async fn handle(
 
             let msg_id = match app
                 .store
-                .append_message(&room, me, &text, done, false)
+                .append_message(&room, me, &text, done, human_origin)
                 .await
             {
                 Ok(id) => id,
@@ -166,6 +171,7 @@ pub(crate) async fn handle(
                     from: me.to_string(),
                     text: text.clone(),
                     done,
+                    human: human_origin,
                 };
                 if app.registry.send_to(member, event).await {
                     delivered_to.push(member.clone());
@@ -189,6 +195,7 @@ pub(crate) async fn handle(
                         from: me.to_string(),
                         text,
                         done,
+                        human: human_origin,
                     },
                 )
                 .await;
