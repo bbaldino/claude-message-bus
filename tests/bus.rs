@@ -2365,3 +2365,66 @@ async fn a_relayers_traffic_still_counts_toward_the_exchange_cap() {
         other => panic!("a relayer must not be exempt from the cap: {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_human_can_address_one_agent_without_either_side_joining_a_room() {
+    // The DM path enrols both sides, so this works against a worker that has never
+    // joined anything — unlike a named room, where a worker that never joined is
+    // simply absent.
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await; // Registered, no Join
+
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent {
+                name: "caas".into(),
+            },
+            text: "please refactor this".into(),
+            done: false,
+        },
+    )
+    .await;
+    match reply_to(&mut h, 1).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent {
+                room, delivered_to, ..
+            },
+            ..
+        } => {
+            assert_eq!(room, "dm:bbaldino|caas");
+            assert!(
+                delivered_to.contains(&"caas".to_string()),
+                "{delivered_to:?}"
+            );
+        }
+        other => panic!("expected Sent, got {other:?}"),
+    }
+
+    match next_event(&mut a).await {
+        FromBus::Message { from, human, .. } => {
+            assert_eq!(from, "bbaldino");
+            assert!(human, "a direct human message is still human-origin");
+        }
+        other => panic!("expected a Message, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_dm_room_the_chat_client_joins_matches_the_one_the_bus_resolves() {
+    // chat computes the room name client-side to Join and fetch history; the bus
+    // computes it server-side from the Send target. If these ever disagree, the human
+    // watches an empty room while their messages land somewhere else.
+    let client_side = claude_bus::bus::rooms::dm_name("bbaldino", "caas");
+    let bus_side = claude_bus::bus::rooms::resolve(
+        &Target::Agent {
+            name: "caas".into(),
+        },
+        "bbaldino",
+    );
+    assert_eq!(client_side, bus_side);
+}

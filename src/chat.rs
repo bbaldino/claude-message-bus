@@ -16,9 +16,27 @@ use crate::proto::{FromBus, ReplyResult, Target, ToBus};
 /// arriving sees at most one full unattended stretch of conversation.
 const HISTORY_ON_JOIN: i64 = 20;
 
-pub async fn run(bus_url: String, room: String, name: String) -> anyhow::Result<()> {
+/// Who the human is talking to. A room reaches whoever joined it; an agent reaches that
+/// agent whether or not it ever joined anything, because the DM path enrols both sides.
+pub enum ChatTarget {
+    Room(String),
+    Agent(String),
+}
+
+pub async fn run(bus_url: String, target: ChatTarget, name: String) -> anyhow::Result<()> {
     let (ws, _) = tokio_tungstenite::connect_async(&bus_url).await?;
     let (mut sink, mut stream) = ws.split();
+
+    // The room to join and read history from. For a DM this is computed the same way
+    // the bus computes it from the send target, so both sides name the same room.
+    let room = match &target {
+        ChatTarget::Room(r) => r.clone(),
+        ChatTarget::Agent(a) => crate::bus::rooms::dm_name(&name, a),
+    };
+    let send_target = match &target {
+        ChatTarget::Room(r) => Target::Room { room: r.clone() },
+        ChatTarget::Agent(a) => Target::Agent { name: a.clone() },
+    };
 
     sink.send(Message::text(serde_json::to_string(&ToBus::Register {
         name: name.clone(),
@@ -85,7 +103,7 @@ pub async fn run(bus_url: String, room: String, name: String) -> anyhow::Result<
                 req_id += 1;
                 sink.send(Message::text(serde_json::to_string(&ToBus::Send {
                     req_id,
-                    target: Target::Room { room: room.clone() },
+                    target: send_target.clone(),
                     text: line,
                     done: false,
                 })?))

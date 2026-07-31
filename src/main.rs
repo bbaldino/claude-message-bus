@@ -27,7 +27,7 @@ fn usage() -> ! {
     eprintln!("  claude-bus serve [--port 7777] [--data ./data] [--relayer <name>]...");
     eprintln!("  claude-bus agent [--bus ws://host:7777/ws] [--name <n>] [--name-template <t>]");
     eprintln!("  claude-bus tail <room> [--bus ws://host:7777/ws]");
-    eprintln!("  claude-bus chat <room> [--bus ws://host:7777/ws] [--name <n>]");
+    eprintln!("  claude-bus chat (<room> | --to <agent>) [--bus ws://host:7777/ws] [--name <n>]");
     eprintln!(
         "  claude-bus init [--user | --project] [--bus ws://host:7777/ws] [--dry-run] [--yes] \
          [--force]"
@@ -68,21 +68,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some("chat") => {
-            let room = args
-                .get(2)
-                .filter(|a| !a.starts_with("--"))
-                .cloned()
-                .unwrap_or_else(|| {
+            let to = flag(&args, "--to");
+            let positional = args.get(2).filter(|a| !a.starts_with("--")).cloned();
+            let target = match (positional, to) {
+                (Some(room), None) => claude_bus::chat::ChatTarget::Room(room),
+                (None, Some(agent)) => claude_bus::chat::ChatTarget::Agent(agent),
+                _ => {
                     eprintln!(
-                        "usage: claude-bus chat <room> [--bus ws://host:7777/ws] [--name <n>]"
+                        "usage: claude-bus chat (<room> | --to <agent>) \
+                         [--bus ws://host:7777/ws] [--name <n>]"
                     );
                     std::process::exit(2);
-                });
+                }
+            };
             let bus = flag(&args, "--bus").unwrap_or_else(|| "ws://127.0.0.1:7777/ws".to_string());
             let name = flag(&args, "--name")
                 .or_else(|| std::env::var("USER").ok())
                 .unwrap_or_else(|| "human".to_string());
-            claude_bus::chat::run(bus, room, name).await?;
+            claude_bus::chat::run(bus, target, name).await?;
             Ok(())
         }
         Some("init") => {
