@@ -186,6 +186,7 @@ async fn start_bus_full(
     guards: claude_bus::bus::delivery::Guards,
     keepalive: claude_bus::bus::Keepalive,
     registry: claude_bus::bus::registry::Registry,
+    relayers: claude_bus::bus::Relayers,
 ) -> (tempfile::TempDir, u16, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_path_buf();
@@ -195,7 +196,7 @@ async fn start_bus_full(
     let port = listener.local_addr().unwrap().port();
     let serve_path = path.clone();
     tokio::spawn(async move {
-        claude_bus::bus::serve_on_full(listener, serve_path, guards, keepalive, registry)
+        claude_bus::bus::serve_on_full(listener, serve_path, guards, keepalive, registry, relayers)
             .await
             .unwrap();
     });
@@ -307,6 +308,7 @@ pub async fn start_bus_with_dir() -> (tempfile::TempDir, u16, std::path::PathBuf
         guards,
         claude_bus::bus::Keepalive::default(),
         claude_bus::bus::registry::Registry::new(),
+        claude_bus::bus::Relayers::default(),
     )
     .await
 }
@@ -326,8 +328,30 @@ pub async fn start_bus_with_guards_dir(
         guards,
         claude_bus::bus::Keepalive::default(),
         claude_bus::bus::registry::Registry::new(),
+        claude_bus::bus::Relayers::default(),
     )
     .await
+}
+
+/// Same as `start_bus_with_dir`, but with a configured relayer set.
+pub async fn start_bus_with_relayers_dir(
+    names: impl IntoIterator<Item = String>,
+) -> (tempfile::TempDir, u16, std::path::PathBuf) {
+    let guards = claude_bus::bus::delivery::Guards::new(claude_bus::bus::delivery::DEFAULT_CAP, 0);
+    start_bus_full(
+        guards,
+        claude_bus::bus::Keepalive::default(),
+        claude_bus::bus::registry::Registry::new(),
+        claude_bus::bus::Relayers::new(names),
+    )
+    .await
+}
+
+pub async fn start_bus_with_relayers(
+    names: impl IntoIterator<Item = String>,
+) -> (tempfile::TempDir, u16) {
+    let (dir, port, _path) = start_bus_with_relayers_dir(names).await;
+    (dir, port)
 }
 
 /// Same as `start_bus_with_dir`, but with an injectable keepalive cadence so
@@ -343,6 +367,7 @@ pub async fn start_bus_with_keepalive_dir(
         guards,
         keepalive,
         claude_bus::bus::registry::Registry::new(),
+        claude_bus::bus::Relayers::default(),
     )
     .await
 }
@@ -369,6 +394,7 @@ pub async fn start_bus_with_registry(
         claude_bus::bus::delivery::Guards::new(cap, 0),
         claude_bus::bus::Keepalive::default(),
         registry,
+        claude_bus::bus::Relayers::default(),
     )
     .await;
     (dir, port)

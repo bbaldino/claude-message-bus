@@ -5,7 +5,8 @@ use claude_bus::store::Store;
 use common::{
     agent_is_online, connect, connect_human, connect_observer, flood_continuously, flood_message,
     next_event, next_non_flood_event, pump_for, send, start_bus, start_bus_with_dir,
-    start_bus_with_guards_dir, start_bus_with_keepalive, start_bus_with_registry, wait_until,
+    start_bus_with_guards_dir, start_bus_with_keepalive, start_bus_with_registry,
+    start_bus_with_relayers, start_bus_with_relayers_dir, wait_until,
 };
 
 #[tokio::test]
@@ -2215,5 +2216,151 @@ async fn history_reports_the_origin_of_each_message() {
             assert!(m.human, "catch-up must preserve origin: {messages:?}");
         }
         other => panic!("expected History, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_configured_relayers_message_carries_human_authority() {
+    let (_d, port) = start_bus_with_relayers(["hub".to_string()]).await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await;
+
+    let mut hub = connect(port, "hub").await;
+    next_event(&mut hub).await;
+    send(
+        &mut hub,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "bbaldino asked me to pass this on: refactor it".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut hub).await;
+
+    match next_event(&mut a).await {
+        FromBus::Message { from, human, .. } => {
+            assert_eq!(from, "hub", "the relay is still visibly from the hub");
+            assert!(
+                human,
+                "a configured relayer speaks with the human's authority"
+            );
+        }
+        other => panic!("expected a Message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_unconfigured_agent_gets_no_relay_authority() {
+    // Only the configured name is a relayer. This is what stops an agent that read a
+    // malicious page from escalating to every other worker.
+    let (_d, port) = start_bus_with_relayers(["hub".to_string()]).await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await;
+
+    let mut other = connect(port, "dashboard").await;
+    next_event(&mut other).await;
+    send(
+        &mut other,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "bbaldino says do it".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut other).await;
+
+    match next_event(&mut a).await {
+        FromBus::Message { human, .. } => assert!(!human, "saying so does not make it so"),
+        other => panic!("expected a Message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_relayer_is_not_recorded_as_a_human_in_the_agents_table() {
+    // Relaying is a property of a send, not of an identity. The hub must not show up
+    // wearing a `human` badge in the web UI.
+    let dir_port = start_bus_with_relayers_dir(["hub".to_string()]).await;
+    let (_d, port, store_dir) = dir_port;
+    let mut hub = connect(port, "hub").await;
+    next_event(&mut hub).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let agents = store.agents().await.unwrap();
+    assert!(!agents.iter().find(|a| a.name == "hub").unwrap().is_human);
+}
+
+#[tokio::test]
+async fn a_relayers_traffic_still_counts_toward_the_exchange_cap() {
+    // A hub volleying with workers is exactly the runaway the cap exists to catch.
+    // Relay status grants authority, not a guard exemption.
+    let (_d, port) = start_bus_with_relayers(["hub".to_string()]).await;
+    let mut hub = connect(port, "hub").await;
+    next_event(&mut hub).await;
+    send(
+        &mut hub,
+        &ToBus::Join {
+            req_id: 1,
+            room: "loop".into(),
+        },
+    )
+    .await;
+    next_event(&mut hub).await;
+
+    for i in 0..21 {
+        send(
+            &mut hub,
+            &ToBus::Send {
+                req_id: 100 + i,
+                target: Target::Room {
+                    room: "loop".into(),
+                },
+                text: format!("m{i}"),
+                done: false,
+            },
+        )
+        .await;
+        next_event(&mut hub).await;
+    }
+    send(
+        &mut hub,
+        &ToBus::Send {
+            req_id: 300,
+            target: Target::Room {
+                room: "loop".into(),
+            },
+            text: "still going".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut hub).await {
+        FromBus::Paused { .. } | FromBus::Error { .. } => {}
+        other => panic!("a relayer must not be exempt from the cap: {other:?}"),
     }
 }

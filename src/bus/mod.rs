@@ -99,18 +99,51 @@ impl Keepalive {
 /// past that by another agent the way the routing queue can.
 const CONTROL_CHANNEL_CAPACITY: usize = 16;
 
+/// Agents whose sends are stamped as carrying the human's authority.
+///
+/// The hub case: the human types in one agent's terminal, so that agent's `send` is
+/// agent-origin and a worker would defer — the behavior this feature exists to fix.
+/// Naming it here rather than letting a sender claim relay status per message is the
+/// point: no agent can opt itself in, and a confused relayer cannot opt others in.
+///
+/// Empty by default, so a bus nobody configured behaves exactly as it did before.
+#[derive(Clone, Debug, Default)]
+pub struct Relayers(std::collections::HashSet<String>);
+
+impl Relayers {
+    pub fn new(names: impl IntoIterator<Item = String>) -> Self {
+        Self(names.into_iter().collect())
+    }
+
+    /// Matched against the connection's *effective* name — the one that appears as
+    /// `from`. A second connection claiming a relayer's name while the real one is live
+    /// is renamed by `Registry::attach` and so gets no authority, which fails closed.
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.contains(name)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct App {
     pub(crate) store: Arc<Store>,
     pub(crate) registry: Registry,
     pub(crate) guards: Guards,
     pub(crate) keepalive: Keepalive,
+    pub(crate) relayers: Relayers,
 }
 
-pub async fn serve(port: u16, data_dir: PathBuf) -> anyhow::Result<()> {
+pub async fn serve(port: u16, data_dir: PathBuf, relayers: Relayers) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     eprintln!("claude-bus listening on 0.0.0.0:{port}");
-    serve_on(listener, data_dir).await
+    serve_on_full(
+        listener,
+        data_dir,
+        Guards::default(),
+        Keepalive::default(),
+        Registry::new(),
+        relayers,
+    )
+    .await
 }
 
 /// Split out so tests can bind port 0 and learn the assigned port.
@@ -138,7 +171,15 @@ pub async fn serve_on_with_keepalive(
     guards: Guards,
     keepalive: Keepalive,
 ) -> anyhow::Result<()> {
-    serve_on_full(listener, data_dir, guards, keepalive, Registry::new()).await
+    serve_on_full(
+        listener,
+        data_dir,
+        guards,
+        keepalive,
+        Registry::new(),
+        Relayers::default(),
+    )
+    .await
 }
 
 /// `Registry` is injected for the same reason `Guards` and `Keepalive` are:
@@ -153,6 +194,7 @@ pub async fn serve_on_full(
     guards: Guards,
     keepalive: Keepalive,
     registry: Registry,
+    relayers: Relayers,
 ) -> anyhow::Result<()> {
     let store = Store::open(&data_dir).await?;
     // A bus that is only now starting has no live connections, so any row left claiming
@@ -164,6 +206,7 @@ pub async fn serve_on_full(
         registry,
         guards,
         keepalive,
+        relayers,
     };
     let router = Router::new()
         .route("/ws", get(upgrade))

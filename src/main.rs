@@ -12,10 +12,19 @@ fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
 }
 
+/// Every value of a repeatable flag, e.g. `--relayer hub --relayer voice`.
+fn flags(args: &[String], name: &str) -> Vec<String> {
+    args.iter()
+        .enumerate()
+        .filter(|(_, a)| a.as_str() == name)
+        .filter_map(|(i, _)| args.get(i + 1).cloned())
+        .collect()
+}
+
 fn usage() -> ! {
     eprintln!("claude-bus — a message bus for Claude Code agents");
     eprintln!();
-    eprintln!("  claude-bus serve [--port 7777] [--data ./data]");
+    eprintln!("  claude-bus serve [--port 7777] [--data ./data] [--relayer <name>]...");
     eprintln!("  claude-bus agent [--bus ws://host:7777/ws] [--name <n>] [--name-template <t>]");
     eprintln!("  claude-bus tail <room> [--bus ws://host:7777/ws]");
     eprintln!("  claude-bus chat <room> [--bus ws://host:7777/ws] [--name <n>]");
@@ -35,7 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(7777);
             let data = flag(&args, "--data").unwrap_or_else(|| "./data".to_string());
-            claude_bus::bus::serve(port, std::path::PathBuf::from(data)).await?;
+            let relayers = claude_bus::bus::Relayers::new(flags(&args, "--relayer"));
+            claude_bus::bus::serve(port, std::path::PathBuf::from(data), relayers).await?;
             Ok(())
         }
         Some("agent") => {

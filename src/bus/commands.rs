@@ -136,9 +136,9 @@ pub(crate) async fn handle(
             }
 
             // One binding, three uses (the row, the member fan-out, the observer
-            // fan-out). Computed from the connection, never from anything the sender
-            // put in the payload.
-            let human_origin = is_human;
+            // fan-out): the connection's own origin, or a relay grant that lives in
+            // the bus's configuration. Never anything the sender put in the payload.
+            let human_origin = is_human || app.relayers.contains(me);
 
             // A DM auto-creates its room and enrolls both sides.
             let _ = app.store.join_room(&room, me).await;
