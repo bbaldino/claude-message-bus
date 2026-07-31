@@ -3,9 +3,9 @@ mod common;
 use claude_bus::proto::{FromBus, ReplyResult, Target, ToBus};
 use claude_bus::store::Store;
 use common::{
-    agent_is_online, connect, connect_observer, flood_continuously, flood_message, next_event,
-    next_non_flood_event, pump_for, send, start_bus, start_bus_with_dir, start_bus_with_keepalive,
-    start_bus_with_registry, wait_until,
+    agent_is_online, connect, connect_human, connect_observer, flood_continuously, flood_message,
+    next_event, next_non_flood_event, pump_for, send, start_bus, start_bus_with_dir,
+    start_bus_with_keepalive, start_bus_with_registry, wait_until,
 };
 
 #[tokio::test]
@@ -1495,4 +1495,38 @@ async fn an_observers_history_call_does_not_move_any_agents_cursor() {
         beta_before,
         "an observer's history call must not move beta's cursor"
     );
+}
+
+#[tokio::test]
+async fn a_human_registration_is_recorded_as_human() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await; // Registered
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let agents = store.agents().await.unwrap();
+    let me = agents.iter().find(|a| a.name == "bbaldino").unwrap();
+    assert!(me.is_human, "the flag must reach the store");
+
+    let regs = store.events_of_kind("agent_registered", 10).await.unwrap();
+    let mine = regs
+        .iter()
+        .find(|e| e.agent.as_deref() == Some("bbaldino"))
+        .expect("a registration event");
+    assert_eq!(
+        mine.detail["is_human"], true,
+        "the event log must distinguish a person joining from a bot: {:?}",
+        mine.detail
+    );
+}
+
+#[tokio::test]
+async fn an_ordinary_agent_is_not_recorded_as_human() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let agents = store.agents().await.unwrap();
+    assert!(!agents.iter().find(|a| a.name == "caas").unwrap().is_human);
 }

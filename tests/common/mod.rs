@@ -391,6 +391,25 @@ pub async fn connect(port: u16, name: &str) -> Ws {
     ws
 }
 
+/// Like `connect`, but registers with `human: true` — a person joining
+/// rather than an agent.
+pub async fn connect_human(port: u16, name: &str) -> Ws {
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
+        .await
+        .unwrap();
+    let reg = ToBus::Register {
+        name: name.into(),
+        host: "testhost".into(),
+        cwd: format!("/w/{name}"),
+        session_id: Some(format!("sess-{name}")),
+        human: true,
+    };
+    ws.send(Message::text(serde_json::to_string(&reg).unwrap()))
+        .await
+        .unwrap();
+    ws
+}
+
 /// Like `connect`, but identifies via `Observe` instead of `Register` — a
 /// viewer, not a participant. See `ToBus::Observe`.
 pub async fn connect_observer(port: u16, name: &str) -> Ws {

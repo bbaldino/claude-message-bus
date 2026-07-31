@@ -266,6 +266,17 @@ async fn connection(socket: WebSocket, app: App) {
     });
 
     let mut me: Option<String> = None;
+    // Set once, at Register, and read by the teardown (to decide whether room
+    // membership was ephemeral) and by every send (to decide whether the guards
+    // apply). A connection registers exactly once, so this never changes after.
+    //
+    // Nothing in this function reads the initial `false` yet — the teardown
+    // and per-send readers land in later tasks — so clippy sees a write that
+    // is always overwritten before use. Silenced rather than removed: the
+    // initializer has to exist so the variable is definitely assigned on
+    // every path, including a connection that never registers.
+    #[allow(unused_assignments)]
+    let mut is_human = false;
     // Set instead of `me` when this connection identified via `Observe`
     // rather than `Register`. The two are mutually exclusive for the
     // connection's whole lifetime — see the guards in the `Register` and
@@ -321,7 +332,7 @@ async fn connection(socket: WebSocket, app: App) {
                     host,
                     cwd,
                     session_id,
-                    human: _human,
+                    human,
                 } = &cmd
                 {
                     // A connection registers exactly once. Accepting a second
@@ -354,9 +365,10 @@ async fn connection(socket: WebSocket, app: App) {
                     // what other connections use to fan messages in, never
                     // to answer this connection's own commands.
                     let effective = app.registry.attach(name, host, routing_tx.clone()).await;
+                    is_human = *human;
                     let _ = app
                         .store
-                        .upsert_agent(&effective, host, cwd, session_id.as_deref(), false)
+                        .upsert_agent(&effective, host, cwd, session_id.as_deref(), is_human)
                         .await;
                     let _ = app
                         .store
@@ -369,6 +381,7 @@ async fn connection(socket: WebSocket, app: App) {
                                 "effective_name": &effective,
                                 "host": host,
                                 "session_id": session_id,
+                                "is_human": is_human,
                             }),
                         )
                         .await;
