@@ -18,6 +18,7 @@ fn usage() -> ! {
     eprintln!("  claude-bus serve [--port 7777] [--data ./data]");
     eprintln!("  claude-bus agent [--bus ws://host:7777/ws] [--name <n>] [--name-template <t>]");
     eprintln!("  claude-bus tail <room> [--bus ws://host:7777/ws]");
+    eprintln!("  claude-bus chat <room> [--bus ws://host:7777/ws] [--name <n>]");
     eprintln!(
         "  claude-bus init [--user | --project] [--bus ws://host:7777/ws] [--dry-run] [--yes] \
          [--force]"
@@ -54,6 +55,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The room is the first positional argument after "tail".
             let room = args.get(2).filter(|a| !a.starts_with("--")).cloned();
             claude_bus::tail::run(bus, room).await?;
+            Ok(())
+        }
+        Some("chat") => {
+            let room = args
+                .get(2)
+                .filter(|a| !a.starts_with("--"))
+                .cloned()
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "usage: claude-bus chat <room> [--bus ws://host:7777/ws] [--name <n>]"
+                    );
+                    std::process::exit(2);
+                });
+            let bus = flag(&args, "--bus").unwrap_or_else(|| "ws://127.0.0.1:7777/ws".to_string());
+            let name = flag(&args, "--name")
+                .or_else(|| std::env::var("USER").ok())
+                .unwrap_or_else(|| "human".to_string());
+            claude_bus::chat::run(bus, room, name).await?;
             Ok(())
         }
         Some("init") => {

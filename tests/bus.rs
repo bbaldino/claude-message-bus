@@ -1892,3 +1892,89 @@ async fn a_human_is_not_rate_limited() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_human_and_two_agents_can_all_talk_in_one_room() {
+    // The whole point of the feature: three participants, and every message reaches
+    // the other two.
+    let (_d, port) = start_bus().await;
+
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Join {
+            req_id: 1,
+            room: "design".into(),
+        },
+    )
+    .await;
+    next_event(&mut a).await;
+
+    let mut b = connect(port, "dashboard").await;
+    next_event(&mut b).await;
+    send(
+        &mut b,
+        &ToBus::Join {
+            req_id: 2,
+            room: "design".into(),
+        },
+    )
+    .await;
+    next_event(&mut b).await;
+
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await;
+    send(
+        &mut h,
+        &ToBus::Join {
+            req_id: 3,
+            room: "design".into(),
+        },
+    )
+    .await;
+    next_event(&mut h).await;
+
+    send(
+        &mut h,
+        &ToBus::Send {
+            req_id: 4,
+            target: Target::Room {
+                room: "design".into(),
+            },
+            text: "what do you two think?".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut h).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { delivered_to, .. },
+            ..
+        } => {
+            assert!(
+                delivered_to.contains(&"caas".to_string()),
+                "{delivered_to:?}"
+            );
+            assert!(
+                delivered_to.contains(&"dashboard".to_string()),
+                "{delivered_to:?}"
+            );
+            assert!(
+                !delivered_to.contains(&"bbaldino".to_string()),
+                "not to the sender"
+            );
+        }
+        other => panic!("expected Sent, got {other:?}"),
+    }
+
+    for (who, ws) in [("caas", &mut a), ("dashboard", &mut b)] {
+        match next_event(ws).await {
+            FromBus::Message { from, text, .. } => {
+                assert_eq!(from, "bbaldino", "{who} should see the human as the sender");
+                assert_eq!(text, "what do you two think?");
+            }
+            other => panic!("{who} should have received the human's message: {other:?}"),
+        }
+    }
+}
