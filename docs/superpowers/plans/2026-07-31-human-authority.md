@@ -1020,9 +1020,9 @@ its traffic still counts toward the exchange cap — a hub volleying with worker
 the runaway that cap exists to catch.
 
 This is a behavior control, not a security one. The bus has no authentication, and every
-agent runs unscoped as the same user, so anything that can reach the bus could claim to be
-a human by opening a raw socket. It makes agents behave predictably; it does not contain
-one that has been subverted.
+agent runs unscoped as the same user, so forging the marker means running the shipped
+`chat` client or opening a raw socket — both reachable from any agent's Bash. It makes
+agents behave predictably; it does not contain one that has been subverted.
 ````
 
 In `README.md`, update the `chat` bullet:
