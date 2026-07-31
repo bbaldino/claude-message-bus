@@ -1978,3 +1978,110 @@ async fn a_human_and_two_agents_can_all_talk_in_one_room() {
         }
     }
 }
+
+/// Reads events off `ws` until the reply to `req_id` arrives, so a test that
+/// asks a question right after connecting isn't derailed by the `Unread`
+/// summary (or anything else) the bus volunteers first.
+async fn reply_to(ws: &mut common::Ws, req_id: u64) -> FromBus {
+    for _ in 0..10 {
+        let ev = next_event(ws).await;
+        match &ev {
+            FromBus::Reply { req_id: got, .. } if *got == req_id => return ev,
+            FromBus::Error {
+                req_id: Some(got), ..
+            } if *got == req_id => return ev,
+            _ => {}
+        }
+    }
+    panic!("never saw a reply to req_id {req_id}");
+}
+
+#[tokio::test]
+async fn a_room_whose_only_member_was_a_human_still_serves_its_history() {
+    // Task 4 made a human's membership ephemeral, which creates a state that could
+    // not previously exist: a room with real messages and zero members. History must
+    // key off whether the room exists, not off who happens to be in it right now —
+    // otherwise a human reconnecting to the room they were just typing in is told it
+    // does not exist.
+    let (_d, port) = start_bus().await;
+
+    let mut h = connect_human(port, "bbaldino").await;
+    next_event(&mut h).await; // Registered
+    send(
+        &mut h,
+        &ToBus::Join {
+            req_id: 1,
+            room: "solo".into(),
+        },
+    )
+    .await;
+    next_event(&mut h).await; // Joined
+    send(
+        &mut h,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "solo".into(),
+            },
+            text: "note to self".into(),
+            done: false,
+        },
+    )
+    .await;
+    next_event(&mut h).await; // Sent
+
+    drop(h); // they close the terminal
+    assert!(
+        wait_until(|| async { !agent_is_online(port, "bbaldino").await }).await,
+        "the human never went offline"
+    );
+
+    let mut again = connect_human(port, "bbaldino").await;
+    next_event(&mut again).await; // Registered
+    send(
+        &mut again,
+        &ToBus::History {
+            req_id: 3,
+            room: "solo".into(),
+            limit: 20,
+        },
+    )
+    .await;
+    match reply_to(&mut again, 3).await {
+        FromBus::Reply {
+            result: ReplyResult::History { messages },
+            ..
+        } => {
+            assert_eq!(messages.len(), 1, "{messages:?}");
+            assert_eq!(messages[0].text, "note to self");
+        }
+        other => panic!("a room with messages but no members must stay readable: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn history_for_a_room_that_never_existed_is_still_an_error() {
+    // The counterpart to the test above: relaxing the membership check must not turn
+    // a typo'd room name into a silently empty transcript.
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::History {
+            req_id: 1,
+            room: "nonesuch".into(),
+            limit: 20,
+        },
+    )
+    .await;
+    match reply_to(&mut a, 1).await {
+        FromBus::Error { message, .. } => {
+            assert!(
+                message.contains("nonesuch"),
+                "the error should name the room asked for: {message}"
+            );
+        }
+        other => panic!("expected an error for an unknown room, got {other:?}"),
+    }
+}

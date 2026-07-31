@@ -515,3 +515,24 @@ fn a_register_payload_with_human_true_round_trips() {
         other => panic!("expected Register, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_room_exists_once_created_even_with_no_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    store.join_room("solo", "bbaldino").await.unwrap();
+    store.leave_all_rooms("bbaldino").await.unwrap();
+
+    assert!(store.room_members("solo").await.unwrap().is_empty());
+    assert!(
+        store.room_exists("solo").await.unwrap(),
+        "an empty room is still a room"
+    );
+}
+
+#[tokio::test]
+async fn a_room_that_was_never_created_does_not_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    assert!(!store.room_exists("nonesuch").await.unwrap());
+}

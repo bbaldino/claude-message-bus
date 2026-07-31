@@ -437,8 +437,10 @@ pub(crate) async fn reply_history(
     room: &str,
     limit: i64,
 ) -> Option<i64> {
-    let members = app.store.room_members(room).await.unwrap_or_default();
-    if members.is_empty() {
+    // Existence, not membership: a room whose only participant was a human holds no
+    // members once they disconnect, but its transcript is still there and still worth
+    // reading — not least by that same human reconnecting. See `Store::room_exists`.
+    if !app.store.room_exists(room).await.unwrap_or(false) {
         let _ = control_tx.try_send(FromBus::Error {
             req_id: Some(req_id),
             message: format!(

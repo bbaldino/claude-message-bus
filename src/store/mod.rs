@@ -222,6 +222,20 @@ impl Store {
         Ok(rows.into_iter().map(|r| r.get("agent_name")).collect())
     }
 
+    /// Whether `room` has ever been created, independently of who is in it.
+    ///
+    /// Membership is not a proxy for existence. A human's membership is dropped when
+    /// they disconnect (see `leave_all_rooms`), so a room they were the only
+    /// participant in keeps its `rooms` row and its messages while holding no members
+    /// at all — a state that could not arise while every membership was durable.
+    pub async fn room_exists(&self, room: &str) -> anyhow::Result<bool> {
+        let row = sqlx::query("SELECT 1 FROM rooms WHERE name = ?1")
+            .bind(room)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
     /// Drop every room membership held by `agent`.
     ///
     /// Used for humans only. An agent's membership is durable — that is what makes
