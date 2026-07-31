@@ -685,3 +685,36 @@ async fn a_long_message_is_truncated_without_splitting_a_character() {
         "the full 400-character body must not be inlined on the overview"
     );
 }
+
+#[tokio::test]
+async fn a_human_is_marked_distinctly_in_the_agent_list() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w", None, false)
+            .await
+            .unwrap();
+        store
+            .upsert_agent("bbaldino", "hardac", "/w", None, true)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/agents").await;
+    assert!(
+        body.contains("bbaldino"),
+        "the human must be listed: {body}"
+    );
+    assert!(
+        body.contains("human"),
+        "and marked as one rather than looking like a bot: {body}"
+    );
+    // The marker must not be applied to everyone.
+    let human_marks = body.matches("class=\"human\"").count();
+    assert_eq!(
+        human_marks, 1,
+        "exactly one row should carry the marker: {body}"
+    );
+}

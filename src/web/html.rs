@@ -113,6 +113,7 @@ a{color:#0b57d0}\
 .when{color:#6e7781;white-space:nowrap}\
 .detail{color:#424a53}\
 .note{font-weight:400;font-size:.8rem;color:#8c959f}\
+.human{font-size:.8rem;color:#0b57d0;border:1px solid #cfe0fb;border-radius:.6rem;padding:0 .35rem;margin-left:.4rem}\
 ";
 
 #[cfg(test)]

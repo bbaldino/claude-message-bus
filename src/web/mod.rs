@@ -150,6 +150,20 @@ fn detail_cell(kind: &str, detail: &serde_json::Value) -> String {
     )
 }
 
+/// The badge that distinguishes a person from a bot in an agent table.
+///
+/// A human is an ordinary agent carrying one boolean, which is what makes the rest of
+/// the bus simple — but it also means nothing about the name, host, or cwd of a row
+/// says whether anyone is actually reading it. Both tables that list agents render
+/// this, so it lives here rather than being written out twice.
+fn human_mark(is_human: bool) -> &'static str {
+    if is_human {
+        " <span class=\"human\">human</span>"
+    } else {
+        ""
+    }
+}
+
 pub fn routes() -> Router<App> {
     Router::new()
         .route("/", get(overview))
@@ -174,9 +188,11 @@ async fn overview(State(app): State<App>) -> Html<String> {
     for a in &agents {
         let online = live.contains(&a.name);
         b.push_str(&format!(
-            "<tr><td><a href=\"/agents/{p}\">{n}</a></td><td>{h}</td><td class=\"{c}\">{s}</td></tr>",
+            "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td>\
+             <td class=\"{c}\">{s}</td></tr>",
             p = encode_path_segment(&a.name),
             n = esc(&a.name),
+            mark = human_mark(a.is_human),
             h = esc(&a.host),
             c = if online { "" } else { "off" },
             s = if online { "online" } else { "offline" },
@@ -364,9 +380,11 @@ async fn agents(State(app): State<App>) -> Html<String> {
     for a in &agents {
         let online = live.contains(&a.name);
         b.push_str(&format!(
-            "<tr><td><a href=\"/agents/{p}\">{n}</a></td><td>{h}</td><td class=\"{c}\">{s}</td></tr>",
+            "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td>\
+             <td class=\"{c}\">{s}</td></tr>",
             p = encode_path_segment(&a.name),
             n = esc(&a.name),
+            mark = human_mark(a.is_human),
             h = esc(&a.host),
             c = if online { "" } else { "off" },
             s = if online { "online" } else { "offline" },
