@@ -717,3 +717,137 @@ fn instructions_distinguish_a_humans_request_from_an_agents() {
         "and must be scoped to agent-origin rather than all inbound: {instructions}"
     );
 }
+
+// Regression for the worked example in `instructions.rs` disagreeing with its own rule:
+// the `<channel>` tag shown to the model used to carry no `human` attribute at all, while
+// a few lines later the instructions assert every message carries one. Pins both halves
+// so they can't drift apart again.
+#[test]
+fn the_channel_example_carries_the_human_attribute_the_rule_promises() {
+    let instructions = claude_bus::agent::instructions::for_agent("tester");
+    let example_line = instructions
+        .lines()
+        .find(|l| l.trim_start().starts_with("<channel"))
+        .expect("instructions must show the <channel> tag shape");
+    assert!(
+        example_line.contains("human=\""),
+        "the worked example must itself carry a human attribute, not just the prose rule \
+         below it: {example_line}"
+    );
+    // The lead-in used to say "Messages from other agents arrive as:", which was already
+    // stale once a human's own messages arrive over the same tag.
+    assert!(
+        instructions.contains("Messages from the bus arrive as:"),
+        "the lead-in must not claim the tag is agent-only: {instructions}"
+    );
+}
+
+// Regression for CLI-forging confusion (finding 4b): the model should be nudged toward
+// the `send` tool rather than reaching for the `claude-bus` binary via `Bash` to speak on
+// the bus itself.
+#[test]
+fn instructions_steer_the_model_away_from_the_cli_for_speaking_on_the_bus() {
+    let instructions = claude_bus::agent::instructions::for_agent("tester");
+    assert!(
+        instructions.to_lowercase().contains("claude-bus"),
+        "instructions should mention the CLI by name when steering away from it: {instructions}"
+    );
+}
+
+// Regression for finding 1: `history`'s rendering used to drop `m.human` entirely,
+// showing `[id] from: text` with no origin at all — undefined territory for exactly the
+// confused agent this feature targets, since the catch-up path (`history`) is how a
+// worker that was offline sees a queued human instruction; the reconnect path sends only
+// an unread count, never a replay.
+#[tokio::test]
+async fn history_marks_human_origin_messages_distinguishably_from_agent_origin() {
+    let (_dir, port) = common::start_bus().await;
+
+    // A human sends into the room.
+    let mut human_ws = common::connect_human(port, "bbaldino").await;
+    let _ = common::next_event(&mut human_ws).await; // Registered
+    common::send(
+        &mut human_ws,
+        &claude_bus::proto::ToBus::Join {
+            req_id: 1,
+            room: "standup".into(),
+        },
+    )
+    .await;
+    let _ = common::next_event(&mut human_ws).await; // Joined
+    common::send(
+        &mut human_ws,
+        &claude_bus::proto::ToBus::Send {
+            req_id: 2,
+            target: claude_bus::proto::Target::Room {
+                room: "standup".into(),
+            },
+            text: "from the human".into(),
+            done: false,
+        },
+    )
+    .await;
+    let _ = common::next_event(&mut human_ws).await; // Reply to Send
+
+    // An agent sends into the same room.
+    let mut agent_ws = common::connect(port, "worker").await;
+    let _ = common::next_event(&mut agent_ws).await; // Registered
+    common::send(
+        &mut agent_ws,
+        &claude_bus::proto::ToBus::Join {
+            req_id: 1,
+            room: "standup".into(),
+        },
+    )
+    .await;
+    let _ = common::next_event(&mut agent_ws).await; // Joined
+    common::send(
+        &mut agent_ws,
+        &claude_bus::proto::ToBus::Send {
+            req_id: 2,
+            target: claude_bus::proto::Target::Room {
+                room: "standup".into(),
+            },
+            text: "from an agent".into(),
+            done: false,
+        },
+    )
+    .await;
+    let _ = common::next_event(&mut agent_ws).await; // Reply to Send
+
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "reader");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    wait_until_online(port, "reader").await;
+
+    let text = call_tool(
+        &mut a,
+        40,
+        "history",
+        serde_json::json!({ "room": "standup" }),
+    )
+    .await;
+
+    let human_line = text
+        .lines()
+        .find(|l| l.contains("from the human"))
+        .unwrap_or_else(|| panic!("no line for the human message: {text}"));
+    let agent_line = text
+        .lines()
+        .find(|l| l.contains("from an agent"))
+        .unwrap_or_else(|| panic!("no line for the agent message: {text}"));
+
+    assert_ne!(
+        human_line, agent_line,
+        "a human-origin and an agent-origin line must render differently: {text}"
+    );
+    assert!(
+        human_line.to_lowercase().contains("human"),
+        "the human-origin line must be visibly marked: {human_line}"
+    );
+    assert!(
+        !agent_line.to_lowercase().contains("human"),
+        "the agent-origin line must not carry the human marker: {agent_line}"
+    );
+}

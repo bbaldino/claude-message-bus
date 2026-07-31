@@ -49,9 +49,11 @@ The *bus* decides this value — never the sender. For an ordinary participant i
 from the connection's registration; for a relayer it comes from configuration (§4).
 Either way no agent asserts its own authority. An agent cannot set it through its own
 tool surface at all: `bridge.rs` hardcodes `human: false` at registration, and `send` has
-no such parameter. Forging it means
-deliberately opening a raw WebSocket outside the MCP tools — a different act from a model
-being confused or fed a malicious web page, which is the failure this design targets.
+no such parameter. Forging it means running the shipped `chat` client, or opening a raw
+socket outside the MCP tools — both are reachable from any agent's `Bash` tool, so
+forging is squarely inside the failure mode this design targets (a model being confused
+or fed a malicious web page), not a separate, harder-to-reach act. Acceptance does not
+rest on forging being difficult; see *What this is, and is not*.
 
 `meta` values are strings (see the existing `done` key), so this serialises as
 `"human": human.to_string()`.
@@ -164,11 +166,11 @@ Build it when there is evidence the cheaper version is insufficient.
 - **A confused relayer issues an instruction the human did not give.** Visible in the
   transcript and the web UI, and git-recoverable. Accepted; the upgrade path above is the
   response if it happens often.
-- **The human marker is forgeable** by anything that can reach the bus and open a raw
-  socket, including any agent via `Bash`. Accepted, per *What this is, and is not*. It
-  stops being acceptable if the bus ever carries an agent the human does not fully trust,
-  or gains a participant outside their own machines — at which point the fix is
-  authentication on the bus, not a stronger marker.
+- **The human marker is forgeable** by running the shipped `chat` client or opening a raw
+  socket, both reachable from any agent via `Bash`. Accepted, per *What this is, and is
+  not*. It stops being acceptable if the bus ever carries an agent the human does not
+  fully trust, or gains a participant outside their own machines — at which point the fix
+  is authentication on the bus, not a stronger marker.
 - **Workers act on bus instructions with no permission fence**, because they run with
   `--dangerously-skip-permissions`. This is pre-existing, not introduced here, but this
   design increases how often that path is exercised.

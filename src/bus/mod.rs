@@ -121,6 +121,16 @@ impl Relayers {
     pub fn contains(&self, name: &str) -> bool {
         self.0.contains(name)
     }
+
+    /// Names in the set, sorted for stable output. Exists so `serve` can log the
+    /// resolved grant at startup without making the inner field public — a mistyped
+    /// `--relayer` flag (e.g. the equals form) otherwise yields an empty set with
+    /// nothing in the logs to show for it.
+    pub fn names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.0.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
 }
 
 #[derive(Clone)]
@@ -135,6 +145,16 @@ pub(crate) struct App {
 pub async fn serve(port: u16, data_dir: PathBuf, relayers: Relayers) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     eprintln!("claude-bus listening on 0.0.0.0:{port}");
+    // Auditable through `make bus-logs`: a mistyped `--relayer` (e.g. the equals form,
+    // which this binary does not parse) yields an empty set with no error anywhere
+    // else, and the only visible symptom would otherwise be "workers ignore the hub
+    // again" — indistinguishable from a regression.
+    let names = relayers.names();
+    if names.is_empty() {
+        eprintln!("relayers: (none)");
+    } else {
+        eprintln!("relayers: {}", names.join(", "));
+    }
     serve_on_full(
         listener,
         data_dir,

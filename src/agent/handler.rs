@@ -309,7 +309,15 @@ impl rmcp::ServerHandler for Handler {
                     Ok(ReplyResult::History { messages }) => text_of(
                         messages
                             .into_iter()
-                            .map(|m| format!("[{}] {}: {}", m.id, m.from, m.text))
+                            .map(|m| {
+                                format!(
+                                    "[{}] {}{}: {}",
+                                    m.id,
+                                    m.from,
+                                    if m.human { " (human)" } else { "" },
+                                    m.text
+                                )
+                            })
                             .collect::<Vec<_>>()
                             .join("\n"),
                     ),

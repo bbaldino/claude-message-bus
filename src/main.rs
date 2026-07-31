@@ -21,6 +21,16 @@ fn flags(args: &[String], name: &str) -> Vec<String> {
         .collect()
 }
 
+/// True if `name` appears with no value following it — either as the last argument, or
+/// immediately before another flag. `flags` above silently drops such an occurrence
+/// rather than erroring, which for a repeatable flag like `--relayer` would otherwise
+/// leave a mistyped invocation looking identical to "no relayers configured".
+fn has_valueless_occurrence(args: &[String], name: &str) -> bool {
+    args.iter().enumerate().any(|(i, a)| {
+        a.as_str() == name && args.get(i + 1).is_none_or(|next| next.starts_with("--"))
+    })
+}
+
 fn usage() -> ! {
     eprintln!("claude-bus — a message bus for Claude Code agents");
     eprintln!();
@@ -40,6 +50,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("serve") => {
+            if has_valueless_occurrence(&args, "--relayer") {
+                eprintln!("claude-bus serve: --relayer requires a value, e.g. --relayer hub");
+                std::process::exit(2);
+            }
             let port: u16 = flag(&args, "--port")
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(7777);
@@ -70,16 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("chat") => {
             let to = flag(&args, "--to");
             let positional = args.get(2).filter(|a| !a.starts_with("--")).cloned();
-            let target = match (positional, to) {
-                (Some(room), None) => claude_bus::chat::ChatTarget::Room(room),
-                (None, Some(agent)) => claude_bus::chat::ChatTarget::Agent(agent),
-                _ => {
-                    eprintln!(
-                        "usage: claude-bus chat (<room> | --to <agent>) \
-                         [--bus ws://host:7777/ws] [--name <n>]"
-                    );
-                    std::process::exit(2);
-                }
+            let Some(target) = claude_bus::chat::chat_target(positional, to) else {
+                eprintln!(
+                    "usage: claude-bus chat (<room> | --to <agent>) \
+                     [--bus ws://host:7777/ws] [--name <n>]"
+                );
+                std::process::exit(2);
             };
             let bus = flag(&args, "--bus").unwrap_or_else(|| "ws://127.0.0.1:7777/ws".to_string());
             let name = flag(&args, "--name")

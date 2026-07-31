@@ -18,21 +18,39 @@ const HISTORY_ON_JOIN: i64 = 20;
 
 /// Who the human is talking to. A room reaches whoever joined it; an agent reaches that
 /// agent whether or not it ever joined anything, because the DM path enrols both sides.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatTarget {
     Room(String),
     Agent(String),
+}
+
+/// Resolve `chat`'s `(<room> | --to <agent>)` arguments into a single target.
+/// `None` is the usage-error case — both given, or neither — which `main` turns into its
+/// `exit(2)`; kept pure and returning `Option` rather than exiting itself so it can be
+/// unit-tested without touching process state.
+pub fn chat_target(positional: Option<String>, to: Option<String>) -> Option<ChatTarget> {
+    match (positional, to) {
+        (Some(room), None) => Some(ChatTarget::Room(room)),
+        (None, Some(agent)) => Some(ChatTarget::Agent(agent)),
+        _ => None,
+    }
+}
+
+/// The room a chat session joins and reads history from, for a given target and this
+/// client's own name. For a DM this must land on the same room the bus computes from the
+/// send target (`bus::rooms::resolve`), so both sides agree on where the conversation lives.
+pub fn room_for(target: &ChatTarget, name: &str) -> String {
+    match target {
+        ChatTarget::Room(r) => r.clone(),
+        ChatTarget::Agent(a) => crate::bus::rooms::dm_name(name, a),
+    }
 }
 
 pub async fn run(bus_url: String, target: ChatTarget, name: String) -> anyhow::Result<()> {
     let (ws, _) = tokio_tungstenite::connect_async(&bus_url).await?;
     let (mut sink, mut stream) = ws.split();
 
-    // The room to join and read history from. For a DM this is computed the same way
-    // the bus computes it from the send target, so both sides name the same room.
-    let room = match &target {
-        ChatTarget::Room(r) => r.clone(),
-        ChatTarget::Agent(a) => crate::bus::rooms::dm_name(&name, a),
-    };
+    let room = room_for(&target, &name);
     let send_target = match &target {
         ChatTarget::Room(r) => Target::Room { room: r.clone() },
         ChatTarget::Agent(a) => Target::Agent { name: a.clone() },
@@ -112,4 +130,63 @@ pub async fn run(bus_url: String, target: ChatTarget, name: String) -> anyhow::R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn room_only_resolves_to_a_room_target() {
+        assert_eq!(
+            chat_target(Some("standup".to_string()), None),
+            Some(ChatTarget::Room("standup".to_string()))
+        );
+    }
+
+    #[test]
+    fn to_only_resolves_to_an_agent_target() {
+        assert_eq!(
+            chat_target(None, Some("caas".to_string())),
+            Some(ChatTarget::Agent("caas".to_string()))
+        );
+    }
+
+    #[test]
+    fn both_given_is_a_usage_error() {
+        assert_eq!(
+            chat_target(Some("standup".to_string()), Some("caas".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn neither_given_is_a_usage_error() {
+        assert_eq!(chat_target(None, None), None);
+    }
+
+    #[test]
+    fn room_for_a_room_target_is_the_room_itself() {
+        let target = ChatTarget::Room("standup".to_string());
+        assert_eq!(room_for(&target, "dashboard"), "standup");
+    }
+
+    #[test]
+    fn room_for_an_agent_target_matches_what_the_bus_resolves_from_the_send_target() {
+        // The DM path only works if the client and the bus land on the same room name:
+        // the client picks it here to join and read history, while the bus picks it
+        // independently in `bus::rooms::resolve` from the `Send`'s `Target::Agent`. If
+        // the two ever computed it differently, a human would join a room the bus never
+        // delivers into.
+        let target = ChatTarget::Agent("caas".to_string());
+        let name = "dashboard";
+        let via_chat = room_for(&target, name);
+        let via_bus = crate::bus::rooms::resolve(
+            &crate::proto::Target::Agent {
+                name: "caas".to_string(),
+            },
+            name,
+        );
+        assert_eq!(via_chat, via_bus);
+    }
 }
