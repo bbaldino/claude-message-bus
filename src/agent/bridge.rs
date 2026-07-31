@@ -108,7 +108,7 @@ async fn dispatch(
             from,
             text,
             done,
-            ..
+            human,
         } => {
             eprintln!("[agent] recv ← {from} in {room} (msg {id})");
             let injected = inject(
@@ -120,6 +120,9 @@ async fn dispatch(
                     "from": from,
                     "msg_id": id.to_string(),
                     "done": done.to_string(),
+                    // The one signal that tells the model whether its human asked, or
+                    // another agent did. `instructions` splits its restraint on this.
+                    "human": human.to_string(),
                 }),
             )
             .await;

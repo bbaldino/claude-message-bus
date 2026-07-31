@@ -242,6 +242,10 @@ async fn injects_bus_messages_as_channel_notifications() {
         note["params"]["meta"]["done"], "false",
         "done must be the string \"false\", not a bare bool"
     );
+    assert_eq!(
+        note["params"]["meta"]["human"], "false",
+        "an agent-sent message must be visibly agent-origin: {note}"
+    );
 }
 
 async fn call_tool(a: &mut InProcessAgent, id: u64, name: &str, args: serde_json::Value) -> String {
