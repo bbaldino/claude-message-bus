@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/bbaldino/claude-message-bus/compare/v0.2.0...v0.3.0) - 2026-08-01
+
+### Added
+
+- order agents by last seen and show the timestamp
+
+### Fixed
+
+- address code-review findings on agents-by-last-seen
+
+### Other
+
+- implementation plan for ordering agents by last seen
+- design for ordering agents by last seen
+
 ## [0.2.0](https://github.com/bbaldino/claude-message-bus/compare/v0.1.2...v0.2.0) - 2026-08-01
 
 ### Added
