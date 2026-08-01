@@ -888,3 +888,55 @@ async fn the_agents_tool_reports_each_agents_version() {
          dropped: {text}"
     );
 }
+
+#[test]
+fn instructions_extend_relayed_authority_to_this_repository() {
+    // The gap a worker agent actually reported: `human="true"` authenticated that a
+    // person wrote the message, but never said that person governs THIS project — so it
+    // declined a relayed request to change its own repo and escalated instead.
+    let instructions = claude_bus::agent::instructions::for_agent("tester");
+    assert!(
+        instructions.contains("extends to this project and this repository"),
+        "the human=true branch must say the relayer's human governs this repo: {instructions}"
+    );
+    assert!(
+        instructions.contains("the same person who runs your session"),
+        "and must identify that human as the agent's own: {instructions}"
+    );
+}
+
+#[test]
+fn instructions_route_confirmations_to_the_bus_not_the_terminal() {
+    // Checking back before something irreversible is fine and deliberately kept. Doing it
+    // in a terminal the requester is not sitting at is the failure — indistinguishable
+    // from ignoring them.
+    let instructions = claude_bus::agent::instructions::for_agent("tester");
+    assert!(
+        instructions.contains("Do NOT wait for an answer in your own terminal"),
+        "confirmations must not block on the local terminal: {instructions}"
+    );
+    assert!(
+        instructions.contains("replying on the bus with `send`"),
+        "and must name the channel to use instead: {instructions}"
+    );
+}
+
+#[test]
+fn the_agent_origin_branch_must_also_answer_on_the_bus() {
+    // Same failure mode on the other branch: deferring silently looks identical to being
+    // broken, to whoever asked.
+    let instructions = claude_bus::agent::instructions::for_agent("tester");
+    assert!(
+        instructions.contains("so the sender knows you are not simply ignoring them"),
+        "deferring on an agent-origin message must be announced on the bus: {instructions}"
+    );
+}
+
+#[test]
+fn instructions_give_the_terminal_human_the_final_word() {
+    let instructions = claude_bus::agent::instructions::for_agent("tester");
+    assert!(
+        instructions.contains("they are in the session with you"),
+        "a human present at the terminal must outrank a relayed instruction: {instructions}"
+    );
+}
