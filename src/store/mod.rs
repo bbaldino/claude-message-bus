@@ -23,6 +23,7 @@ pub struct AgentRow {
     pub session_id: Option<String>,
     pub online: bool,
     pub is_human: bool,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +89,8 @@ impl Store {
             .await?;
         self.add_column_if_missing("messages", "human", "INTEGER NOT NULL DEFAULT 0")
             .await?;
+        self.add_column_if_missing("agents", "version", "TEXT")
+            .await?;
         Ok(())
     }
 
@@ -140,13 +143,15 @@ impl Store {
         cwd: &str,
         session_id: Option<&str>,
         is_human: bool,
+        version: Option<&str>,
     ) -> anyhow::Result<()> {
         let now = now_ms();
         sqlx::query(
-            "INSERT INTO agents (name, host, cwd, session_id, connected_at, last_seen, online, is_human)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, ?6)
+            "INSERT INTO agents (name, host, cwd, session_id, connected_at, last_seen, online, is_human, version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, ?6, ?7)
              ON CONFLICT(name) DO UPDATE SET
-               host = ?2, cwd = ?3, session_id = ?4, last_seen = ?5, online = 1, is_human = ?6",
+               host = ?2, cwd = ?3, session_id = ?4, last_seen = ?5, online = 1,
+               is_human = ?6, version = ?7",
         )
         .bind(name)
         .bind(host)
@@ -154,6 +159,7 @@ impl Store {
         .bind(session_id)
         .bind(now)
         .bind(is_human)
+        .bind(version)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -187,7 +193,7 @@ impl Store {
 
     pub async fn agents(&self) -> anyhow::Result<Vec<AgentRow>> {
         let rows = sqlx::query(
-            "SELECT name, host, cwd, session_id, online, is_human FROM agents ORDER BY name",
+            "SELECT name, host, cwd, session_id, online, is_human, version FROM agents ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -200,6 +206,7 @@ impl Store {
                 session_id: r.get("session_id"),
                 online: r.get::<i64, _>("online") != 0,
                 is_human: r.get::<i64, _>("is_human") != 0,
+                version: r.get("version"),
             })
             .collect())
     }

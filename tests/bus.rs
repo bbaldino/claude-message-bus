@@ -3,10 +3,10 @@ mod common;
 use claude_bus::proto::{FromBus, ReplyResult, Target, ToBus};
 use claude_bus::store::Store;
 use common::{
-    agent_is_online, connect, connect_human, connect_observer, flood_continuously, flood_message,
-    next_event, next_non_flood_event, pump_for, send, start_bus, start_bus_with_dir,
-    start_bus_with_guards_dir, start_bus_with_keepalive, start_bus_with_registry,
-    start_bus_with_relayers, start_bus_with_relayers_dir, wait_until,
+    agent_is_online, connect, connect_human, connect_observer, connect_versioned,
+    flood_continuously, flood_message, next_event, next_non_flood_event, pump_for, send, start_bus,
+    start_bus_with_dir, start_bus_with_guards_dir, start_bus_with_keepalive,
+    start_bus_with_registry, start_bus_with_relayers, start_bus_with_relayers_dir, wait_until,
 };
 
 #[tokio::test]
@@ -41,6 +41,7 @@ async fn a_second_register_on_one_connection_is_refused_and_identity_is_unchange
             cwd: "/w/caas".into(),
             session_id: None,
             human: false,
+            version: None,
         },
     )
     .await;
@@ -2427,4 +2428,37 @@ fn the_dm_room_the_chat_client_joins_matches_the_one_the_bus_resolves() {
         "bbaldino",
     );
     assert_eq!(client_side, bus_side);
+}
+
+#[tokio::test]
+async fn a_registering_agent_reports_its_version_to_the_bus() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect_versioned(port, "caas", Some("9.9.9")).await;
+    next_event(&mut a).await; // Registered
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let agents = store.agents().await.unwrap();
+    assert_eq!(
+        agents
+            .iter()
+            .find(|a| a.name == "caas")
+            .unwrap()
+            .version
+            .as_deref(),
+        Some("9.9.9")
+    );
+}
+
+#[tokio::test]
+async fn an_agent_that_sends_no_version_is_recorded_as_unknown() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect_versioned(port, "old", None).await;
+    next_event(&mut a).await;
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let agents = store.agents().await.unwrap();
+    assert_eq!(
+        agents.iter().find(|a| a.name == "old").unwrap().version,
+        None
+    );
 }

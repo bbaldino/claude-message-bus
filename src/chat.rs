@@ -64,6 +64,7 @@ pub async fn run(bus_url: String, target: ChatTarget, name: String) -> anyhow::R
             .unwrap_or_else(|_| ".".to_string()),
         session_id: None,
         human: true,
+        version: Some(env!("CARGO_PKG_VERSION").to_string()),
     })?))
     .await?;
     sink.send(Message::text(serde_json::to_string(&ToBus::Join {

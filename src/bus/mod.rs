@@ -394,6 +394,7 @@ async fn connection(socket: WebSocket, app: App) {
                     cwd,
                     session_id,
                     human,
+                    version,
                 } = &cmd
                 {
                     // A connection registers exactly once. Accepting a second
@@ -429,7 +430,14 @@ async fn connection(socket: WebSocket, app: App) {
                     is_human = *human;
                     let _ = app
                         .store
-                        .upsert_agent(&effective, host, cwd, session_id.as_deref(), is_human)
+                        .upsert_agent(
+                            &effective,
+                            host,
+                            cwd,
+                            session_id.as_deref(),
+                            is_human,
+                            version.as_deref(),
+                        )
                         .await;
                     let _ = app
                         .store
@@ -443,6 +451,7 @@ async fn connection(socket: WebSocket, app: App) {
                                 "host": host,
                                 "session_id": session_id,
                                 "is_human": is_human,
+                                "version": version,
                             }),
                         )
                         .await;

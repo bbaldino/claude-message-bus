@@ -18,7 +18,7 @@ async fn seeded() -> (tempfile::TempDir, Store) {
 async fn registers_an_agent_and_lists_it() {
     let (_d, store) = temp_store().await;
     store
-        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-1"), false)
+        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-1"), false, None)
         .await
         .unwrap();
     store.set_online("caas", true).await.unwrap();
@@ -35,11 +35,11 @@ async fn registers_an_agent_and_lists_it() {
 async fn reregistering_updates_rather_than_duplicates() {
     let (_d, store) = temp_store().await;
     store
-        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-1"), false)
+        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-1"), false, None)
         .await
         .unwrap();
     store
-        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-2"), false)
+        .upsert_agent("caas", "lisa", "/w/caas", Some("sess-2"), false, None)
         .await
         .unwrap();
 
@@ -386,7 +386,7 @@ async fn mark_all_offline_clears_ghosts_left_by_a_bus_that_died() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).await.unwrap();
     store
-        .upsert_agent("ghost", "hardac", "/w/g", None, false)
+        .upsert_agent("ghost", "hardac", "/w/g", None, false, None)
         .await
         .unwrap();
     store.set_online("ghost", true).await.unwrap();
@@ -413,7 +413,7 @@ async fn a_fresh_database_has_the_is_human_column() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).await.unwrap();
     store
-        .upsert_agent("bbaldino", "hardac", "/w", None, true)
+        .upsert_agent("bbaldino", "hardac", "/w", None, true, None)
         .await
         .unwrap();
     let agents = store.agents().await.unwrap();
@@ -426,7 +426,7 @@ async fn an_agent_defaults_to_not_human() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).await.unwrap();
     store
-        .upsert_agent("caas", "hardac", "/w", None, false)
+        .upsert_agent("caas", "hardac", "/w", None, false, None)
         .await
         .unwrap();
     let agents = store.agents().await.unwrap();
@@ -480,7 +480,7 @@ async fn the_migration_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let first = Store::open(dir.path()).await.unwrap();
     first
-        .upsert_agent("caas", "hardac", "/w", None, false)
+        .upsert_agent("caas", "hardac", "/w", None, false, None)
         .await
         .unwrap();
     drop(first);
@@ -535,6 +535,120 @@ async fn a_room_that_was_never_created_does_not_exist() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).await.unwrap();
     assert!(!store.room_exists("nonesuch").await.unwrap());
+}
+
+#[tokio::test]
+async fn an_agents_version_round_trips_through_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    store
+        .upsert_agent("caas", "hardac", "/w", None, false, Some("0.1.2"))
+        .await
+        .unwrap();
+    let agents = store.agents().await.unwrap();
+    let caas = agents.iter().find(|a| a.name == "caas").unwrap();
+    assert_eq!(caas.version.as_deref(), Some("0.1.2"));
+}
+
+#[tokio::test]
+async fn an_agent_that_reports_no_version_stores_null() {
+    // This is the population the feature exists to surface: a binary that predates
+    // the field. `None` must survive as `None`, not become an empty string.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    store
+        .upsert_agent("old", "hardac", "/w", None, false, None)
+        .await
+        .unwrap();
+    let agents = store.agents().await.unwrap();
+    assert_eq!(
+        agents.iter().find(|a| a.name == "old").unwrap().version,
+        None
+    );
+}
+
+#[tokio::test]
+async fn re_registering_updates_a_stale_version() {
+    // A session restarted onto a new binary must stop reporting the old one.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    store
+        .upsert_agent("caas", "hardac", "/w", None, false, Some("0.1.0"))
+        .await
+        .unwrap();
+    store
+        .upsert_agent("caas", "hardac", "/w", None, false, Some("0.1.2"))
+        .await
+        .unwrap();
+    let agents = store.agents().await.unwrap();
+    assert_eq!(
+        agents
+            .iter()
+            .find(|a| a.name == "caas")
+            .unwrap()
+            .version
+            .as_deref(),
+        Some("0.1.2")
+    );
+}
+
+#[tokio::test]
+async fn the_migration_adds_the_version_column_to_an_older_database() {
+    // The deployed bus's volume holds an `agents` table without this column.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("bus.db");
+    {
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.display()))
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE agents (
+               name TEXT PRIMARY KEY, host TEXT NOT NULL, cwd TEXT NOT NULL,
+               session_id TEXT, connected_at INTEGER NOT NULL,
+               last_seen INTEGER NOT NULL, online INTEGER NOT NULL DEFAULT 0,
+               is_human INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agents (name, host, cwd, connected_at, last_seen, online, is_human)
+             VALUES ('caas', 'hardac', '/w', 1, 1, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+    }
+
+    let store = Store::open(dir.path()).await.unwrap();
+
+    let agents = store.agents().await.unwrap();
+    let caas = agents.iter().find(|a| a.name == "caas").unwrap();
+    assert_eq!(caas.version, None, "a pre-existing row reports no version");
+    assert_eq!(
+        caas.host, "hardac",
+        "existing data must survive the migration"
+    );
+}
+
+#[test]
+fn a_register_payload_without_the_version_field_still_deserializes() {
+    // Exactly what an already-running agent binary sends. If this ever fails,
+    // shipping the change disconnects every live agent — including the stale ones
+    // this feature is meant to reveal.
+    let old = r#"{"type":"register","name":"caas","host":"hardac","cwd":"/w","session_id":null,"human":false}"#;
+    let parsed: claude_bus::proto::ToBus = serde_json::from_str(old).unwrap();
+    match parsed {
+        claude_bus::proto::ToBus::Register { name, version, .. } => {
+            assert_eq!(name, "caas");
+            assert_eq!(
+                version, None,
+                "an absent field must stay absent, not default to a string"
+            );
+        }
+        other => panic!("expected Register, got {other:?}"),
+    }
 }
 
 #[tokio::test]

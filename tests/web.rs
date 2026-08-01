@@ -37,7 +37,7 @@ async fn overview_lists_agents_and_rooms() {
     {
         let store = Store::open(dir.path()).await.unwrap();
         store
-            .upsert_agent("caas", "lisa", "/w/caas", None, false)
+            .upsert_agent("caas", "lisa", "/w/caas", None, false, None)
             .await
             .unwrap();
         store.join_room("protocol", "caas").await.unwrap();
@@ -278,7 +278,7 @@ async fn an_agent_page_shows_its_registration_history() {
     {
         let store = Store::open(dir.path()).await.unwrap();
         store
-            .upsert_agent("caas", "lisa", "/w/caas", None, false)
+            .upsert_agent("caas", "lisa", "/w/caas", None, false, None)
             .await
             .unwrap();
         store
@@ -316,7 +316,7 @@ async fn the_agents_list_links_to_the_agent_page_with_a_percent_encoded_href() {
     {
         let store = Store::open(dir.path()).await.unwrap();
         store
-            .upsert_agent("weird agent?x=1", "lisa", "/w", None, false)
+            .upsert_agent("weird agent?x=1", "lisa", "/w", None, false, None)
             .await
             .unwrap();
     }
@@ -614,7 +614,7 @@ async fn the_agents_page_does_not_show_ghosts_from_a_previous_bus() {
     {
         let store = Store::open(dir.path()).await.unwrap();
         store
-            .upsert_agent("ghost", "hardac", "/w/g", None, false)
+            .upsert_agent("ghost", "hardac", "/w/g", None, false, None)
             .await
             .unwrap();
         store.set_online("ghost", true).await.unwrap();
@@ -698,11 +698,11 @@ async fn a_human_is_marked_distinctly_in_the_agent_list() {
     {
         let store = Store::open(dir.path()).await.unwrap();
         store
-            .upsert_agent("caas", "hardac", "/w", None, false)
+            .upsert_agent("caas", "hardac", "/w", None, false, None)
             .await
             .unwrap();
         store
-            .upsert_agent("bbaldino", "hardac", "/w", None, true)
+            .upsert_agent("bbaldino", "hardac", "/w", None, true, None)
             .await
             .unwrap();
     }

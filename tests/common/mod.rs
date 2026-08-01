@@ -410,6 +410,7 @@ pub async fn connect(port: u16, name: &str) -> Ws {
         cwd: format!("/w/{name}"),
         session_id: Some(format!("sess-{name}")),
         human: false,
+        version: None,
     };
     ws.send(Message::text(serde_json::to_string(&reg).unwrap()))
         .await
@@ -429,6 +430,27 @@ pub async fn connect_human(port: u16, name: &str) -> Ws {
         cwd: format!("/w/{name}"),
         session_id: Some(format!("sess-{name}")),
         human: true,
+        version: None,
+    };
+    ws.send(Message::text(serde_json::to_string(&reg).unwrap()))
+        .await
+        .unwrap();
+    ws
+}
+
+/// Like `connect`, but with an explicit reported version — `None` stands in for an
+/// agent binary predating the field.
+pub async fn connect_versioned(port: u16, name: &str, version: Option<&str>) -> Ws {
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
+        .await
+        .unwrap();
+    let reg = ToBus::Register {
+        name: name.into(),
+        host: "testhost".into(),
+        cwd: format!("/w/{name}"),
+        session_id: Some(format!("sess-{name}")),
+        human: false,
+        version: version.map(String::from),
     };
     ws.send(Message::text(serde_json::to_string(&reg).unwrap()))
         .await

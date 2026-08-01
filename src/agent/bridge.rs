@@ -71,6 +71,7 @@ async fn connect_once(
         cwd: cfg.cwd.clone(),
         session_id: cfg.session_id.clone(),
         human: false,
+        version: Some(env!("CARGO_PKG_VERSION").to_string()),
     };
     sink.send(Message::text(serde_json::to_string(&register)?))
         .await?;

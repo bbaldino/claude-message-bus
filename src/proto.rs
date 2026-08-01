@@ -28,6 +28,12 @@ pub enum ToBus {
         /// ships keep sending the old payload shape indefinitely.
         #[serde(default)]
         human: bool,
+        /// The agent binary's crate version. Absent on the wire means `None`, which is
+        /// the signal worth surfacing rather than an error: Claude Code spawns a stdio
+        /// MCP server once at session start and never respawns it, so a binary that
+        /// predates this field keeps registering without one indefinitely.
+        #[serde(default)]
+        version: Option<String>,
     },
     Join {
         req_id: u64,
