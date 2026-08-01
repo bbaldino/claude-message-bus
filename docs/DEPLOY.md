@@ -199,9 +199,6 @@ doc promised that the build simply didn't get to:
   just coarser. It presumably fell out because the agent that does the injecting is a
   separate process speaking only `ToBus` to the bus — recording this event needs a new
   protocol message, not just a store call, and that addition never got planned.
-- **`/agents` does not show "last seen".** The design promises it. The column already
-  exists in the `agents` table and is written on every `set_online`, but it is not on the
-  `AgentRow` the store hands back and so it is not on any page.
 - **Rooms are not ordered by last activity.** The design says `/` shows "rooms by last
   activity" and `/rooms` shows "last activity"; both actually order by room name.
 - **Pages do not auto-refresh.** The design says "No SSE initially. Live views

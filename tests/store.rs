@@ -738,32 +738,43 @@ async fn agents_are_ordered_by_most_recently_seen() {
 #[tokio::test]
 async fn agents_seen_at_the_same_moment_fall_back_to_name_order() {
     // last_seen is millisecond-granularity, so simultaneous registrations are
-    // routine. Without the name tiebreaker their order is whatever SQLite feels
-    // like, which makes any assertion on this listing flaky.
+    // routine in production. Registering here happens sequentially — Rust
+    // futures are lazy, so collecting them into a Vec and awaiting them
+    // afterward is no different from awaiting each inline — so we can't rely
+    // on the three registrations landing in the same millisecond by chance.
+    // Instead we force the tie directly in the database so the assertion
+    // below is unconditional: it passes only because of the `, name`
+    // tiebreaker, not because of how fast SQLite happened to run.
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).await.unwrap();
 
-    let mut opened = Vec::new();
     for name in ["charlie", "alpha", "bravo"] {
-        opened.push(store.upsert_agent(name, "hardac", "/w", None, false, None));
-    }
-    for f in opened {
-        f.await.unwrap();
+        store
+            .upsert_agent(name, "hardac", "/w", None, false, None)
+            .await
+            .unwrap();
     }
 
-    let rows = store.agents().await.unwrap();
-    // Any that share a timestamp must be alphabetical among themselves.
-    for pair in rows.windows(2) {
-        if pair[0].last_seen == pair[1].last_seen {
-            assert!(
-                pair[0].name < pair[1].name,
-                "ties must break alphabetically: {:?} then {:?}",
-                pair[0].name,
-                pair[1].name
-            );
-        }
+    let db = dir.path().join("bus.db");
+    {
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.display()))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET last_seen = 1000")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
     }
-    assert_eq!(rows.len(), 3);
+
+    let names: Vec<String> = store
+        .agents()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(names, vec!["alpha", "bravo", "charlie"]);
 }
 
 #[tokio::test]
@@ -783,8 +794,5 @@ async fn last_seen_advances_when_an_agent_re_registers() {
         .unwrap();
     let second = store.agents().await.unwrap()[0].last_seen;
 
-    assert!(
-        second > first,
-        "re-registering must move the agent to the top"
-    );
+    assert!(second > first, "re-registering must advance last_seen");
 }
