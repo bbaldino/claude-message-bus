@@ -33,13 +33,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # EXPERIMENTAL — under evaluation, remove if it does not pay for itself.
-      # `git_only = true` makes release-plz run `cargo package --verify`, which
-      # compiles the crate on every run. This is here to see how much of that
-      # compile the cache actually reaches; `cargo package` builds under
-      # target/package/, which rust-cache may well prune rather than save.
-      - uses: Swatinem/rust-cache@v2
-
       # `release` runs FIRST — this ordering is load-bearing, see below.
       # @v0.5, NOT @v0 — there is no moving v0 tag; `@v0` hard-fails the run.
       - uses: release-plz/action@v0.5
