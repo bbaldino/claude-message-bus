@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/bbaldino/claude-message-bus/compare/v0.3.1...v0.3.2) - 2026-08-01
+
+### Added
+
+- relayed authority covers this repo, and answers go over the bus
+
+### Fixed
+
+- tighten instructions wording and tests per code review
+
+### Other
+
+- implementation plan for relayed authority and the reply channel
+- design for relayed authority and the reply channel
+
 ## [0.3.1](https://github.com/bbaldino/claude-message-bus/compare/v0.3.0...v0.3.1) - 2026-08-01
 
 ### Added
