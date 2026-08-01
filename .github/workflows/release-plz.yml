@@ -16,7 +16,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Gate the release on the same suite publish-image.yml runs. Without this a red
+  # main still opens and auto-merges the release PR, cutting a tag and a GitHub
+  # Release for a version that has no image.
+  test:
+    uses: ./.github/workflows/test.yml
+
   release-plz:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
