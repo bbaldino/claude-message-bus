@@ -791,3 +791,48 @@ async fn the_agents_page_shows_versions_and_flags_mismatches() {
         "the bus's own version must be on the overview to compare against: {overview_body}"
     );
 }
+
+#[tokio::test]
+async fn both_agent_tables_show_when_each_agent_was_last_seen() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w", None, false, None)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    for path in ["/", "/agents"] {
+        let body = get(port, path).await;
+        assert!(
+            body.contains("<th>last seen"),
+            "{path} must have a last seen column: {body}"
+        );
+        // fmt_time renders a same-day timestamp as HH:MM:SS.mmm, so a rendered
+        // cell contains a colon between digits. Asserting on the header alone
+        // would pass with an empty column.
+        assert!(
+            regex_lite_has_time(&body),
+            "{path} must render an actual timestamp, not an empty cell: {body}"
+        );
+    }
+}
+
+/// True if the body contains something shaped like `HH:MM:SS`. Deliberately
+/// crude — the point is that the cell is populated, not that the format is
+/// exact, which `fmt_time` already owns.
+fn regex_lite_has_time(body: &str) -> bool {
+    let b = body.as_bytes();
+    b.windows(8).any(|w| {
+        w[0].is_ascii_digit()
+            && w[1].is_ascii_digit()
+            && w[2] == b':'
+            && w[3].is_ascii_digit()
+            && w[4].is_ascii_digit()
+            && w[5] == b':'
+            && w[6].is_ascii_digit()
+            && w[7].is_ascii_digit()
+    })
+}

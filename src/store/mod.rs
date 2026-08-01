@@ -24,6 +24,9 @@ pub struct AgentRow {
     pub online: bool,
     pub is_human: bool,
     pub version: Option<String>,
+    /// Epoch milliseconds of the last registration or online/offline transition.
+    /// Written since the beginning; this is the first thing to read it back.
+    pub last_seen: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +196,8 @@ impl Store {
 
     pub async fn agents(&self) -> anyhow::Result<Vec<AgentRow>> {
         let rows = sqlx::query(
-            "SELECT name, host, cwd, session_id, online, is_human, version FROM agents ORDER BY name",
+            "SELECT name, host, cwd, session_id, online, is_human, version, last_seen
+             FROM agents ORDER BY last_seen DESC, name",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -207,6 +211,7 @@ impl Store {
                 online: r.get::<i64, _>("online") != 0,
                 is_human: r.get::<i64, _>("is_human") != 0,
                 version: r.get("version"),
+                last_seen: r.get("last_seen"),
             })
             .collect())
     }

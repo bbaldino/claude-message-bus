@@ -708,3 +708,83 @@ async fn the_migration_adds_the_message_origin_column_to_an_older_database() {
     assert_eq!(rows[0].body, "from before the column existed");
     assert!(!rows[0].human, "a pre-existing row defaults to not human");
 }
+
+#[tokio::test]
+async fn agents_are_ordered_by_most_recently_seen() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+
+    // Registered oldest-first; the listing must come back newest-first.
+    for name in ["oldest", "middle", "newest"] {
+        store
+            .upsert_agent(name, "hardac", "/w", None, false, None)
+            .await
+            .unwrap();
+        // upsert_agent stamps last_seen with now_ms(), so distinct registrations
+        // need distinct milliseconds to have a defined order at all.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let names: Vec<String> = store
+        .agents()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(names, vec!["newest", "middle", "oldest"]);
+}
+
+#[tokio::test]
+async fn agents_seen_at_the_same_moment_fall_back_to_name_order() {
+    // last_seen is millisecond-granularity, so simultaneous registrations are
+    // routine. Without the name tiebreaker their order is whatever SQLite feels
+    // like, which makes any assertion on this listing flaky.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+
+    let mut opened = Vec::new();
+    for name in ["charlie", "alpha", "bravo"] {
+        opened.push(store.upsert_agent(name, "hardac", "/w", None, false, None));
+    }
+    for f in opened {
+        f.await.unwrap();
+    }
+
+    let rows = store.agents().await.unwrap();
+    // Any that share a timestamp must be alphabetical among themselves.
+    for pair in rows.windows(2) {
+        if pair[0].last_seen == pair[1].last_seen {
+            assert!(
+                pair[0].name < pair[1].name,
+                "ties must break alphabetically: {:?} then {:?}",
+                pair[0].name,
+                pair[1].name
+            );
+        }
+    }
+    assert_eq!(rows.len(), 3);
+}
+
+#[tokio::test]
+async fn last_seen_advances_when_an_agent_re_registers() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).await.unwrap();
+    store
+        .upsert_agent("caas", "hardac", "/w", None, false, None)
+        .await
+        .unwrap();
+    let first = store.agents().await.unwrap()[0].last_seen;
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    store
+        .upsert_agent("caas", "hardac", "/w", None, false, None)
+        .await
+        .unwrap();
+    let second = store.agents().await.unwrap()[0].last_seen;
+
+    assert!(
+        second > first,
+        "re-registering must move the agent to the top"
+    );
+}

@@ -191,12 +191,13 @@ fn version_cell(version: Option<&str>) -> String {
 fn agent_row(a: &AgentRow, online: bool) -> String {
     format!(
         "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td><td>{v}</td>\
-         <td class=\"{c}\">{s}</td></tr>",
+         <td class=\"when\">{w}</td><td class=\"{c}\">{s}</td></tr>",
         p = encode_path_segment(&a.name),
         n = esc(&a.name),
         mark = human_mark(a.is_human),
         h = esc(&a.host),
         v = version_cell(a.version.as_deref()),
+        w = esc(&fmt_time(a.last_seen)),
         c = if online { "" } else { "off" },
         s = if online { "online" } else { "offline" },
     )
@@ -223,7 +224,7 @@ async fn overview(State(app): State<App>) -> Html<String> {
     let live = app.registry.online().await;
     let mut b = String::new();
     b.push_str(
-        "<h1>overview</h1><h2>agents</h2><table><tr><th>name<th>host<th>version<th>state</tr>",
+        "<h1>overview</h1><h2>agents</h2><table><tr><th>name<th>host<th>version<th>last seen<th>state</tr>",
     );
     for a in &agents {
         let online = live.contains(&a.name);
@@ -411,7 +412,9 @@ async fn agents(State(app): State<App>) -> Html<String> {
     // agents are online that are not. Reading the registry keeps this page and the tool
     // from disagreeing about who is connected.
     let live = app.registry.online().await;
-    let mut b = String::from("<h1>agents</h1><table><tr><th>name<th>host<th>version<th>state</tr>");
+    let mut b = String::from(
+        "<h1>agents</h1><table><tr><th>name<th>host<th>version<th>last seen<th>state</tr>",
+    );
     for a in &agents {
         let online = live.contains(&a.name);
         b.push_str(&agent_row(a, online));
