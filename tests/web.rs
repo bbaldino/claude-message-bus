@@ -16,6 +16,32 @@ async fn start(dir: &std::path::Path) -> u16 {
     port
 }
 
+/// Like `start`, but with a configured relayer set. `serve_on` hardcodes an empty
+/// one, and relayer rendering is exactly what needs a non-empty set to test.
+async fn start_with_relayers(dir: &std::path::Path, names: &[&str]) -> u16 {
+    let path = dir.to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let relayers =
+        claude_bus::bus::Relayers::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>());
+    tokio::spawn(async move {
+        claude_bus::bus::serve_on_full(
+            listener,
+            path,
+            claude_bus::bus::delivery::Guards::default(),
+            claude_bus::bus::Keepalive::default(),
+            claude_bus::bus::registry::Registry::new(),
+            relayers,
+        )
+        .await
+        .unwrap()
+    });
+    common::wait_until_bus_ready(port).await;
+    port
+}
+
 async fn get(port: u16, path: &str) -> String {
     let url = format!("http://127.0.0.1:{port}{path}");
     // Minimal HTTP/1.1 GET so the test needs no HTTP client dependency.
@@ -835,4 +861,83 @@ fn regex_lite_has_time(body: &str) -> bool {
             && w[6].is_ascii_digit()
             && w[7].is_ascii_digit()
     })
+}
+
+#[tokio::test]
+async fn a_configured_relayer_is_marked_on_both_agent_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("hub", "hardac", "/w", None, false, Some("0.3.0"))
+            .await
+            .unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w", None, false, Some("0.3.0"))
+            .await
+            .unwrap();
+    }
+    let port = start_with_relayers(dir.path(), &["hub"]).await;
+
+    for path in ["/", "/agents"] {
+        let body = get(port, path).await;
+        assert!(
+            body.contains("relayers: hub"),
+            "{path} must state the configured set: {body}"
+        );
+        assert_eq!(
+            body.matches("class=\"relayer\"").count(),
+            1,
+            "exactly the configured agent should be badged on {path}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_bus_with_no_relayers_says_so_rather_than_staying_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w", None, false, Some("0.3.0"))
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/agents").await;
+    assert!(
+        body.contains("relayers: (none)"),
+        "an unconfigured bus must say so, not omit the line: {body}"
+    );
+    assert!(
+        !body.contains("class=\"relayer\""),
+        "nothing should be badged: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_relayer_configured_under_a_name_no_agent_uses_is_still_visible() {
+    // The failure this feature exists for. A mistyped `--relayer hubb` badges nothing,
+    // so with the badge alone the page would be identical to a correctly configured bus
+    // whose relayer simply is not connected. The set line is what distinguishes them.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("hub", "hardac", "/w", None, false, Some("0.3.0"))
+            .await
+            .unwrap();
+    }
+    let port = start_with_relayers(dir.path(), &["hubb"]).await;
+
+    let body = get(port, "/agents").await;
+    assert!(
+        body.contains("relayers: hubb"),
+        "the configured name must appear even with no matching agent: {body}"
+    );
+    assert!(
+        !body.contains("class=\"relayer\""),
+        "and nothing should be badged, which is the tell: {body}"
+    );
 }

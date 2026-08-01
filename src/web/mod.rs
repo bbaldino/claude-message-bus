@@ -10,7 +10,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::Html;
 use axum::{Router, routing::get};
 
-use crate::bus::App;
+use crate::bus::{App, Relayers};
 use crate::store::AgentRow;
 use html::{encode_path_segment, esc, fmt_time, page};
 
@@ -165,6 +165,33 @@ fn human_mark(is_human: bool) -> &'static str {
     }
 }
 
+/// The badge marking an agent the bus is configured to accept relayed authority from.
+///
+/// Read from `App.relayers` at render time rather than from the agent's row: the grant is
+/// bus configuration, not agent state, and a stored copy would disagree with the running
+/// config the moment the flag changed.
+fn relayer_mark(is_relayer: bool) -> &'static str {
+    if is_relayer {
+        " <span class=\"relayer\">relayer</span>"
+    } else {
+        ""
+    }
+}
+
+/// The configured relayer set, for the note beneath each agent table.
+///
+/// Printed even when empty. A mistyped flag yields a set that badges nothing, which
+/// without this line is indistinguishable from a correct configuration whose relayer
+/// happens to be disconnected — so the line is what makes the mistake diagnosable.
+fn relayer_note(relayers: &Relayers) -> String {
+    let names = relayers.names();
+    if names.is_empty() {
+        "relayers: (none)".to_string()
+    } else {
+        format!("relayers: {}", esc(&names.join(", ")))
+    }
+}
+
 /// How an agent's reported version renders, and whether it differs from this bus.
 ///
 /// A differing version is the whole signal: Claude Code never respawns a stdio MCP
@@ -188,13 +215,14 @@ fn version_cell(version: Option<&str>) -> String {
 /// Shared by `overview()`'s `/` table and `agents()`'s `/agents` table — the two used to
 /// carry byte-identical `format!` blocks maintained separately, which is exactly the
 /// shape where a later change updates one table and not the other.
-fn agent_row(a: &AgentRow, online: bool) -> String {
+fn agent_row(a: &AgentRow, online: bool, is_relayer: bool) -> String {
     format!(
-        "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td><td>{v}</td>\
+        "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}{relay}</td><td>{h}</td><td>{v}</td>\
          <td class=\"when\">{w}</td><td class=\"{c}\">{s}</td></tr>",
         p = encode_path_segment(&a.name),
         n = esc(&a.name),
         mark = human_mark(a.is_human),
+        relay = relayer_mark(is_relayer),
         h = esc(&a.host),
         v = version_cell(a.version.as_deref()),
         w = esc(&fmt_time(a.last_seen)),
@@ -228,11 +256,12 @@ async fn overview(State(app): State<App>) -> Html<String> {
     );
     for a in &agents {
         let online = live.contains(&a.name);
-        b.push_str(&agent_row(a, online));
+        b.push_str(&agent_row(a, online, app.relayers.contains(&a.name)));
     }
     b.push_str(&format!(
-        "</table><p class=\"note\">this bus is running {}</p>",
-        esc(env!("CARGO_PKG_VERSION"))
+        "</table><p class=\"note\">this bus is running {} — {}</p>",
+        esc(env!("CARGO_PKG_VERSION")),
+        relayer_note(&app.relayers),
     ));
     b.push_str("<h2>rooms</h2><table><tr><th>room<th>members</tr>");
     for r in &rooms {
@@ -417,12 +446,13 @@ async fn agents(State(app): State<App>) -> Html<String> {
     );
     for a in &agents {
         let online = live.contains(&a.name);
-        b.push_str(&agent_row(a, online));
+        b.push_str(&agent_row(a, online, app.relayers.contains(&a.name)));
     }
     b.push_str("</table>");
     b.push_str(&format!(
-        "<p class=\"note\">this bus is running {}</p>",
-        esc(env!("CARGO_PKG_VERSION"))
+        "<p class=\"note\">this bus is running {} — {}</p>",
+        esc(env!("CARGO_PKG_VERSION")),
+        relayer_note(&app.relayers),
     ));
     Html(page("agents", &b))
 }
