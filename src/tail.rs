@@ -9,6 +9,19 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::proto::{FromBus, ReplyResult, ToBus};
 
+/// Formats one inbound `FromBus::Message` for display. `tail` is the
+/// authoritative view of a conversation, so it marks human-sent messages the
+/// same way the `history` MCP tool does (see `agent::handler`) — appending
+/// `" (human)"` after the sender name — rather than inventing a second
+/// convention for the same fact.
+fn format_message_line(room: &str, from: &str, text: &str, done: bool, human: bool) -> String {
+    format!(
+        "{from}{} → {room}: {text}{}",
+        if human { " (human)" } else { "" },
+        if done { "  [done]" } else { "" }
+    )
+}
+
 pub async fn run(bus_url: String, room: Option<String>) -> anyhow::Result<()> {
     let (ws, _) = tokio_tungstenite::connect_async(&bus_url).await?;
     let (mut sink, mut stream) = ws.split();
@@ -59,12 +72,10 @@ pub async fn run(bus_url: String, room: Option<String>) -> anyhow::Result<()> {
                 from,
                 text,
                 done,
+                human,
                 ..
             } => {
-                println!(
-                    "{from} → {room}: {text}{}",
-                    if done { "  [done]" } else { "" }
-                );
+                println!("{}", format_message_line(&room, &from, &text, done, human));
             }
             FromBus::Reply {
                 result: ReplyResult::History { messages },
@@ -96,4 +107,27 @@ pub async fn run(bus_url: String, room: Option<String>) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marks_human_senders() {
+        let line = format_message_line("general", "bbaldino", "hello", false, true);
+        assert_eq!(line, "bbaldino (human) → general: hello");
+    }
+
+    #[test]
+    fn does_not_mark_agent_senders() {
+        let line = format_message_line("general", "claude-code", "hello", false, false);
+        assert_eq!(line, "claude-code → general: hello");
+    }
+
+    #[test]
+    fn appends_done_marker_after_human_marker() {
+        let line = format_message_line("general", "bbaldino", "hello", true, true);
+        assert_eq!(line, "bbaldino (human) → general: hello  [done]");
+    }
 }
