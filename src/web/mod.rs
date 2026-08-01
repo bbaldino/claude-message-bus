@@ -164,6 +164,25 @@ fn human_mark(is_human: bool) -> &'static str {
     }
 }
 
+/// How an agent's reported version renders, and whether it differs from this bus.
+///
+/// A differing version is the whole signal: Claude Code never respawns a stdio MCP
+/// server, so a session started before an upgrade keeps its old binary until someone
+/// restarts it, and this is what makes those sessions findable. `None` means a binary
+/// predating the field, which is also worth flagging.
+///
+/// The badge says "differs from this bus", not "broken" — an agent built from a branch
+/// would be flagged too, and the version shown beside it tells the reader which case
+/// they are looking at.
+fn version_cell(version: Option<&str>) -> String {
+    let current = env!("CARGO_PKG_VERSION");
+    match version {
+        Some(v) if v == current => esc(v),
+        Some(v) => format!("{} <span class=\"stale\">differs</span>", esc(v)),
+        None => "unknown <span class=\"stale\">differs</span>".to_string(),
+    }
+}
+
 pub fn routes() -> Router<App> {
     Router::new()
         .route("/", get(overview))
@@ -184,21 +203,28 @@ async fn overview(State(app): State<App>) -> Html<String> {
     // See `agents()`: liveness comes from the registry, not the persisted column.
     let live = app.registry.online().await;
     let mut b = String::new();
-    b.push_str("<h1>overview</h1><h2>agents</h2><table><tr><th>name<th>host<th>state</tr>");
+    b.push_str(
+        "<h1>overview</h1><h2>agents</h2><table><tr><th>name<th>host<th>version<th>state</tr>",
+    );
     for a in &agents {
         let online = live.contains(&a.name);
         b.push_str(&format!(
-            "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td>\
+            "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td><td>{v}</td>\
              <td class=\"{c}\">{s}</td></tr>",
             p = encode_path_segment(&a.name),
             n = esc(&a.name),
             mark = human_mark(a.is_human),
             h = esc(&a.host),
+            v = version_cell(a.version.as_deref()),
             c = if online { "" } else { "off" },
             s = if online { "online" } else { "offline" },
         ));
     }
-    b.push_str("</table><h2>rooms</h2><table><tr><th>room<th>members</tr>");
+    b.push_str(&format!(
+        "</table><p class=\"note\">this bus is running {}</p>",
+        esc(env!("CARGO_PKG_VERSION"))
+    ));
+    b.push_str("<h2>rooms</h2><table><tr><th>room<th>members</tr>");
     for r in &rooms {
         b.push_str(&format!(
             "<tr><td><a href=\"/rooms/{p}\">{n}</a></td><td>{m}</td></tr>",
@@ -376,21 +402,26 @@ async fn agents(State(app): State<App>) -> Html<String> {
     // agents are online that are not. Reading the registry keeps this page and the tool
     // from disagreeing about who is connected.
     let live = app.registry.online().await;
-    let mut b = String::from("<h1>agents</h1><table><tr><th>name<th>host<th>state</tr>");
+    let mut b = String::from("<h1>agents</h1><table><tr><th>name<th>host<th>version<th>state</tr>");
     for a in &agents {
         let online = live.contains(&a.name);
         b.push_str(&format!(
-            "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td>\
+            "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td><td>{v}</td>\
              <td class=\"{c}\">{s}</td></tr>",
             p = encode_path_segment(&a.name),
             n = esc(&a.name),
             mark = human_mark(a.is_human),
             h = esc(&a.host),
+            v = version_cell(a.version.as_deref()),
             c = if online { "" } else { "off" },
             s = if online { "online" } else { "offline" },
         ));
     }
     b.push_str("</table>");
+    b.push_str(&format!(
+        "<p class=\"note\">this bus is running {}</p>",
+        esc(env!("CARGO_PKG_VERSION"))
+    ));
     Html(page("agents", &b))
 }
 

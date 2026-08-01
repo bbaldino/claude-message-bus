@@ -724,3 +724,48 @@ async fn a_human_is_marked_distinctly_in_the_agent_list() {
         "exactly one row should carry the marker: {body}"
     );
 }
+
+#[tokio::test]
+async fn the_agents_page_shows_versions_and_flags_mismatches() {
+    let dir = tempfile::tempdir().unwrap();
+    let current = env!("CARGO_PKG_VERSION");
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        // Matches the bus: should NOT be flagged.
+        store
+            .upsert_agent("current", "hardac", "/w", None, false, Some(current))
+            .await
+            .unwrap();
+        // Behind the bus: should be flagged.
+        store
+            .upsert_agent("stale", "hardac", "/w", None, false, Some("0.0.1"))
+            .await
+            .unwrap();
+        // Predates the field entirely: should be flagged, and shown as unknown.
+        store
+            .upsert_agent("ancient", "hardac", "/w", None, false, None)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/agents").await;
+    assert!(
+        body.contains("0.0.1"),
+        "a reported version must be shown: {body}"
+    );
+    assert!(
+        body.contains("unknown"),
+        "an agent that reported nothing must read as unknown, not blank: {body}"
+    );
+    assert!(
+        body.contains(current),
+        "the bus's own version must be on the page to compare against: {body}"
+    );
+    // Exactly the two that differ from the bus carry the marker.
+    assert_eq!(
+        body.matches("class=\"stale\"").count(),
+        2,
+        "only the differing agents should be flagged: {body}"
+    );
+}
