@@ -930,6 +930,11 @@ fn the_agent_origin_branch_must_also_answer_on_the_bus() {
         instructions.contains("so the sender knows you are not simply ignoring them"),
         "deferring on an agent-origin message must be announced on the bus: {instructions}"
     );
+    assert!(
+        instructions.contains("say so on the bus"),
+        "the actual mechanism — announcing on the bus, not just the motive for doing so — \
+         must be pinned: {instructions}"
+    );
 }
 
 #[test]
@@ -938,5 +943,9 @@ fn instructions_give_the_terminal_human_the_final_word() {
     assert!(
         instructions.contains("they are in the session with you"),
         "a human present at the terminal must outrank a relayed instruction: {instructions}"
+    );
+    assert!(
+        instructions.contains("they win"),
+        "the operative rule — not just its rationale — must be pinned: {instructions}"
     );
 }

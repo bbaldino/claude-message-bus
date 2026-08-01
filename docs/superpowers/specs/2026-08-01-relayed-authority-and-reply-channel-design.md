@@ -112,6 +112,19 @@ Settles the conflict rather than leaving each agent to invent an answer.
 - **The instruction text is the whole enforcement.** Workers run with
   `--dangerously-skip-permissions`, so nothing behind the prompt would stop a
   misinterpretation.
+- **§1 and §4 argue from different models of who the relayed human is.** §1 asserts the
+  relayer's human unconditionally *is* your human — one person, no room for daylight between
+  them. §4 then gives a precedence rule for when the terminal human and the relayed request
+  disagree, which only makes sense if they *can* be distinct people, and it grounds that
+  precedence in "it is their project" — project ownership as the thing that decides. That is
+  the same discriminating property the originally-refusing agent seized on to justify
+  declining a relayed request in the first place. The risk is low: §4 only fires when a
+  local human is actually present and actively says otherwise, while §1 governs the
+  unconditional default path where no such person is contradicting anything. But the seam is
+  real, and a future agent replaying the original refusal's reasoning could work at it.
+  Identified in review; adjudicated and accepted as written rather than reworded, since
+  resolving it well would mean re-litigating the ownership model rather than patching a
+  sentence.
 
 ## Out of scope
 
