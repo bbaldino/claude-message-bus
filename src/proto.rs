@@ -127,6 +127,9 @@ pub struct AgentInfo {
     pub name: String,
     pub host: String,
     pub online: bool,
+    /// The agent's reported crate version, or `None` for a binary predating the field.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

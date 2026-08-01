@@ -265,6 +265,25 @@ agent runs unscoped as the same user, so forging the marker means running the sh
 `chat` client or opening a raw socket — both reachable from any agent's Bash. It makes
 agents behave predictably; it does not contain one that has been subverted.
 
+## Which agents are running which version
+
+`/agents` and the overview show each agent's `claude-bus` version alongside the version
+the bus itself is running. An agent whose version differs is marked.
+
+This matters because Claude Code spawns an agent's MCP server once at session start and
+never respawns it. Upgrading the bus and reinstalling the binary does not touch a session
+that is already open — it keeps its old agent until you restart it. The mark is how you
+find those sessions.
+
+`unknown` means the agent is running a binary from before agents reported a version at
+all, which is the strongest signal it needs restarting.
+
+The `agents` tool returns the same value, so an agent can be asked to survey the fleet
+rather than you reading the page.
+
+The mark means "differs from this bus", not "broken". An agent built from a branch would
+be marked too; the version shown beside the mark tells you which case you are looking at.
+
 ## Optional: reset the exchange cap automatically
 
 After 20 messages in a room with no human input, the bus pauses it. Installing

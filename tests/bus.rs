@@ -2462,3 +2462,35 @@ async fn an_agent_that_sends_no_version_is_recorded_as_unknown() {
         None
     );
 }
+
+#[tokio::test]
+async fn the_agents_tool_reports_each_agents_version() {
+    let (_d, port) = start_bus().await;
+    let mut versioned = connect_versioned(port, "fresh", Some("9.9.9")).await;
+    next_event(&mut versioned).await;
+    let mut ancient = connect_versioned(port, "ancient", None).await;
+    next_event(&mut ancient).await;
+
+    send(&mut versioned, &ToBus::ListAgents { req_id: 1 }).await;
+    match reply_to(&mut versioned, 1).await {
+        FromBus::Reply {
+            result: ReplyResult::Agents { agents },
+            ..
+        } => {
+            let fresh = agents
+                .iter()
+                .find(|a| a.name == "fresh")
+                .expect("fresh listed");
+            let ancient = agents
+                .iter()
+                .find(|a| a.name == "ancient")
+                .expect("ancient listed");
+            assert_eq!(fresh.version.as_deref(), Some("9.9.9"));
+            assert_eq!(
+                ancient.version, None,
+                "an agent that reported nothing must stay None over the wire"
+            );
+        }
+        other => panic!("expected an Agents reply, got {other:?}"),
+    }
+}

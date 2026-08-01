@@ -266,6 +266,7 @@ pub(crate) async fn handle(
                     online: online.contains(&a.name),
                     name: a.name,
                     host: a.host,
+                    version: a.version,
                 })
                 .collect();
             let _ = control_tx.try_send(FromBus::Reply {
