@@ -11,6 +11,7 @@ use axum::response::Html;
 use axum::{Router, routing::get};
 
 use crate::bus::App;
+use crate::store::AgentRow;
 use html::{encode_path_segment, esc, fmt_time, page};
 
 /// Render an event's `detail_json` as a short human-readable phrase.
@@ -183,6 +184,24 @@ fn version_cell(version: Option<&str>) -> String {
     }
 }
 
+/// One row of an agent table: name (linked), host, version, and online/offline state.
+/// Shared by `overview()`'s `/` table and `agents()`'s `/agents` table — the two used to
+/// carry byte-identical `format!` blocks maintained separately, which is exactly the
+/// shape where a later change updates one table and not the other.
+fn agent_row(a: &AgentRow, online: bool) -> String {
+    format!(
+        "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td><td>{v}</td>\
+         <td class=\"{c}\">{s}</td></tr>",
+        p = encode_path_segment(&a.name),
+        n = esc(&a.name),
+        mark = human_mark(a.is_human),
+        h = esc(&a.host),
+        v = version_cell(a.version.as_deref()),
+        c = if online { "" } else { "off" },
+        s = if online { "online" } else { "offline" },
+    )
+}
+
 pub fn routes() -> Router<App> {
     Router::new()
         .route("/", get(overview))
@@ -208,17 +227,7 @@ async fn overview(State(app): State<App>) -> Html<String> {
     );
     for a in &agents {
         let online = live.contains(&a.name);
-        b.push_str(&format!(
-            "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td><td>{v}</td>\
-             <td class=\"{c}\">{s}</td></tr>",
-            p = encode_path_segment(&a.name),
-            n = esc(&a.name),
-            mark = human_mark(a.is_human),
-            h = esc(&a.host),
-            v = version_cell(a.version.as_deref()),
-            c = if online { "" } else { "off" },
-            s = if online { "online" } else { "offline" },
-        ));
+        b.push_str(&agent_row(a, online));
     }
     b.push_str(&format!(
         "</table><p class=\"note\">this bus is running {}</p>",
@@ -405,17 +414,7 @@ async fn agents(State(app): State<App>) -> Html<String> {
     let mut b = String::from("<h1>agents</h1><table><tr><th>name<th>host<th>version<th>state</tr>");
     for a in &agents {
         let online = live.contains(&a.name);
-        b.push_str(&format!(
-            "<tr><td><a href=\"/agents/{p}\">{n}</a>{mark}</td><td>{h}</td><td>{v}</td>\
-             <td class=\"{c}\">{s}</td></tr>",
-            p = encode_path_segment(&a.name),
-            n = esc(&a.name),
-            mark = human_mark(a.is_human),
-            h = esc(&a.host),
-            v = version_cell(a.version.as_deref()),
-            c = if online { "" } else { "off" },
-            s = if online { "online" } else { "offline" },
-        ));
+        b.push_str(&agent_row(a, online));
     }
     b.push_str("</table>");
     b.push_str(&format!(

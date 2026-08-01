@@ -35,6 +35,17 @@ anyone remembering to bump it. Bare `CARGO_PKG_VERSION` is the right answer, and
 build-metadata workaround is unnecessary. Sequencing these two the other way round would
 have baked in a workaround the project does not need.
 
+This is meaningful *across* releases, not within the gap between them. release-plz only
+bumps the version when a `feat:`/`fix:` commit's release PR lands — `make deploy`, the
+documented default for day-to-day development, builds and installs from whatever is in the
+working tree on every run, with no version bump attached. Two builds from different
+commits, deployed between releases, report the same `CARGO_PKG_VERSION` and the badge stays
+silent for both. That gap is real and is not what this design closes; see
+`docs/DEPLOY.md`'s "Which agents are running which version" section for the operational
+caveat. It does not revive the build-metadata alternative below — that complexity still
+buys nothing a homelab tool needs — it just means the visible signal is coarser than "this
+exact binary" between releases, and that is an accepted limitation, not an oversight.
+
 ## What this is, and is not
 
 **Descriptive, not a control.** Nothing branches on the reported version. The bus does not
@@ -141,6 +152,11 @@ and a gate would turn a visibility feature into a control with its own failure m
 
 - Authentication, per the existing posture.
 - Any behavior that branches on version.
-- Reporting versions for observers (`tail`) or for the `chat` client.
+- Reporting versions for observers (`tail`). `Observe` creates no `agents` row (see §1),
+  so there is nowhere to store a version and nothing that would read it. `chat` is not
+  covered by this bullet: it registers like any other agent (`human: true`) and gets an
+  `agents` row and a version column same as everything else, so it reports its real
+  version too — without that, every human row would carry a permanent, meaningless
+  `unknown` badge, degrading the exact signal this feature exists to provide.
 - Prompting or automating agent restarts. The bus reports; restarting a session is the
   human's action, and nothing here changes that.

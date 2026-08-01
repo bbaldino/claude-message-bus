@@ -759,6 +759,11 @@ async fn the_agents_page_shows_versions_and_flags_mismatches() {
         "an agent that reported nothing must read as unknown, not blank: {body}"
     );
     assert!(
+        body.contains("this bus is running"),
+        "the page must state its own running version, not just happen to contain the \
+         string somewhere (e.g. in an agent's own version cell): {body}"
+    );
+    assert!(
         body.contains(current),
         "the bus's own version must be on the page to compare against: {body}"
     );
@@ -767,5 +772,22 @@ async fn the_agents_page_shows_versions_and_flags_mismatches() {
         body.matches("class=\"stale\"").count(),
         2,
         "only the differing agents should be flagged: {body}"
+    );
+
+    // `/` renders the same agent table via a shared row helper — nothing previously
+    // exercised that page's version column or note, which is exactly the shape where a
+    // later change updates `/agents` and silently leaves `/` behind.
+    let overview_body = get(port, "/").await;
+    assert!(
+        overview_body.contains("0.0.1"),
+        "a reported version must be shown on the overview too: {overview_body}"
+    );
+    assert!(
+        overview_body.contains("this bus is running"),
+        "the overview must state its own running version: {overview_body}"
+    );
+    assert!(
+        overview_body.contains(current),
+        "the bus's own version must be on the overview to compare against: {overview_body}"
     );
 }

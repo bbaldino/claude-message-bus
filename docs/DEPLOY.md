@@ -284,6 +284,16 @@ rather than you reading the page.
 The mark means "differs from this bus", not "broken". An agent built from a branch would
 be marked too; the version shown beside the mark tells you which case you are looking at.
 
+The converse matters more for this project's actual workflow: an *unmarked* agent is not
+proof it is running the binary you just built. `make deploy` (the default for dev, see the
+Makefile) is `cargo install --path .` plus an image rebuild from whatever is in your
+working tree — it runs on every code change. A release, and the version bump that comes
+with it, only happens when a `feat:`/`fix:` commit's release-plz PR lands. Between two
+releases, every `make deploy` from `main` produces binaries that report the *same* version
+as the stale ones already running, because `Cargo.toml` hasn't moved. In that window the
+badge stays silent exactly when it matters: you still need to restart sessions after a
+between-release deploy, and the page cannot tell you which ones changed underneath you.
+
 ## Optional: reset the exchange cap automatically
 
 After 20 messages in a room with no human input, the bus pauses it. Installing

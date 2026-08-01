@@ -851,3 +851,40 @@ async fn history_marks_human_origin_messages_distinguishably_from_agent_origin()
         "the agent-origin line must not carry the human marker: {agent_line}"
     );
 }
+
+// `tests/bus.rs::the_list_agents_reply_carries_each_agents_version` covers the wire
+// reply (`ToBus::ListAgents` -> `ReplyResult::Agents`). This covers the layer a calling
+// agent actually sees: the rendered text of the `agents` MCP tool. The two used to be
+// conflated — a test driving the wire reply directly was standing in for the tool, so
+// the tool rendering nothing of `AgentInfo.version` went unnoticed.
+#[tokio::test]
+async fn the_agents_tool_reports_each_agents_version() {
+    let (_dir, port) = common::start_bus().await;
+
+    // A binary predating the version field: registered directly over the wire, since
+    // `InProcessAgent` always runs this crate's real `agent::run_on` and so always
+    // reports this build's own version — it cannot stand in for an old binary.
+    let mut ancient = common::connect_versioned(port, "ancient", None).await;
+    let _ = common::next_event(&mut ancient).await; // Registered
+
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "fresh");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    wait_until_online(port, "fresh").await;
+    assert!(
+        common::wait_until(|| common::agent_is_online(port, "ancient")).await,
+        "ancient never registered with the bus within the deadline"
+    );
+
+    let text = call_tool(&mut a, 50, "agents", serde_json::json!({})).await;
+    assert!(
+        text.contains(env!("CARGO_PKG_VERSION")),
+        "must include the reporting agent's real, current version: {text}"
+    );
+    assert!(
+        text.contains("unknown"),
+        "an agent that registered with no version must render as unknown, not be silently \
+         dropped: {text}"
+    );
+}

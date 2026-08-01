@@ -2450,7 +2450,7 @@ async fn a_registering_agent_reports_its_version_to_the_bus() {
 }
 
 #[tokio::test]
-async fn an_agent_that_sends_no_version_is_recorded_as_unknown() {
+async fn an_agent_that_sends_no_version_is_recorded_as_null() {
     let (_d, port, store_dir) = start_bus_with_dir().await;
     let mut a = connect_versioned(port, "old", None).await;
     next_event(&mut a).await;
@@ -2464,7 +2464,7 @@ async fn an_agent_that_sends_no_version_is_recorded_as_unknown() {
 }
 
 #[tokio::test]
-async fn the_agents_tool_reports_each_agents_version() {
+async fn the_list_agents_reply_carries_each_agents_version() {
     let (_d, port) = start_bus().await;
     let mut versioned = connect_versioned(port, "fresh", Some("9.9.9")).await;
     next_event(&mut versioned).await;

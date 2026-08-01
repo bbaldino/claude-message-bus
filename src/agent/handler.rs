@@ -153,7 +153,14 @@ impl rmcp::ServerHandler for Handler {
                 ),
                 Tool::new(
                     Cow::Borrowed("agents"),
-                    Cow::Borrowed("List known agents and whether they are online"),
+                    Cow::Borrowed(
+                        "List known agents, whether they are online, and the claude-bus \
+                         version each reported at registration. Call this to find which \
+                         sessions are running a version that differs from this bus's own \
+                         (an `unknown` version is a binary that predates version reporting \
+                         entirely) — those sessions need restarting to pick up the current \
+                         binary.",
+                    ),
                     schema(json!({ "type": "object", "properties": {} })),
                 ),
                 Tool::new(
@@ -350,10 +357,11 @@ impl rmcp::ServerHandler for Handler {
                         .into_iter()
                         .map(|a| {
                             format!(
-                                "{}@{} — {}",
+                                "{}@{} — {} — {}",
                                 a.name,
                                 a.host,
-                                if a.online { "online" } else { "offline" }
+                                if a.online { "online" } else { "offline" },
+                                a.version.as_deref().unwrap_or("unknown")
                             )
                         })
                         .collect::<Vec<_>>()
