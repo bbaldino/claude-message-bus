@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/bbaldino/claude-message-bus/compare/v0.1.2...v0.2.0) - 2026-08-01
+
+### Added
+
+- the agents tool reports each agent's version
+- show agent versions and flag the ones that differ from the bus
+- agents report their version when they register
+
+### Fixed
+
+- address code-review findings on agent version reporting
+
+### Other
+
+- implementation plan for agent version reporting
+- design for agent version reporting
+- only release on feat and fix commits
+
 ## [0.1.2](https://github.com/bbaldino/claude-message-bus/compare/v0.1.1...v0.1.2) - 2026-08-01
 
 ### Added
