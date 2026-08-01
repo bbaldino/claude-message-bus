@@ -16,3 +16,14 @@ git_release_enable = true
 # publish-image.yml's `tags: ['v*.*.*']` filter nor the baseline release-plz
 # looks for. Tag created, no image built, no error reported.
 git_tag_name = "v{{version}}"
+
+# Only feat/fix (and their breaking `!` and `(scope)` forms) cut a release.
+# Without this, any conventional commit releases — a README typo would bump the
+# version and rebuild the image. Matches `feat:`, `feat(scope):`, `feat!:` and
+# the fix equivalents; deliberately does not match `feature:`.
+#
+# NOT `commit_parsers`, which is a changelog field forwarded to git-cliff for
+# grouping and hiding entries and has no bearing on whether a release happens.
+# release-plz rejects it as an unknown field, and an invalid config fails every
+# subsequent run until reverted.
+release_commits = "^(feat|fix)[(!:]"
