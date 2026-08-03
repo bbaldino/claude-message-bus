@@ -43,8 +43,11 @@ jobs:
           # publish-image.yml, so the release would silently produce no image.
           GITHUB_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
 
-      - id: release_pr
-        uses: release-plz/action@v0.5
+      # No `id:` here on purpose. Nothing reads this step's outputs any more,
+      # and an id left behind is the affordance that invites someone to reach
+      # for `outputs.prs_created` again — which is the gate that silently
+      # stopped the merge from ever retrying.
+      - uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
