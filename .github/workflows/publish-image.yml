@@ -1,19 +1,23 @@
 name: publish-image
 
+# Tags only. Building on main too meant a release built the same commit twice —
+# once on the main push, once on the tag — and the two runs raced to write
+# sha-<short>, landing on whichever finished last. Now one build per release
+# emits all four tags from one digest, so every tag has a single writer and
+# sha-<short> and X.Y.Z are the same bytes.
+#
+# The cost is that unreleased commits get no image. release_commits already
+# limits releases to feat/fix, so that is docs/ci/chore commits — deliberately
+# accepted, not an oversight.
+#
+# The test gate is unaffected: release-plz.yml still fires on every main push
+# with `needs: test`, so main is still tested on every push. This workflow just
+# no longer runs there.
 on:
   push:
-    branches: [main]
     tags: ['v*.*.*']
   workflow_dispatch:
 
-# main-push and tag-push are different refs and can run concurrently.
-# They write genuinely disjoint tag sets, but ONLY because of the
-# enable={{is_default_branch}} on the sha rule below: main writes sha-<short>,
-# the tag writes the version tags. Without that flag both runs emit sha-<short>
-# and it silently lands on whichever finished last.
-# The two runs still build the same commit twice, so sha-<short> and X.Y.Z are
-# different digests of identical source. That is expected — verify a release by
-# comparing the three version tags to each other.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -48,7 +52,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=sha-,enable={{is_default_branch}}
+            type=sha,prefix=sha-
 
       - uses: docker/build-push-action@v6
         with:
