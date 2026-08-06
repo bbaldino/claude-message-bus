@@ -528,8 +528,22 @@ async fn connection(socket: WebSocket, app: App) {
     }
 
     if let Some(name) = me {
+        // Clear the persisted flag BEFORE leaving the registry, so the two
+        // never disagree in the dangerous direction. The registry is the
+        // authority on liveness; if it dropped the name first, there would be a
+        // window where it reads offline while `agents.online` still reads 1 —
+        // and `forget_agent`'s `AND online = 0` guard would reject a delete the
+        // registry had already approved, failing with a store error rather than
+        // the honest "it is online" refusal. Ordered this way the window says
+        // "still online", which is the answer that refuses cleanly.
+        //
+        // Logged rather than discarded: if this write fails the row keeps
+        // claiming to be online, and that guard then makes the row permanently
+        // undeletable — the one state this feature exists to clear.
+        if let Err(e) = app.store.set_online(&name, false).await {
+            eprintln!("could not mark {name} offline on disconnect: {e}");
+        }
         app.registry.detach(&name).await;
-        let _ = app.store.set_online(&name, false).await;
         if is_human {
             // Ephemeral by design — see `leave_all_rooms`.
             let _ = app.store.leave_all_rooms(&name).await;

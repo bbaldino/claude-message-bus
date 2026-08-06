@@ -146,7 +146,7 @@ hides outbound message text — so this is the authoritative view.
 
 ## Reading the record afterwards
 
-The bus serves a read-only web UI on the same port:
+The bus serves a web UI on the same port:
 
 ```
 http://nas.lan:7777/
