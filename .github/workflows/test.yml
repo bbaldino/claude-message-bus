@@ -21,6 +21,14 @@ jobs:
       - run: cargo +nightly fmt --check
       - run: cargo +stable clippy --all-targets --all-features -- -D warnings
       - run: cargo +stable test --locked
+      # `cargo test` regenerates ui/src/types/ from the Rust structs via ts-rs,
+      # into this job's workspace, and then throws it away. test-ui is a separate
+      # job with its own checkout, so it typechecks the *committed* file. Without
+      # this, renaming a field on api.rs::Agent and forgetting to run `cargo test`
+      # locally leaves CI entirely green while the browser renders `undefined` —
+      # the exact drift generation exists to prevent.
+      - name: generated TypeScript types must match the Rust structs (run `cargo test` and commit)
+        run: git diff --exit-code -- ui/src/types
 
   test-ui:
     runs-on: ubuntu-latest
@@ -39,3 +47,23 @@ jobs:
       - run: npm run format:check
       - run: npm test
       - run: npm run build
+
+  # Nothing else in CI builds the Dockerfile. publish-image.yml runs on `v*.*.*`
+  # tags only, and release-plz creates the tag *before* that workflow runs — so a
+  # broken Dockerfile yields a git tag and a GitHub Release with no image behind
+  # them. This builds it on every gate run without pushing, which is also the only
+  # thing that exercises the node stage and its .dockerignore interaction.
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Matches publish-image.yml, so the gate builds the same thing that
+          # ships rather than merely something that compiles.
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
