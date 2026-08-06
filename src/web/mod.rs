@@ -32,6 +32,8 @@
 //!
 //! See `docs/superpowers/specs/2026-08-05-agent-delete-design.md`.
 
+mod api;
+mod assets;
 pub mod html;
 
 use std::collections::HashMap;
@@ -296,6 +298,21 @@ pub fn routes() -> Router<App> {
             get(delete_agent_confirm).post(delete_agent_perform),
         )
         .route("/events", get(events_page))
+        .route("/api/agents", get(api::agents))
+        .route("/api/rail", get(api::rail))
+        .route("/api/meta", get(api::meta))
+        .route("/api/rooms/{name}/messages", get(api::room_messages))
+        .route("/api/events", get(api::events))
+        .route("/app", get(assets::app_root))
+        // `/app/` is registered separately and deliberately: matchit requires a
+        // non-empty remainder for a catch-all, so `/app/{*rest}` does not match
+        // the bare trailing slash and neither does `/app`. That form is the app's
+        // canonical URL — `ui/vite.config.ts` sets `base: '/app/'`, it is what a
+        // `location /app/` + `proxy_pass` reverse proxy produces, and it is what
+        // docs/DEPLOY.md tells operators to open. Without this route it is a bare
+        // 404 from the router, never reaching `resolve` at all.
+        .route("/app/", get(assets::app_root))
+        .route("/app/{*rest}", get(assets::app_path))
 }
 
 async fn overview(State(app): State<App>) -> Html<String> {

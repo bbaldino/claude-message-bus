@@ -204,6 +204,11 @@ async fn dispatch(
                 let _ = tx.send(FromBus::Error { req_id, message });
             }
         }
+        // The agent bridge never sends `WatchPresence`/`WatchEvents` (those
+        // are observer-only, issued by `claude-bus tail`/the console), so
+        // these never actually arrive here — kept only because `FromBus`
+        // must be matched exhaustively.
+        FromBus::Presence { .. } | FromBus::Event { .. } => {}
     }
 }
 

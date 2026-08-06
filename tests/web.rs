@@ -43,6 +43,31 @@ async fn start_with_relayers(dir: &std::path::Path, names: &[&str]) -> u16 {
     port
 }
 
+/// Like `start`, but with the exchange guard's cap set directly (and the rate
+/// limit off). `serve_on` uses the production cap of 20, which is a lot of
+/// round trips to trip on purpose.
+async fn start_with_cap(dir: &std::path::Path, cap: u32) -> u16 {
+    let path = dir.to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        claude_bus::bus::serve_on_full(
+            listener,
+            path,
+            claude_bus::bus::delivery::Guards::new(cap, 0),
+            claude_bus::bus::Keepalive::default(),
+            claude_bus::bus::registry::Registry::new(),
+            claude_bus::bus::Relayers::default(),
+        )
+        .await
+        .unwrap()
+    });
+    common::wait_until_bus_ready(port).await;
+    port
+}
+
 async fn get(port: u16, path: &str) -> String {
     let url = format!("http://127.0.0.1:{port}{path}");
     // Minimal HTTP/1.1 GET so the test needs no HTTP client dependency.
@@ -1055,7 +1080,12 @@ async fn the_confirm_page_offers_no_button_when_the_footprint_cannot_be_read() {
 #[tokio::test]
 async fn the_confirm_page_refuses_an_online_agent() {
     let (_d, port, _path) = common::start_bus_with_dir().await;
-    let _ws = common::connect(port, "caas").await;
+    // Await the Registered reply before asserting presence. `connect` returns as
+    // soon as the Register frame is written, so checking immediately races the
+    // server's handling of it — the assertion below can run before the agent is in
+    // the registry at all. This failed on a loaded CI runner while passing locally.
+    let mut ws = common::connect(port, "caas").await;
+    common::next_event(&mut ws).await; // Registered
     assert!(common::agent_is_online(port, "caas").await);
 
     let body = get(port, "/agents/caas/delete").await;
@@ -1331,5 +1361,592 @@ async fn the_agent_page_links_to_the_delete_page_with_a_percent_encoded_href() {
     assert!(
         body.contains("href=\"/agents/network-debug%232/delete\""),
         "the delete link must be percent-encoded: {body}"
+    );
+}
+
+#[tokio::test]
+async fn the_agents_api_returns_json_in_camel_case() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent(
+                "network-debug#2",
+                "hardac",
+                "/w/nd",
+                Some("sess-1"),
+                false,
+                Some("0.3.3"),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/agents").await;
+
+    assert!(
+        body.contains("application/json"),
+        "must be served as JSON: {body}"
+    );
+    assert!(body.contains("\"name\":\"network-debug#2\""), "got: {body}");
+    assert!(body.contains("\"host\":\"hardac\""), "got: {body}");
+    // camelCase on the wire even though the column is last_seen.
+    assert!(
+        body.contains("\"lastSeen\":"),
+        "wire format must be camelCase: {body}"
+    );
+    assert!(body.contains("\"sessionId\":\"sess-1\""), "got: {body}");
+    // mark_all_offline runs at startup, so a seeded agent is offline.
+    assert!(body.contains("\"online\":false"), "got: {body}");
+}
+
+#[tokio::test]
+async fn the_agents_api_returns_an_empty_array_for_a_bus_with_no_agents() {
+    // An empty fleet must be `[]`, not `null` and not an error — the frontend
+    // maps over the result unconditionally.
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+
+    let res = get(port, "/api/agents").await;
+    assert!(res.starts_with("HTTP/1.1 200"), "got: {res}");
+    let body = res.rsplit("\r\n\r\n").next().unwrap();
+    assert_eq!(body.trim(), "[]", "got: {res}");
+}
+
+#[tokio::test]
+async fn the_rail_summarises_rooms_and_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w/caas", None, false, Some("0.3.3"))
+            .await
+            .unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+        // The sender must not be a room member, or `unread_count`'s `from_agent
+        // != ?3` filter means `caas` never counts its own message as unread and
+        // no flag is derived at all. See src/store/mod.rs:497.
+        store
+            .append_message("protocol", "bbaldino", "hello", false, true)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/rail").await;
+
+    assert!(body.contains("\"rooms\""), "got: {body}");
+    assert!(body.contains("\"agents\""), "got: {body}");
+    assert!(
+        body.contains("\"protocol\""),
+        "the room must appear: {body}"
+    );
+    assert!(body.contains("\"caas\""), "the agent must appear: {body}");
+    // 12 five-minute buckets, oldest first, always full length.
+    assert!(
+        body.contains("\"buckets\":["),
+        "buckets must be present: {body}"
+    );
+    // The agent is offline (mark_all_offline runs at startup), and the room has
+    // an unread message for it, so the room is blocked.
+    assert!(body.contains("\"blocked\""), "flag must be derived: {body}");
+}
+
+#[tokio::test]
+async fn meta_reports_the_host_and_version() {
+    use claude_bus::config::EnvSource;
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/meta").await;
+
+    assert!(body.contains("\"version\""), "got: {body}");
+    assert!(
+        body.contains(env!("CARGO_PKG_VERSION")),
+        "must report the running version: {body}"
+    );
+    // The pill is "hardac · 0.3.3" — both halves, or 2b cannot render it. The
+    // test was named for the host long before it asserted one.
+    assert!(body.contains("\"host\""), "got: {body}");
+    assert!(
+        body.contains(&claude_bus::config::RealEnv.hostname()),
+        "must report the host the bus is running on: {body}"
+    );
+}
+
+/// Drive a real bus to the exchange cap, then clear the pause the way the
+/// operator actually does — by typing in their own session — and check the rail
+/// agrees. Deliberately end to end rather than seeding events: the whole defect
+/// was that the two paths which actually clear a pause wrote no event at all, so
+/// every store-level test that seeded `resumed` by hand passed while the shipped
+/// flag never cleared.
+#[tokio::test]
+async fn a_humans_message_clears_needs_you_on_the_rail() {
+    use claude_bus::proto::{Target, ToBus};
+
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_with_cap(dir.path(), 1).await;
+
+    // An agent talks until the room pauses.
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    for _ in 0..2 {
+        common::send(
+            &mut caas,
+            &ToBus::Send {
+                req_id: 1,
+                target: Target::Room {
+                    room: "protocol".into(),
+                },
+                text: "still going".into(),
+                done: false,
+            },
+        )
+        .await;
+        common::next_event(&mut caas).await;
+    }
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        body.contains("needsYou"),
+        "the cap tripped, so the rail must ask for a person: {body}"
+    );
+
+    // The human types in their session. No `resume` call — this is the ordinary
+    // way a paused room continues.
+    let mut human = common::connect_human(port, "bbaldino").await;
+    common::next_event(&mut human).await; // Registered
+    common::send(
+        &mut human,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "carry on".into(),
+            done: false,
+        },
+    )
+    .await;
+    common::next_event(&mut human).await; // Sent
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        !body.contains("needsYou"),
+        "the room resumed the moment the human spoke; the rail must not still \
+         be asking for one: {body}"
+    );
+}
+
+/// The other clearing path, and the usual one: `contrib/human-active-hook.sh`
+/// POSTs here on every prompt the operator submits, and DEPLOY.md documents it
+/// as the standard deployment.
+#[tokio::test]
+async fn the_human_active_hook_clears_needs_you_on_the_rail() {
+    use claude_bus::proto::{Target, ToBus};
+
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_with_cap(dir.path(), 1).await;
+
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    for _ in 0..2 {
+        common::send(
+            &mut caas,
+            &ToBus::Send {
+                req_id: 1,
+                target: Target::Room {
+                    room: "protocol".into(),
+                },
+                text: "still going".into(),
+                done: false,
+            },
+        )
+        .await;
+        common::next_event(&mut caas).await;
+    }
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        body.contains("needsYou"),
+        "the cap must have tripped: {body}"
+    );
+
+    let res = post(port, "/human-active?agent=caas").await;
+    assert!(res.starts_with("HTTP/1.1 200"), "got: {res}");
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        !body.contains("needsYou"),
+        "the hook un-paused the room, so the flag must be gone: {body}"
+    );
+}
+
+/// SQLite reads a negative `LIMIT` as *unlimited*, so `?limit=-1` on either list
+/// endpoint used to dump the whole table — from an unauthenticated endpoint, on a
+/// bus that binds 0.0.0.0. Clamping to at least 1 is what makes the parameter mean
+/// what it says.
+#[tokio::test]
+async fn a_negative_limit_does_not_dump_the_whole_table() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        for i in 0..5 {
+            store
+                .append_message("protocol", "caas", &format!("m{i}"), false, false)
+                .await
+                .unwrap();
+            store
+                .append_event("ack", Some("caas"), Some("protocol"), serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/rooms/protocol/messages?limit=-1").await;
+    assert_eq!(
+        body.matches("\"body\"").count(),
+        1,
+        "a negative limit must clamp to one row, not every row: {body}"
+    );
+
+    let body = get(port, "/api/events?limit=-1").await;
+    assert_eq!(
+        body.matches("\"kind\"").count(),
+        1,
+        "a negative limit must clamp to one row, not every row: {body}"
+    );
+}
+
+/// The third way a pause disappears: the bus restarts. `Guards` keeps its
+/// counters in memory, so a fresh process has no paused rooms while every
+/// `room_paused` row it inherits is still the latest word in the log. Left
+/// alone, every room that was ever paused comes back flagged and nothing can
+/// clear it, because there is no pause left for a human to lift.
+#[tokio::test]
+async fn a_restart_clears_needs_you_for_rooms_whose_pause_it_did_not_inherit() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+        store
+            .append_event(
+                "room_paused",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({ "count": 20 }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.paused_rooms().await.unwrap(),
+            vec!["protocol".to_string()],
+            "the fixture must actually leave a pause behind"
+        );
+    }
+
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        !body.contains("needsYou"),
+        "this process has no such pause, so the rail must not report one: {body}"
+    );
+}
+
+/// The hook fires on every prompt the operator types, almost always for rooms
+/// that were never paused. Those must not each leave a `resumed` in the log
+/// claiming a pause was lifted — the audit trail is the thing being fixed here,
+/// and filling it with false resumes would be its own defect.
+#[tokio::test]
+async fn the_human_active_hook_writes_nothing_for_a_room_that_was_not_paused() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_with_cap(dir.path(), 20).await;
+    let path = dir.path().to_path_buf();
+
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    common::send(
+        &mut caas,
+        &claude_bus::proto::ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut caas).await; // Joined
+
+    let res = post(port, "/human-active?agent=caas").await;
+    assert!(res.starts_with("HTTP/1.1 200"), "got: {res}");
+
+    let store = Store::open(&path).await.unwrap();
+    let resumed = store.events_of_kind("resumed", 10).await.unwrap();
+    assert!(
+        resumed.is_empty(),
+        "nothing was paused, so nothing was resumed: {resumed:?}"
+    );
+}
+
+/// The routing table above `resolve`, which nothing else exercises: `resolve` is
+/// unit-tested in `src/web/assets.rs`, but a path that never reaches it fails
+/// invisibly. `/app/` in particular matches neither `/app` nor `/app/{*rest}`
+/// (matchit requires a non-empty catch-all remainder) and so needs its own
+/// route — and `/app/` is the canonical URL, since `ui/vite.config.ts` sets
+/// `base: '/app/'` and that is what a `location /app/` proxy produces.
+///
+/// Asserts shape rather than content: CI's Rust job has only `.gitkeep` in
+/// `ui/dist`, so there is no built bundle here. What must hold either way is
+/// that all three forms behave identically and that none of them is a bare
+/// route-miss.
+#[tokio::test]
+async fn the_app_routes_all_reach_the_bundle_handler() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+
+    let mut statuses = Vec::new();
+    for path in ["/app", "/app/", "/app/agents/caas"] {
+        let res = get(port, path).await;
+        let status = res
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_string();
+
+        // A bare 404 with no body is axum's router fallback — the request never
+        // reached a handler. The handler's own miss says why.
+        assert_ne!(
+            status, "404",
+            "{path} must reach the bundle handler, not fall off the router: {res}"
+        );
+        statuses.push((path, status));
+    }
+
+    let first = statuses[0].1.clone();
+    for (path, status) in &statuses {
+        assert_eq!(
+            *status, first,
+            "{path} must behave like /app — all three are the same app: {statuses:?}"
+        );
+    }
+
+    // With no bundle built (the state of a fresh clone and of CI's Rust job) the
+    // handler explains itself rather than 404ing. With one built it serves the
+    // shell. Either is fine; silence is not.
+    let res = get(port, "/app/").await;
+    assert!(
+        res.contains("was not built") || res.contains("<!doctype") || res.contains("<!DOCTYPE"),
+        "/app/ must serve the shell or say why it cannot: {res}"
+    );
+}
+
+#[tokio::test]
+async fn the_transcript_returns_a_rooms_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_message("protocol", "caas", "first", false, false)
+            .await
+            .unwrap();
+        store
+            .append_message("protocol", "bbaldino", "second", true, true)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/rooms/protocol/messages?limit=10").await;
+
+    assert!(body.contains("\"first\""), "got: {body}");
+    assert!(body.contains("\"second\""), "got: {body}");
+    assert!(
+        body.contains("\"human\":true"),
+        "human authority must survive: {body}"
+    );
+    assert!(
+        body.contains("\"done\":true"),
+        "the done marker must survive: {body}"
+    );
+}
+
+#[tokio::test]
+async fn the_transcript_pages_backward_with_before() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        for i in 0..5 {
+            store
+                .append_message("protocol", "caas", &format!("msg{i}"), false, false)
+                .await
+                .unwrap();
+        }
+    }
+    let port = start(dir.path()).await;
+
+    let page1_res = get(port, "/api/rooms/protocol/messages?limit=2").await;
+    let page1_body = page1_res.rsplit("\r\n\r\n").next().unwrap();
+    let page1: serde_json::Value = serde_json::from_str(page1_body).unwrap();
+    let page1 = page1.as_array().unwrap();
+    assert_eq!(page1.len(), 2, "got: {page1_res}");
+    assert_eq!(page1[0]["body"], "msg3", "got: {page1_res}");
+    assert_eq!(page1[1]["body"], "msg4", "got: {page1_res}");
+    let oldest_on_page1 = page1[0]["id"].as_i64().unwrap();
+
+    let page2_res = get(
+        port,
+        &format!("/api/rooms/protocol/messages?limit=2&before={oldest_on_page1}"),
+    )
+    .await;
+    let page2_body = page2_res.rsplit("\r\n\r\n").next().unwrap();
+    let page2: serde_json::Value = serde_json::from_str(page2_body).unwrap();
+    let page2 = page2.as_array().unwrap();
+    assert_eq!(page2.len(), 2, "got: {page2_res}");
+    assert_eq!(page2[0]["body"], "msg1", "oldest first: {page2_res}");
+    assert_eq!(page2[1]["body"], "msg2", "got: {page2_res}");
+
+    // No id repeats across the two pages, and no id is skipped between them.
+    let page1_ids: Vec<i64> = page1.iter().map(|m| m["id"].as_i64().unwrap()).collect();
+    let page2_ids: Vec<i64> = page2.iter().map(|m| m["id"].as_i64().unwrap()).collect();
+    for id in &page2_ids {
+        assert!(
+            !page1_ids.contains(id),
+            "page 2 must not repeat a page 1 id: {page1_ids:?} vs {page2_ids:?}"
+        );
+    }
+    assert_eq!(
+        page2_ids[1] + 1,
+        page1_ids[0],
+        "no gap between the two pages: {page2_ids:?} then {page1_ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_events_endpoint_scopes_to_a_room_or_the_whole_bus() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_event(
+                "room_joined",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "room_joined",
+                Some("dash"),
+                Some("other"),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let scoped = get(port, "/api/events?room=protocol&limit=50").await;
+    assert!(scoped.contains("\"protocol\""), "got: {scoped}");
+    assert!(
+        !scoped.contains("\"other\""),
+        "must not leak other rooms: {scoped}"
+    );
+
+    let whole = get(port, "/api/events?limit=50").await;
+    assert!(whole.contains("\"protocol\""), "got: {whole}");
+    assert!(
+        whole.contains("\"other\""),
+        "whole-bus scope sees everything: {whole}"
+    );
+}
+
+#[tokio::test]
+async fn the_events_endpoint_filters_by_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_event(
+                "room_joined",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event("ack", Some("caas"), Some("protocol"), serde_json::json!({}))
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/events?kind=ack&limit=50").await;
+
+    assert!(body.contains("\"ack\""), "got: {body}");
+    assert!(
+        !body.contains("room_joined"),
+        "kind must narrow the fetch: {body}"
+    );
+}
+
+#[tokio::test]
+async fn the_events_endpoint_combines_room_and_kind_with_and_semantics() {
+    // The combination the other three tests don't reach: room-only and kind-only each
+    // pass even if the SQL's AND is secretly an OR (the other clause is NULL and always
+    // true), or if one filter is silently ignored. Only asserting the row that matches
+    // both would still pass against either bug — the two negatives below are the point.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        // Matches both filters.
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({"tag": "match"}),
+            )
+            .await
+            .unwrap();
+        // Right room, wrong kind.
+        store
+            .append_event(
+                "room_paused",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({"tag": "same-room-different-kind"}),
+            )
+            .await
+            .unwrap();
+        // Right kind, wrong room.
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("other"),
+                serde_json::json!({"tag": "same-kind-different-room"}),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/events?room=protocol&kind=ack&limit=50").await;
+
+    assert!(body.contains("\"match\""), "got: {body}");
+    assert!(
+        !body.contains("same-room-different-kind"),
+        "the room match alone must not be enough: {body}"
+    );
+    assert!(
+        !body.contains("same-kind-different-room"),
+        "the kind match alone must not be enough: {body}"
     );
 }

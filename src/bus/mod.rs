@@ -221,6 +221,26 @@ pub async fn serve_on_full(
     // `online` is a ghost from a process that died without running its teardown.
     // Reconcile before serving rather than letting the stale rows be read as truth.
     store.mark_all_offline().await?;
+    // The same reconciliation, for pauses. `Guards` keeps its exchange counters in
+    // memory, so this process starts with nothing paused, while every `room_paused`
+    // row it inherits is still the latest word in the log — which is what
+    // `Store::room_flag` derives the operator-facing `needs_you` from. Without this,
+    // every room that was ever paused comes back flagged after a restart and nothing
+    // a human does can clear it, because as far as the guards are concerned there is
+    // no pause left to lift.
+    for room in store.paused_rooms().await.unwrap_or_default() {
+        if let Err(e) = store
+            .append_event(
+                "resumed",
+                None,
+                Some(&room),
+                json!({ "via": "bus_restart" }),
+            )
+            .await
+        {
+            eprintln!("could not record the restart resume for {room}: {e}");
+        }
+    }
     let app = App {
         store: Arc::new(store),
         registry,
@@ -228,6 +248,64 @@ pub async fn serve_on_full(
         keepalive,
         relayers,
     };
+    // Events reach observers through the store's broadcast channel, so every
+    // append is fanned out regardless of which call site produced it.
+    {
+        // The registry, NOT the whole `App`. `App` holds the `Store`, and the
+        // `Store` owns the broadcast sender this task is waiting on — so cloning
+        // `App` here would mean the task keeps alive the very sender whose drop is
+        // the only thing that can ever end it. `Closed` would be unreachable in
+        // production (contradicting the comment below), and every bus would leak
+        // this task plus an `App`, a `Store` and its `SqlitePool` for the life of
+        // the process; the test suites start hundreds of buses in one process. The
+        // task only ever touches `.registry`, which is `Clone` in its own right.
+        let registry_for_events = app.registry.clone();
+        let mut rx = app.store.subscribe_events();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(e) => {
+                        let room = e.room.clone();
+                        registry_for_events
+                            .notify_event(
+                                room.as_deref(),
+                                FromBus::Event {
+                                    id: e.id,
+                                    kind: e.kind,
+                                    agent: e.agent,
+                                    room: e.room,
+                                    detail: e.detail,
+                                    created_at: e.created_at,
+                                },
+                            )
+                            .await;
+                    }
+                    // `Lagged` and `Closed` are not the same failure and must
+                    // not be handled identically — a bare `while let Ok(e) =
+                    // rx.recv().await` treats a recoverable lag as a reason to
+                    // exit forever, which silently stops relaying events to
+                    // every observer for the rest of the process's life. Log
+                    // and keep going on `Lagged` (dropping the missed tail is
+                    // acceptable); only `Closed` — the store dropping its
+                    // sender, i.e. shutdown — actually ends the relay.
+                    // `event_relay_keep_going` isolates that decision so it
+                    // can be unit-tested without a live channel; resist
+                    // "simplifying" this back into a `while let`.
+                    Err(e) => {
+                        if let tokio::sync::broadcast::error::RecvError::Lagged(n) = &e {
+                            eprintln!(
+                                "event relay lagged; {n} events were not delivered to observers"
+                            );
+                        }
+                        if !event_relay_keep_going(&e) {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     let router = Router::new()
         .route("/ws", get(upgrade))
         .route("/human-active", axum::routing::post(human_active))
@@ -257,7 +335,24 @@ async fn human_active(
         .filter(|r| r.members.contains(&q.agent))
         .map(|r| r.name)
         .collect();
-    app.guards.reset_all_for(&rooms).await;
+    // One `resumed` event per room this actually un-paused. This hook is the
+    // *usual* way a pause clears — `contrib/human-active-hook.sh` is the standard
+    // deployment documented in DEPLOY.md, and it fires on every prompt the operator
+    // types — so a pause cleared here and never recorded left `Store::room_flag`
+    // deriving "needs you" from a half-written log forever. `reset_all_for` returns
+    // only the rooms that had genuinely hit the cap, so the ordinary case (the
+    // operator typing in a room that was never paused) writes nothing at all.
+    for room in app.guards.reset_all_for(&rooms).await {
+        let _ = app
+            .store
+            .append_event(
+                "resumed",
+                Some(&q.agent),
+                Some(&room),
+                json!({ "via": "human_active" }),
+            )
+            .await;
+    }
     "ok"
 }
 
@@ -460,6 +555,14 @@ async fn connection(socket: WebSocket, app: App) {
                         name: effective.clone(),
                     });
                     send_unread_summaries(&app, &effective, &control_tx).await;
+                    app.registry
+                        .notify_presence(FromBus::Presence {
+                            name: effective.clone(),
+                            host: host.clone(),
+                            online: true,
+                            last_seen: crate::store::now_ms(),
+                        })
+                        .await;
                     continue;
                 }
 
@@ -543,7 +646,20 @@ async fn connection(socket: WebSocket, app: App) {
         if let Err(e) = app.store.set_online(&name, false).await {
             eprintln!("could not mark {name} offline on disconnect: {e}");
         }
+        // Read before `detach` drops the entry: the registry still knows this
+        // connection's host here, and an offline push carrying an empty host is a
+        // field that is sometimes a lie — which every consumer would then have to
+        // write defensive code around.
+        let host = app.registry.host_of(&name).await.unwrap_or_default();
         app.registry.detach(&name).await;
+        app.registry
+            .notify_presence(FromBus::Presence {
+                name: name.clone(),
+                host,
+                online: false,
+                last_seen: crate::store::now_ms(),
+            })
+            .await;
         if is_human {
             // Ephemeral by design — see `leave_all_rooms`.
             let _ = app.store.leave_all_rooms(&name).await;
@@ -638,6 +754,26 @@ async fn handle_observer(
 
         ToBus::ListRooms { req_id } => commands::reply_list_rooms(app, control_tx, req_id).await,
 
+        ToBus::WatchPresence { req_id } => {
+            app.registry.watch_presence(id).await;
+            let _ = control_tx.try_send(FromBus::Reply {
+                req_id,
+                result: ReplyResult::Watching {
+                    room: "<presence>".to_string(),
+                },
+            });
+        }
+
+        ToBus::WatchEvents { req_id, room } => {
+            app.registry.watch_events(id, room.clone()).await;
+            let _ = control_tx.try_send(FromBus::Reply {
+                req_id,
+                result: ReplyResult::Watching {
+                    room: room.unwrap_or_else(|| "<all>".to_string()),
+                },
+            });
+        }
+
         other => {
             let _ = control_tx.try_send(FromBus::Error {
                 req_id: req_id_of(&other),
@@ -663,7 +799,45 @@ fn req_id_of(cmd: &ToBus) -> Option<u64> {
         | ToBus::GetFile { req_id, .. }
         | ToBus::ListFiles { req_id, .. }
         | ToBus::Resume { req_id, .. }
-        | ToBus::Watch { req_id, .. } => Some(*req_id),
+        | ToBus::Watch { req_id, .. }
+        | ToBus::WatchPresence { req_id }
+        | ToBus::WatchEvents { req_id, .. } => Some(*req_id),
         ToBus::Register { .. } | ToBus::Observe { .. } | ToBus::Ack { .. } => None,
+    }
+}
+
+/// Whether the event relay task (spawned in `serve_on_full`) should keep
+/// running after `rx.recv()` on the store's broadcast channel returns `err`.
+///
+/// `Lagged` is recoverable — the relay merely missed some events because it
+/// fell behind the channel's capacity — and must return `true`. `Closed`
+/// means the store dropped its sender (process shutdown) and must return
+/// `false`. Pulled out as its own function so this decision is unit-testable
+/// without standing up a live broadcast channel and actually forcing a lag.
+fn event_relay_keep_going(err: &tokio::sync::broadcast::error::RecvError) -> bool {
+    matches!(err, tokio::sync::broadcast::error::RecvError::Lagged(_))
+}
+
+#[cfg(test)]
+mod event_relay_tests {
+    use super::*;
+    use tokio::sync::broadcast::error::RecvError;
+
+    #[test]
+    fn a_lag_is_recoverable_but_closed_stops_the_relay() {
+        // This is the regression the fix targets: a bare `while let Ok(e) =
+        // rx.recv().await` treats every `Err` the same way, so `Lagged` —
+        // which just means some events were skipped, not that anything is
+        // wrong — would silently and permanently stop the relay on its first
+        // burst of traffic. Sabotage check: `matches!(err, _)` (always true)
+        // would pass the first assertion here but fail the second.
+        assert!(
+            event_relay_keep_going(&RecvError::Lagged(5)),
+            "a lag must not stop the relay — it must log and keep receiving"
+        );
+        assert!(
+            !event_relay_keep_going(&RecvError::Closed),
+            "a closed channel (store dropped, i.e. shutdown) must stop the relay"
+        );
     }
 }

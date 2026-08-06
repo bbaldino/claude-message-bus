@@ -2494,3 +2494,221 @@ async fn the_list_agents_reply_carries_each_agents_version() {
         other => panic!("expected an Agents reply, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_subscribed_observer_receives_presence_and_events() {
+    let (_d, port) = common::start_bus().await;
+    let mut obs = common::connect_observer(port, "console").await;
+    common::send(&mut obs, &ToBus::WatchPresence { req_id: 1 }).await;
+    common::send(
+        &mut obs,
+        &ToBus::WatchEvents {
+            req_id: 2,
+            room: None,
+        },
+    )
+    .await;
+    // Drain the two replies.
+    common::next_event(&mut obs).await;
+    common::next_event(&mut obs).await;
+
+    // A registering agent produces both a presence change and an event.
+    let _agent = common::connect(port, "caas").await;
+
+    let mut saw_presence = false;
+    let mut saw_event = false;
+    for _ in 0..8 {
+        match common::next_event(&mut obs).await {
+            FromBus::Presence { name, online, .. } if name == "caas" && online => {
+                saw_presence = true
+            }
+            FromBus::Event { kind, .. } if kind == "agent_registered" => saw_event = true,
+            _ => {}
+        }
+        if saw_presence && saw_event {
+            break;
+        }
+    }
+    assert!(saw_presence, "a subscribed observer must see presence");
+    assert!(saw_event, "a subscribed observer must see events");
+}
+
+#[tokio::test]
+async fn an_unsubscribed_observer_receives_neither() {
+    let (_d, port) = common::start_bus().await;
+    // Watch a room only — exactly what `claude-bus tail` does.
+    let mut obs = common::connect_observer(port, "tail").await;
+    common::send(
+        &mut obs,
+        &ToBus::Watch {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut obs).await; // Watching reply
+
+    // A second, *subscribed* observer is what gives this test a happens-before
+    // edge. Without one it rests on timing: `connect` returns as soon as the
+    // Register frame is written, and the read loop below breaks on its first
+    // quiet slice — so on a loaded runner it could pass simply because nothing
+    // had happened yet. Once this observer has been handed the presence push,
+    // the registration is known to have completed and fanned out, and the
+    // silence on `obs` is a real property rather than a race.
+    let mut subscribed = common::connect_observer(port, "console").await;
+    common::send(&mut subscribed, &ToBus::WatchPresence { req_id: 1 }).await;
+    common::next_event(&mut subscribed).await; // Watching reply
+
+    let _agent = common::connect(port, "caas").await;
+
+    let mut saw = false;
+    for _ in 0..8 {
+        if matches!(
+            common::next_event(&mut subscribed).await,
+            FromBus::Presence { ref name, online, .. } if name == "caas" && online
+        ) {
+            saw = true;
+            break;
+        }
+    }
+    assert!(
+        saw,
+        "the subscribed observer must see the registration — otherwise the \
+         silence asserted below proves nothing"
+    );
+
+    // Nothing presence- or event-shaped may arrive. This is the guarantee that
+    // made the subscriptions opt-in rather than a firehose.
+    let mut leaked = false;
+    for _ in 0..3 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            common::next_event(&mut obs),
+        )
+        .await
+        {
+            Ok(FromBus::Presence { .. }) | Ok(FromBus::Event { .. }) => leaked = true,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert!(
+        !leaked,
+        "an unsubscribed observer must see neither — this is tail's guarantee"
+    );
+}
+
+/// The room-scoped arm of `Registry::notify_event`'s three-way predicate — the
+/// scope the console's per-room events dock runs on. A leak here is silent: an
+/// event from another room looks exactly like ordinary traffic in the dock.
+#[tokio::test]
+async fn a_room_scoped_event_subscription_does_not_leak_another_rooms_events() {
+    let (_d, port) = common::start_bus().await;
+
+    let mut watching_a = common::connect_observer(port, "dock-a").await;
+    common::send(
+        &mut watching_a,
+        &ToBus::WatchEvents {
+            req_id: 1,
+            room: Some("room-a".into()),
+        },
+    )
+    .await;
+    common::next_event(&mut watching_a).await; // Watching reply
+
+    let mut watching_b = common::connect_observer(port, "dock-b").await;
+    common::send(
+        &mut watching_b,
+        &ToBus::WatchEvents {
+            req_id: 1,
+            room: Some("room-b".into()),
+        },
+    )
+    .await;
+    common::next_event(&mut watching_b).await; // Watching reply
+
+    // Produce an event in room-a and nowhere else.
+    let mut agent = common::connect(port, "caas").await;
+    common::next_event(&mut agent).await; // Registered
+    common::send(
+        &mut agent,
+        &ToBus::Join {
+            req_id: 1,
+            room: "room-a".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut agent).await; // Joined
+
+    // The a-scoped observer receiving it is the happens-before edge for the
+    // silence asserted on the b-scoped one.
+    let mut saw = false;
+    for _ in 0..8 {
+        if matches!(
+            common::next_event(&mut watching_a).await,
+            FromBus::Event { ref kind, room: Some(ref r), .. } if kind == "room_joined" && r == "room-a"
+        ) {
+            saw = true;
+            break;
+        }
+    }
+    assert!(
+        saw,
+        "an observer scoped to room-a must receive room-a events"
+    );
+
+    let mut leaked = false;
+    for _ in 0..3 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            common::next_event(&mut watching_b),
+        )
+        .await
+        {
+            Ok(FromBus::Event { .. }) => leaked = true,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert!(
+        !leaked,
+        "an observer scoped to room-b must not receive room-a's events"
+    );
+}
+
+/// The offline half of a presence push used to hardcode `host: ""`, so the field
+/// was true on connect and a lie on disconnect. The registry still knows the
+/// host at teardown; nothing downstream should have to guess which pushes to
+/// trust.
+#[tokio::test]
+async fn a_disconnect_presence_push_carries_the_agents_real_host() {
+    let (_d, port) = common::start_bus().await;
+    let mut obs = common::connect_observer(port, "console").await;
+    common::send(&mut obs, &ToBus::WatchPresence { req_id: 1 }).await;
+    common::next_event(&mut obs).await; // Watching reply
+
+    {
+        let mut agent = common::connect(port, "caas").await;
+        common::next_event(&mut agent).await; // Registered
+    }
+
+    let mut host = None;
+    for _ in 0..8 {
+        if let FromBus::Presence {
+            name,
+            host: h,
+            online: false,
+            ..
+        } = common::next_event(&mut obs).await
+            && name == "caas"
+        {
+            host = Some(h);
+            break;
+        }
+    }
+    assert_eq!(
+        host.as_deref(),
+        Some("testhost"),
+        "the offline push must carry the host the connection registered from"
+    );
+}

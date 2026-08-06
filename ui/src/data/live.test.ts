@@ -1,0 +1,102 @@
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { createLive } from './live'
+import type { Connection } from './live'
+
+/// Enough of the browser WebSocket for `live.ts`: it constructs one, assigns
+/// handlers, checks `readyState === WebSocket.OPEN` before sending, and closes.
+/// Nothing here ever opens on its own — a socket that fails to connect is
+/// exactly the case these tests are about.
+class FakeSocket {
+  static instances: FakeSocket[] = []
+  static readonly OPEN = 1
+  readyState = 0
+  onopen: (() => void) | null = null
+  onclose: (() => void) | null = null
+  onmessage: ((ev: { data: string }) => void) | null = null
+  sent: string[] = []
+  constructor(public url: string) {
+    FakeSocket.instances.push(this)
+  }
+  send(data: string) {
+    this.sent.push(data)
+  }
+  close() {}
+}
+
+let states: Connection[]
+
+beforeEach(() => {
+  vi.useFakeTimers()
+  FakeSocket.instances = []
+  states = []
+  vi.stubGlobal('WebSocket', FakeSocket)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
+
+function latest() {
+  return FakeSocket.instances[FakeSocket.instances.length - 1]
+}
+
+/// Drop the current socket and let the scheduled reconnect fire, so the next
+/// close sees the grown backoff.
+function dropAndRetry() {
+  latest().onclose?.()
+  vi.advanceTimersByTime(20_000)
+}
+
+test('an open socket is live and subscribes to presence and events', () => {
+  const live = createLive('ws://x/ws')
+  live.on('connection', (p) => states.push(p as Connection))
+  live.start()
+  latest().readyState = FakeSocket.OPEN
+  latest().onopen?.()
+
+  expect(states).toEqual(['live'])
+  const types = latest().sent.map((s) => JSON.parse(s).type)
+  expect(types).toEqual(['observe', 'watch_presence', 'watch_events'])
+})
+
+test('the pill reaches disconnected once the reconnect backoff saturates', () => {
+  // The regression: `disconnected` used to be emitted from `onerror`, and a
+  // browser always fires `onclose` straight after — which emitted
+  // `reconnecting` in the same tick, so red was never observable and the
+  // handoff's third connection state did not really exist. Amber must mean
+  // "retrying"; red must mean "this has been failing for a while".
+  const live = createLive('ws://x/ws')
+  live.on('connection', (p) => states.push(p as Connection))
+  live.start()
+
+  // 500 → 1000 → 2000 → 4000 → 8000 → 15000: five closes to saturate.
+  for (let i = 0; i < 5; i++) dropAndRetry()
+  expect(states).toEqual([
+    'reconnecting',
+    'reconnecting',
+    'reconnecting',
+    'reconnecting',
+    'reconnecting',
+  ])
+
+  latest().onclose?.()
+  expect(states[states.length - 1]).toBe('disconnected')
+})
+
+test('a reconnect that succeeds goes back to live and resets the backoff', () => {
+  const live = createLive('ws://x/ws')
+  live.on('connection', (p) => states.push(p as Connection))
+  live.start()
+
+  for (let i = 0; i < 6; i++) dropAndRetry()
+  expect(states).toContain('disconnected')
+
+  latest().readyState = FakeSocket.OPEN
+  latest().onopen?.()
+  expect(states[states.length - 1]).toBe('live')
+
+  // Backoff reset, so the next failure is amber again rather than staying red.
+  latest().onclose?.()
+  expect(states[states.length - 1]).toBe('reconnecting')
+})

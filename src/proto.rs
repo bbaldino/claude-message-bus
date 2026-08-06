@@ -99,14 +99,27 @@ pub enum ToBus {
         room: String,
         last_delivered_id: i64,
     },
+    /// Subscribe to agent connect/disconnect. Observer-only, opt-in: a `tail`
+    /// watching one room must not start receiving fleet-wide traffic.
+    WatchPresence {
+        req_id: u64,
+    },
+    /// Subscribe to the event stream. `room: None` is the whole bus.
+    WatchEvents {
+        req_id: u64,
+        room: Option<String>,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
 pub struct HistoryItem {
+    #[ts(type = "number")]
     pub id: i64,
     pub from: String,
     pub text: String,
     pub done: bool,
+    #[ts(type = "number")]
     pub created_at: i64,
     /// Whether a human sent this. Carried on history as well as on the live event
     /// because a worker that was offline catches up through `history` — the reconnect
@@ -115,14 +128,16 @@ pub struct HistoryItem {
     pub human: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
 pub struct RoomInfo {
     pub name: String,
     pub mode: String,
     pub members: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
 pub struct AgentInfo {
     pub name: String,
     pub host: String,
@@ -132,9 +147,11 @@ pub struct AgentInfo {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
 pub struct FileInfo {
     pub key: String,
+    #[ts(type = "number")]
     pub size: i64,
     pub content_type: Option<String>,
     pub updated_by: String,
@@ -142,17 +159,21 @@ pub struct FileInfo {
 
 /// One room's contribution to a reconnecting agent's `FromBus::Unread`
 /// summary.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
 pub struct RoomUnread {
     pub room: String,
+    #[ts(type = "number")]
     pub count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReplyResult {
     Sent {
         room: String,
+        #[ts(type = "number")]
         msg_id: i64,
         delivered_to: Vec<String>,
         queued_for: Vec<String>,
@@ -175,6 +196,7 @@ pub enum ReplyResult {
     },
     FileStored {
         key: String,
+        #[ts(type = "number")]
         size: i64,
         sha256: String,
     },
@@ -192,7 +214,17 @@ pub enum ReplyResult {
 }
 
 /// bus → agent
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// `ts_rs::TS` is derived here, not only on the REST DTOs in `web::api`, and
+/// that asymmetry was the root cause of three separate bugs in one phase. The
+/// push protocol is snake_case on the wire — `rename_all` on an enum renames
+/// variant *names*, not variant *fields* — while the DTOs are camelCase, and
+/// every browser-side handler was a cast against a hand-written literal, which
+/// is the one construct that silences the compiler about exactly this. With the
+/// union generated, a rename in this file breaks the TypeScript build instead of
+/// producing a silent `undefined` that passes every gate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromBus {
     Registered {
@@ -204,11 +236,13 @@ pub enum FromBus {
         name: String,
     },
     Reply {
+        #[ts(type = "number")]
         req_id: u64,
         result: ReplyResult,
     },
     /// A message to inject into the session as a channel event.
     Message {
+        #[ts(type = "number")]
         id: i64,
         room: String,
         from: String,
@@ -233,8 +267,29 @@ pub enum FromBus {
         reason: String,
     },
     Error {
+        #[ts(type = "number | null")]
         req_id: Option<u64>,
         message: String,
+    },
+    /// An agent connected or disconnected. Only sent to observers that asked.
+    Presence {
+        name: String,
+        host: String,
+        online: bool,
+        #[ts(type = "number")]
+        last_seen: i64,
+    },
+    /// A bus event, as appended to the audit log. Only sent to observers that asked.
+    Event {
+        #[ts(type = "number")]
+        id: i64,
+        kind: String,
+        agent: Option<String>,
+        room: Option<String>,
+        #[ts(type = "unknown")]
+        detail: serde_json::Value,
+        #[ts(type = "number")]
+        created_at: i64,
     },
 }
 

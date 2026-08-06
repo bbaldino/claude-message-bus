@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS messages (
   human      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS messages_room_id ON messages(room, id);
+-- The rail's per-agent volume strip filters `from_agent = ? AND created_at > ?`,
+-- once per agent on every ~25s poll. Without this it is a full scan of a table
+-- that only grows, which is not the "handful of indexed COUNTs" the console data
+-- layer's design accepted recomputation on the strength of.
+CREATE INDEX IF NOT EXISTS messages_from_created ON messages(from_agent, created_at);
 
 CREATE TABLE IF NOT EXISTS files (
   room         TEXT NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,

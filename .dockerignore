@@ -3,3 +3,5 @@ poc/
 data/
 docs/
 .git/
+ui/node_modules
+ui/dist

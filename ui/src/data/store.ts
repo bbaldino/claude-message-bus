@@ -1,0 +1,145 @@
+import type { RailSummary } from '../types/RailSummary'
+import type { Event } from '../types/Event'
+import type { Message } from '../types/Message'
+import type { FromBus } from '../types/FromBus'
+import type { Connection } from './live'
+
+export type State = {
+  rail: RailSummary | null
+  events: Event[]
+  messages: Message[]
+  room: string | null
+  connection: Connection
+}
+
+type Live = {
+  on(kind: string, fn: (payload: unknown) => void): void
+  watchRoom(room: string): void
+  start(): void
+  stop(): void
+}
+
+/// One store rather than per-screen hooks: presence and events feed the rail, the
+/// dock, the unseen badge and the transcript at once, and separate subscriptions
+/// to one stream would let them disagree about what is current.
+export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSummary> }) {
+  let state: State = {
+    rail: null,
+    events: [],
+    messages: [],
+    room: null,
+    connection: 'reconnecting',
+  }
+  const subs = new Set<() => void>()
+  const notify = () => subs.forEach((f) => f())
+
+  const setState = (patch: Partial<State>) => {
+    state = { ...state, ...patch }
+    notify()
+  }
+
+  deps.live.on('connection', (p) => setState({ connection: p as Connection }))
+
+  // Every push handler below narrows the frame against `FromBus`, the union
+  // ts-rs generates from `src/proto.rs`. The single `as FromBus` sits at the
+  // `unknown` boundary where the JSON arrives; every field access after the
+  // `type` check is compiler-verified against the server's own definition. The
+  // hand-written object literals these replaced were the reason a snake_case /
+  // camelCase mismatch could reach the browser as a silent `undefined` three
+  // times in one phase: a cast to a literal you wrote yourself agrees with you.
+  //
+  // The snake_case → camelCase normalisations stay, deliberately. They are not
+  // the bug — the wire really is snake_case (`rename_all` on an enum renames
+  // variant names, not variant fields) while the REST DTOs really are camelCase.
+  // What changed is that the source shape is now checked rather than asserted.
+  deps.live.on('event', (p) => {
+    const frame = p as FromBus
+    if (frame.type !== 'event') return
+    const event: Event = {
+      id: frame.id,
+      kind: frame.kind,
+      agent: frame.agent,
+      room: frame.room,
+      detail: frame.detail,
+      createdAt: frame.created_at,
+    }
+    setState({ events: [event, ...state.events].slice(0, 500) })
+  })
+
+  deps.live.on('message', (p) => {
+    const frame = p as FromBus
+    if (frame.type !== 'message') return
+    // Only the open room's traffic belongs in the transcript. The socket
+    // accumulates a `Watch` per room the operator has visited and the protocol
+    // has no `Unwatch`, so without this filter room A's messages land under room
+    // B — in a list `selectRoom` has just cleared, which makes them look current.
+    if (frame.room !== state.room) return
+    // FromBus::Message and the REST Message DTO are deliberately different
+    // shapes: the push is the wire event (`text`), the DTO is the stored row
+    // (`body`, `createdAt`). Normalise here so `state.messages` is homogeneous
+    // and a transcript can render fetched and live messages identically.
+    //
+    // The push carries no timestamp, so this is the client's receipt time, not
+    // the server's stored `created_at`. They differ by the network delay, and a
+    // refetch of the room replaces the approximation with the authoritative
+    // value. Do not present it as anything more precise than that.
+    const message: Message = {
+      id: frame.id,
+      room: frame.room,
+      from: frame.from,
+      body: frame.text,
+      done: frame.done,
+      human: frame.human,
+      createdAt: Date.now(),
+    }
+    // Appended, never scrolled to: the design requires a "3 new below" affordance
+    // rather than yanking a reader who has scrolled up, so the scroll decision
+    // belongs to the component owning the region.
+    setState({ messages: [...state.messages, message] })
+  })
+
+  deps.live.on('presence', (p) => {
+    const frame = p as FromBus
+    if (frame.type !== 'presence') return
+    const { name, online } = frame
+    if (!state.rail) return
+    setState({
+      rail: {
+        ...state.rail,
+        agents: state.rail.agents.map((a) => (a.name === name ? { ...a, online } : a)),
+      },
+    })
+  })
+
+  let timer: ReturnType<typeof setInterval> | null = null
+
+  return {
+    getState: () => state,
+    setState,
+    subscribe(fn: () => void) {
+      subs.add(fn)
+      return () => subs.delete(fn)
+    },
+    selectRoom(name: string) {
+      setState({ room: name, messages: [] })
+      deps.live.watchRoom(name)
+    },
+    async start() {
+      deps.live.start()
+      const refresh = async () => {
+        try {
+          setState({ rail: await deps.fetchRail() })
+        } catch {
+          // Leave the previous rail in place; the connection pill already reports
+          // trouble, and blanking the rail would read as an empty fleet.
+        }
+      }
+      await refresh()
+      timer = setInterval(refresh, 25_000)
+    },
+    stop() {
+      if (timer) clearInterval(timer)
+      deps.live.stop()
+    },
+  }
+}

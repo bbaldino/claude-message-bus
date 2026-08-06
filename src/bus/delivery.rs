@@ -15,9 +15,26 @@ pub const DEFAULT_MIN_INTERVAL_MS: i64 = 2000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum GuardVerdict {
-    Allow,
-    RateLimited { retry_in_ms: i64 },
-    Paused { count: u32 },
+    /// `cleared_pause` says this send did not merely pass the guards, it
+    /// *un-paused* the room: the exchange counter was at or over the cap and a
+    /// human speaking zeroed it (see `check`'s `is_human` branch).
+    ///
+    /// It exists so the caller can append the matching `resumed` event. The
+    /// guard is the only thing that knows a pause was cleared — the counter is
+    /// in memory here — and the audit log is the only durable record of pause
+    /// state, which `Store::room_flag` derives the operator-facing `needs_you`
+    /// from. Before this, the two disagreed forever: the room resumed and the
+    /// rail kept saying "needs you". The decision stays here and the write
+    /// stays at the call site, so `delivery` still never touches `Store`.
+    Allow {
+        cleared_pause: bool,
+    },
+    RateLimited {
+        retry_in_ms: i64,
+    },
+    Paused {
+        count: u32,
+    },
 }
 
 #[derive(Default)]
@@ -78,9 +95,13 @@ impl Guards {
         // person typing is not a runaway loop, and throttling someone mid-interjection
         // would be maddening.
         if is_human {
+            // Read the counter *before* zeroing it: at or over the cap means this
+            // room was paused and this send is what lifts the pause, which the
+            // caller has to record as a `resumed` event.
+            let cleared_pause = state.exchanges >= self.cap;
             state.exchanges = 0;
             state.last_send.insert(agent.to_string(), now_ms);
-            return GuardVerdict::Allow;
+            return GuardVerdict::Allow { cleared_pause };
         }
 
         if state.exchanges >= self.cap {
@@ -102,7 +123,11 @@ impl Guards {
 
         state.exchanges += 1;
         state.last_send.insert(agent.to_string(), now_ms);
-        GuardVerdict::Allow
+        // An agent's send never lifts a pause — reaching the cap is what
+        // creates one, and it returned `Paused` above.
+        GuardVerdict::Allow {
+            cleared_pause: false,
+        }
     }
 
     pub async fn reset(&self, room: &str) {
@@ -111,13 +136,26 @@ impl Guards {
         }
     }
 
-    pub async fn reset_all_for(&self, rooms: &[String]) {
+    /// Clear the exchange counter for each of `rooms`, returning the ones that
+    /// were actually paused (at or over the cap) and are therefore now resumed.
+    ///
+    /// The return value is what lets the caller append one `resumed` event per
+    /// genuinely lifted pause. Rooms that were merely part-way through their
+    /// budget are reset silently: writing a `resumed` for a room that was never
+    /// paused would put a lie in the audit log, and the human-active hook fires
+    /// on every prompt the operator types.
+    pub async fn reset_all_for(&self, rooms: &[String]) -> Vec<String> {
         let mut guard = self.rooms.lock().await;
+        let mut resumed = Vec::new();
         for r in rooms {
             if let Some(state) = guard.get_mut(r) {
+                if state.exchanges >= self.cap {
+                    resumed.push(r.clone());
+                }
                 state.exchanges = 0;
             }
         }
+        resumed
     }
 }
 
@@ -130,7 +168,7 @@ mod tests {
         let g = Guards::new(20, 0);
         assert!(matches!(
             g.check("r", "caas", 1000, false).await,
-            GuardVerdict::Allow
+            GuardVerdict::Allow { .. }
         ));
     }
 
@@ -139,7 +177,7 @@ mod tests {
         let g = Guards::new(20, 2000);
         assert!(matches!(
             g.check("r", "caas", 1000, false).await,
-            GuardVerdict::Allow
+            GuardVerdict::Allow { .. }
         ));
         match g.check("r", "caas", 1500, false).await {
             GuardVerdict::RateLimited { retry_in_ms } => assert_eq!(retry_in_ms, 1500),
@@ -154,12 +192,12 @@ mod tests {
         // A different agent in the same room is unaffected.
         assert!(matches!(
             g.check("r", "dashboard", 1000, false).await,
-            GuardVerdict::Allow
+            GuardVerdict::Allow { .. }
         ));
         // The same agent in a different room is unaffected.
         assert!(matches!(
             g.check("other", "caas", 1000, false).await,
-            GuardVerdict::Allow
+            GuardVerdict::Allow { .. }
         ));
     }
 
@@ -168,7 +206,10 @@ mod tests {
         let g = Guards::new(3, 0);
         for i in 0..3 {
             assert!(
-                matches!(g.check("r", "caas", i, false).await, GuardVerdict::Allow),
+                matches!(
+                    g.check("r", "caas", i, false).await,
+                    GuardVerdict::Allow { .. }
+                ),
                 "message {i} should pass"
             );
         }
@@ -183,11 +224,11 @@ mod tests {
         let g = Guards::new(2, 0);
         assert!(matches!(
             g.check("r", "caas", 0, false).await,
-            GuardVerdict::Allow
+            GuardVerdict::Allow { .. }
         ));
         assert!(matches!(
             g.check("r", "dashboard", 1, false).await,
-            GuardVerdict::Allow
+            GuardVerdict::Allow { .. }
         ));
         assert!(matches!(
             g.check("r", "caas", 2, false).await,
@@ -206,7 +247,7 @@ mod tests {
         g.reset("r").await;
         assert!(matches!(
             g.check("r", "caas", 2, false).await,
-            GuardVerdict::Allow
+            GuardVerdict::Allow { .. }
         ));
     }
 
@@ -216,7 +257,7 @@ mod tests {
         // Consume the cap and record caas's last send time at t=0.
         assert!(matches!(
             g.check("r", "caas", 0, false).await,
-            GuardVerdict::Allow
+            GuardVerdict::Allow { .. }
         ));
         assert!(matches!(
             g.check("r", "caas", 100, false).await,
@@ -241,12 +282,82 @@ mod tests {
         for i in 0..20 {
             assert!(matches!(
                 g.check("r", "a", i * 10_000, false).await,
-                GuardVerdict::Allow
+                GuardVerdict::Allow { .. }
             ));
         }
         assert!(matches!(
             g.check("r", "a", 999_999, false).await,
             GuardVerdict::Paused { .. }
+        ));
+    }
+
+    /// The verdict has to distinguish "a human spoke" from "a human spoke and
+    /// that lifted a pause", because only the second is a `resumed` event. A
+    /// naive `cleared_pause: true` for every human send would put a `resumed`
+    /// in the log for every sentence the operator types.
+    #[tokio::test]
+    async fn a_human_send_reports_whether_it_lifted_a_pause() {
+        let g = Guards::new(1, 0);
+
+        // Nothing to lift yet.
+        assert_eq!(
+            g.check("r", "bbaldino", 0, true).await,
+            GuardVerdict::Allow {
+                cleared_pause: false
+            },
+            "a human speaking in an unpaused room has not resumed anything"
+        );
+
+        // Trip the cap.
+        g.check("r", "caas", 1, false).await;
+        assert!(matches!(
+            g.check("r", "caas", 2, false).await,
+            GuardVerdict::Paused { .. }
+        ));
+
+        assert_eq!(
+            g.check("r", "bbaldino", 3, true).await,
+            GuardVerdict::Allow {
+                cleared_pause: true
+            },
+            "a human speaking into a paused room is what un-pauses it"
+        );
+
+        // And it really is cleared, so the next human send reports nothing again.
+        assert_eq!(
+            g.check("r", "bbaldino", 4, true).await,
+            GuardVerdict::Allow {
+                cleared_pause: false
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_all_for_names_only_the_rooms_that_were_paused() {
+        let g = Guards::new(2, 0);
+        // "paused" reaches the cap; "busy" is only part-way through its budget;
+        // "never" has no state at all.
+        g.check("paused", "caas", 0, false).await;
+        g.check("paused", "caas", 1, false).await;
+        g.check("busy", "caas", 2, false).await;
+
+        let resumed = g
+            .reset_all_for(&[
+                "paused".to_string(),
+                "busy".to_string(),
+                "never".to_string(),
+            ])
+            .await;
+
+        assert_eq!(
+            resumed,
+            vec!["paused".to_string()],
+            "only a room that had actually hit the cap has been resumed"
+        );
+        // Both are nonetheless reset — the return value reports, it does not gate.
+        assert!(matches!(
+            g.check("paused", "caas", 3, false).await,
+            GuardVerdict::Allow { .. }
         ));
     }
 }
