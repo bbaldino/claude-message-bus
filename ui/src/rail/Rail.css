@@ -38,6 +38,13 @@
   padding: 0 8px;
 }
 
+.rail-empty {
+  padding: 16px;
+  color: var(--text-quaternary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
 .row {
   display: block;
   padding: 8px 9px;

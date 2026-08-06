@@ -1,4 +1,4 @@
-import { Link, useParams } from 'react-router-dom'
+import { Link, useMatch } from 'react-router-dom'
 import type { RailRoom } from '../types/RailRoom'
 import { VolumeStrip } from './VolumeStrip'
 
@@ -18,8 +18,12 @@ function subtitle(room: RailRoom): string {
 }
 
 export function RoomRow({ room }: { room: RailRoom }) {
-  const { name } = useParams()
-  const selected = name === room.name
+  // `useMatch` against the room route family, not a bare `useParams` name
+  // comparison: a room and an agent can share a name, and `useParams` alone
+  // can't tell which route is active, so both would render selected on either
+  // route.
+  const match = useMatch('/rooms/:name')
+  const selected = match?.params.name === room.name
   const flagClass = room.flag?.kind === 'needsYou' ? 'flag-needs-you' : ''
   const silent = room.lastActivity === null
 

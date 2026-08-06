@@ -54,9 +54,24 @@ function matches(name: string, query: string): boolean {
 export function Rail({ query = '' }: { query?: string }) {
   const { rail } = useStore()
   const now = useTicker(1000)
+  const trimmedQuery = query.trim()
   const rooms = sortRooms((rail?.rooms ?? []).filter((r) => matches(r.name, query)))
   const agents = sortAgents((rail?.agents ?? []).filter((a) => matches(a.name, query)))
   const online = agents.filter((a) => a.online).length
+  // Only for a search that matches nothing at all — a query that matches
+  // agents but no rooms (or vice versa) still gets its normal empty section,
+  // header and all, since that's a real, legible statement about that half of
+  // the fleet. This is the "I was fooled during manual testing" case: both
+  // sections empty, with nothing on screen to say why.
+  const noMatches = trimmedQuery !== '' && rooms.length === 0 && agents.length === 0
+
+  if (noMatches) {
+    return (
+      <nav className="rail">
+        <p className="rail-empty">nothing matched &quot;{trimmedQuery}&quot;</p>
+      </nav>
+    )
+  }
 
   return (
     <nav className="rail">

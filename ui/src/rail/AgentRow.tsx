@@ -1,4 +1,4 @@
-import { Link, useParams } from 'react-router-dom'
+import { Link, useMatch } from 'react-router-dom'
 import type { RailAgent } from '../types/RailAgent'
 import { VolumeStrip } from './VolumeStrip'
 
@@ -13,8 +13,10 @@ function age(lastSeen: number, now: number): string {
 }
 
 export function AgentRow({ agent, now }: { agent: RailAgent; now: number }) {
-  const { name } = useParams()
-  const selected = name === agent.name
+  // See RoomRow: `useMatch` against the agent route family, so a room and an
+  // agent sharing a name are never both shown as selected.
+  const match = useMatch('/agents/:name')
+  const selected = match?.params.name === agent.name
 
   return (
     <Link

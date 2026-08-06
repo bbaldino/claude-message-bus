@@ -60,17 +60,17 @@ function renderRail(query?: string) {
   )
 }
 
-function renderRoomRow(room: RailRoom) {
+function renderRoomRow(room: RailRoom, path = '/') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <RoomRow room={room} />
     </MemoryRouter>,
   )
 }
 
-function renderAgentRow(agent: RailAgent, now = Date.now()) {
+function renderAgentRow(agent: RailAgent, now = Date.now(), path = '/') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <AgentRow agent={agent} now={now} />
     </MemoryRouter>,
   )
@@ -236,4 +236,61 @@ test('an agent name containing # is percent-encoded in its link', () => {
     buckets: [0],
   })
   expect(container.querySelector('a')?.getAttribute('href')).toBe('/agents/network-debug%232')
+})
+
+test('a room and an agent sharing a name are each selected only on their own route', () => {
+  // Nothing in the data model stops a room and an agent from sharing a name,
+  // so the selected-row check has to key off which route family is active
+  // (via useMatch), not just compare a bare `:name` param.
+  const room: RailRoom = {
+    name: 'shared',
+    members: ['a'],
+    lastActivity: 1,
+    buckets: [0],
+    flag: null,
+  }
+  const agent: RailAgent = {
+    name: 'shared',
+    host: 'h',
+    version: null,
+    online: true,
+    isHuman: false,
+    lastSeen: 1,
+    buckets: [0],
+  }
+
+  const room1 = renderRoomRow(room, '/rooms/shared')
+  expect(room1.container.querySelector('a')?.classList.contains('selected')).toBe(true)
+  room1.unmount()
+
+  const agent1 = renderAgentRow(agent, Date.now(), '/rooms/shared')
+  expect(agent1.container.querySelector('a')?.classList.contains('selected')).toBe(false)
+  agent1.unmount()
+
+  const agent2 = renderAgentRow(agent, Date.now(), '/agents/shared')
+  expect(agent2.container.querySelector('a')?.classList.contains('selected')).toBe(true)
+  agent2.unmount()
+
+  const room2 = renderRoomRow(room, '/agents/shared')
+  expect(room2.container.querySelector('a')?.classList.contains('selected')).toBe(false)
+  room2.unmount()
+})
+
+test('a query matching nothing at all shows a message referencing it, not two empty sections', () => {
+  renderRail('zzz-no-such-thing')
+  expect(screen.getByText('nothing matched "zzz-no-such-thing"')).toBeDefined()
+  expect(screen.queryByText('rooms')).toBeNull()
+  expect(screen.queryByTestId('agents-header')).toBeNull()
+})
+
+test('a query matching only agents still shows the (empty) rooms section as normal', () => {
+  // Only the fully-empty case gets the message — a query that legibly narrows
+  // one section to nothing is a real result, not something to explain away.
+  renderRail('online-one')
+  expect(screen.queryByText(/nothing matched/)).toBeNull()
+})
+
+test('an empty query shows every room and agent with no "nothing matched" message', () => {
+  renderRail('')
+  expect(screen.queryByText(/nothing matched/)).toBeNull()
 })
