@@ -796,3 +796,35 @@ async fn last_seen_advances_when_an_agent_re_registers() {
 
     assert!(second > first, "re-registering must advance last_seen");
 }
+
+#[tokio::test]
+async fn agent_footprint_reports_rooms_and_cursor_count() {
+    let (_d, store) = temp_store().await;
+    store
+        .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
+        .await
+        .unwrap();
+    store
+        .join_room("protocol", "network-debug#2")
+        .await
+        .unwrap();
+    store.join_room("ops", "network-debug#2").await.unwrap();
+    store
+        .set_cursor("protocol", "network-debug#2", 7)
+        .await
+        .unwrap();
+
+    let fp = store.agent_footprint("network-debug#2").await.unwrap();
+
+    // Sorted by the underlying query, so this comparison is stable.
+    assert_eq!(fp.rooms, vec!["ops".to_string(), "protocol".to_string()]);
+    assert_eq!(fp.cursors, 1);
+}
+
+#[tokio::test]
+async fn agent_footprint_of_an_unknown_agent_is_empty() {
+    let (_d, store) = temp_store().await;
+    let fp = store.agent_footprint("nobody").await.unwrap();
+    assert!(fp.rooms.is_empty());
+    assert_eq!(fp.cursors, 0);
+}

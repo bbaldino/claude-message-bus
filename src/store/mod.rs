@@ -36,6 +36,16 @@ pub struct RoomRow {
     pub members: Vec<String>,
 }
 
+/// What deleting an agent would remove, for display before it happens.
+///
+/// Rooms are names rather than a count because the confirmation page lists
+/// them individually — a count would not tell anyone what they were losing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentFootprint {
+    pub rooms: Vec<String>,
+    pub cursors: i64,
+}
+
 pub struct Store {
     pool: SqlitePool,
     blobs_dir: std::path::PathBuf,
@@ -276,6 +286,24 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// The rooms and cursors `forget_agent` would delete. Mutates nothing.
+    pub async fn agent_footprint(&self, name: &str) -> anyhow::Result<AgentFootprint> {
+        let rooms: Vec<String> =
+            sqlx::query("SELECT room FROM room_members WHERE agent_name = ?1 ORDER BY room")
+                .bind(name)
+                .fetch_all(&self.pool)
+                .await?
+                .iter()
+                .map(|r| r.get("room"))
+                .collect();
+        let cursors: i64 = sqlx::query("SELECT COUNT(*) AS n FROM cursors WHERE agent_name = ?1")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await?
+            .get("n");
+        Ok(AgentFootprint { rooms, cursors })
     }
 
     pub async fn rooms(&self) -> anyhow::Result<Vec<RoomRow>> {
