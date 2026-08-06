@@ -19,6 +19,13 @@ export function TopBar({ value = '', onChange = () => {} }: Props) {
   const searchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    // Deliberate exception to "components subscribe to the store; nothing
+    // fetches on its own" (see useStore.ts). Safe here specifically because
+    // meta is static for the life of a session, has exactly one consumer (this
+    // bar), and is fetched once on mount — there is no second view for it to
+    // disagree with. That is not true of room history or events in the next
+    // phase: anything with more than one consumer, or anything live, belongs
+    // in the store, not a component-local fetch like this one.
     fetchMeta()
       .then(setMeta)
       .catch(() => setMeta(null))
