@@ -13,8 +13,9 @@ into a live session rather than waiting to be polled.
 - `claude-bus tail <room>` — watch a conversation; the only view showing both halves.
 - `claude-bus chat <room>` / `chat --to <agent>` — join a room or address one agent as yourself.
 
-The bus also serves a read-only web UI on its own port for reading conversations and bus
-behaviour after the fact — see `docs/DEPLOY.md`.
+The bus also serves a web UI on its own port for reading conversations and bus behaviour
+after the fact. It is read-only apart from one action — deleting an offline agent's own
+rows, to clear the tombstone a name collision leaves behind. See `docs/DEPLOY.md`.
 
 See `docs/DEPLOY.md` to run it, and `docs/superpowers/specs/` for the design and the
 reasoning behind it. `docs/poc-transcript.md` is a real unattended negotiation between two

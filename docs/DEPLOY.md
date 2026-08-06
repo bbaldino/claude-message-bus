@@ -161,8 +161,17 @@ Pages: an overview, rooms and their transcripts, agents and their connect/discon
 history, a per-room files page listing artifacts (uploader, size, hash), and the raw
 event log, filterable by kind, agent, and room.
 
-It performs no writes. With no authentication on the bus, anything the UI could do would
-be available to anything that can reach the port — so it does nothing.
+It is read-only with exactly one exception: deleting an *offline* agent (its `agents` row,
+its room memberships, its cursors — never any message or event). That exists to clear the
+tombstone a name collision leaves behind, whose stale room membership keeps reporting the
+dead name in `queued_for` on every later send.
+
+With no authentication on the bus, anything the UI can do is available to anything that
+can reach the port, so that one write is fenced accordingly: an agent that is currently
+connected is refused, an unknown name deletes nothing and records nothing, and a POST
+whose `Origin` disagrees with the `Host` it was sent to is refused — so a page in the
+operator's browser cannot submit one to a bus it could not otherwise reach. Nothing else
+in the UI writes. Treat the port as trusted-network-only regardless.
 
 Known gaps against the original design. This list is not exhaustive of every idea in the
 design doc, but everything below is real — verified against the current code, not
