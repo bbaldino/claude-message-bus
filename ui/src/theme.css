@@ -14,7 +14,10 @@
   /* Inset controls sitting on --surface-raised: the top bar's host pill and
      search field, plus (not yet built) the room header's member pills and the
      composer's "is composing" rule. All four use this exact value in the
-     handoff — do not re-derive it per component. */
+     handoff — do not re-derive it per component.
+     The handoff's light-mode role tables have no entry for this token — it
+     comes from the top-bar spec only. Don't invent a light value; the
+     light-mode phase needs to go back to the handoff for it. */
   --surface-control: #1a1e24;
 
   /* Borders */
@@ -23,7 +26,10 @@
   --border-emphasis: #2a303a;
   --border-hairline: #191d23;
   --border-rule: #1e222a;
-  /* Keyboard-key badge border (the top bar's "/" affordance). */
+  /* Keyboard-key badge border (the top bar's "/" affordance).
+     Not in the handoff's light-mode role tables either — top-bar-spec-only,
+     same as --surface-control and --text-placeholder below. No light value to
+     carry forward; the light-mode phase has to source one. */
   --border-key: #2c313a;
 
   /* Row states */
@@ -46,7 +52,13 @@
   --text-dimmest: #454c56;
   --text-faintest: #3f4650;
   /* Placeholder text and the search field's circle affordance outline — a
-     distinct value from --text-dim, not a rounding of it. */
+     distinct value from --text-dim, not a rounding of it.
+     No light-mode source either (see --surface-control above). It's also the
+     one token where the handoff disagrees with itself: the text-ramp table
+     assigns placeholder text #565e69, while the top-bar spec pins the search
+     placeholder specifically at #59626e. This value follows the top-bar spec
+     as the more specific of the two — worth knowing if a future reader goes
+     looking for #565e69 and can't find it used anywhere. */
   --text-placeholder: #59626e;
 
   /* Semantic — hue meanings are constant across themes */
