@@ -3,6 +3,7 @@
 // only job.
 mod common;
 
+use claude_bus::proto::FromBus;
 use claude_bus::store::Store;
 
 async fn start(dir: &std::path::Path) -> u16 {
@@ -1256,7 +1257,13 @@ async fn posting_the_delete_refuses_an_agent_that_came_online_after_the_confirm_
     let (_d, port, path) = common::start_bus_with_dir().await;
     // Offline when the confirm page would have been rendered...
     {
-        let ws = common::connect(port, "caas").await;
+        // Await the registration before dropping. `connect` returns as soon as
+        // the Register frame is written, so dropping immediately leaves this
+        // connection's attach racing its own detach — and then the wait below
+        // can succeed because the agent never registered rather than because it
+        // disconnected, which is not the state this test means to set up.
+        let mut ws = common::connect(port, "caas").await;
+        common::next_event(&mut ws).await; // Registered
         drop(ws);
     }
     assert!(
@@ -1264,7 +1271,18 @@ async fn posting_the_delete_refuses_an_agent_that_came_online_after_the_confirm_
     );
 
     // ...and online by the time the POST lands.
-    let _ws = common::connect(port, "caas").await;
+    let mut ws = common::connect(port, "caas").await;
+    // This session must own the BARE name. If a lingering connection still held
+    // it, the bus would hand this one `caas#2` — every assertion below would
+    // then be about a different agent than the one the POST targets, and the
+    // test would pass or fail for reasons unrelated to the liveness re-check.
+    match common::next_event(&mut ws).await {
+        FromBus::Registered { name } => assert_eq!(
+            name, "caas",
+            "reconnect must own the bare name, not a collision suffix"
+        ),
+        other => panic!("expected Registered, got {other:?}"),
+    }
     assert!(common::agent_is_online(port, "caas").await);
 
     // The memberships and cursors are the point of the rule: they are what a
