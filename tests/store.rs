@@ -949,3 +949,88 @@ async fn forget_agent_refuses_an_online_agent_and_rolls_the_whole_delete_back() 
         "the cursor must survive the rollback"
     );
 }
+
+#[tokio::test]
+async fn message_buckets_place_messages_in_the_right_five_minute_slots() {
+    use claude_bus::store::BucketScope;
+    let (_d, store) = temp_store().await;
+    let now = 1_785_000_000_000i64;
+    let five_min = 300_000i64;
+
+    // Two messages in the newest slot, one three slots back, none elsewhere.
+    for at in [now - 1_000, now - 2_000, now - (3 * five_min) - 1_000] {
+        store
+            .append_message_at("protocol", "caas", "hi", false, false, at)
+            .await
+            .unwrap();
+    }
+
+    let b = store
+        .message_buckets(BucketScope::Room("protocol"), now, five_min, 12)
+        .await
+        .unwrap();
+
+    assert_eq!(b.len(), 12, "always returns exactly `buckets` slots");
+    assert_eq!(b[11], 2, "newest slot is last");
+    assert_eq!(b[8], 1, "three slots back");
+    assert_eq!(b.iter().sum::<i64>(), 3, "and nothing anywhere else");
+}
+
+#[tokio::test]
+async fn message_buckets_ignore_messages_older_than_the_window() {
+    use claude_bus::store::BucketScope;
+    let (_d, store) = temp_store().await;
+    let now = 1_785_000_000_000i64;
+    let five_min = 300_000i64;
+
+    store
+        .append_message_at(
+            "protocol",
+            "caas",
+            "ancient",
+            false,
+            false,
+            now - (13 * five_min),
+        )
+        .await
+        .unwrap();
+
+    let b = store
+        .message_buckets(BucketScope::Room("protocol"), now, five_min, 12)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        b.iter().sum::<i64>(),
+        0,
+        "outside the window contributes nothing"
+    );
+}
+
+#[tokio::test]
+async fn message_buckets_scope_to_one_agent() {
+    use claude_bus::store::BucketScope;
+    let (_d, store) = temp_store().await;
+    let now = 1_785_000_000_000i64;
+    let five_min = 300_000i64;
+
+    store
+        .append_message_at("protocol", "caas", "a", false, false, now - 1_000)
+        .await
+        .unwrap();
+    store
+        .append_message_at("protocol", "dashboard", "b", false, false, now - 1_000)
+        .await
+        .unwrap();
+
+    let caas = store
+        .message_buckets(BucketScope::Agent("caas"), now, five_min, 12)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        caas.iter().sum::<i64>(),
+        1,
+        "only that agent's own messages"
+    );
+}

@@ -396,6 +396,24 @@ impl Store {
         done: bool,
         human: bool,
     ) -> anyhow::Result<i64> {
+        self.append_message_at(room, from, body, done, human, now_ms())
+            .await
+    }
+
+    /// `append_message` with an explicit timestamp.
+    ///
+    /// Exists because bucket and flag logic is time-dependent, and a test that
+    /// cannot choose when a message happened can only assert "something landed
+    /// somewhere" — which is not a test of bucketing.
+    pub async fn append_message_at(
+        &self,
+        room: &str,
+        from: &str,
+        body: &str,
+        done: bool,
+        human: bool,
+        created_at: i64,
+    ) -> anyhow::Result<i64> {
         self.ensure_room(room).await?;
         let res = sqlx::query(
             "INSERT INTO messages (room, from_agent, body, done, created_at, human)
@@ -405,7 +423,7 @@ impl Store {
         .bind(from)
         .bind(body)
         .bind(done as i64)
-        .bind(now_ms())
+        .bind(created_at)
         .bind(human)
         .execute(self.pool())
         .await?;
@@ -498,6 +516,65 @@ impl Store {
         .fetch_all(self.pool())
         .await?;
         Ok(rows.iter().map(message_row).collect())
+    }
+}
+
+/// Which messages a volume strip counts.
+#[derive(Debug, Clone, Copy)]
+pub enum BucketScope<'a> {
+    Room(&'a str),
+    Agent(&'a str),
+}
+
+impl Store {
+    /// Messages per time slot, oldest slot first, always exactly `buckets` long.
+    ///
+    /// Grouped in SQL rather than by fetching rows and counting in Rust: the rail
+    /// draws one of these per room *and* per agent on every poll, and shipping an
+    /// hour of message bodies to count them is the thing this exists to avoid.
+    ///
+    /// Slot 0 is the newest, so the result is reversed before returning — a strip
+    /// reads left to right as time moving forward.
+    pub async fn message_buckets(
+        &self,
+        scope: BucketScope<'_>,
+        now_ms: i64,
+        bucket_ms: i64,
+        buckets: usize,
+    ) -> anyhow::Result<Vec<i64>> {
+        let window_start = now_ms - (bucket_ms * buckets as i64);
+        let sql = match scope {
+            BucketScope::Room(_) => {
+                "SELECT ((?2 - created_at) / ?3) AS slot, COUNT(*) AS n
+                 FROM messages WHERE room = ?1 AND created_at > ?4
+                 GROUP BY slot"
+            }
+            BucketScope::Agent(_) => {
+                "SELECT ((?2 - created_at) / ?3) AS slot, COUNT(*) AS n
+                 FROM messages WHERE from_agent = ?1 AND created_at > ?4
+                 GROUP BY slot"
+            }
+        };
+        let key = match scope {
+            BucketScope::Room(r) => r,
+            BucketScope::Agent(a) => a,
+        };
+        let rows = sqlx::query(sql)
+            .bind(key)
+            .bind(now_ms)
+            .bind(bucket_ms)
+            .bind(window_start)
+            .fetch_all(self.pool())
+            .await?;
+
+        let mut out = vec![0i64; buckets];
+        for r in rows {
+            let slot: i64 = r.get("slot");
+            if slot >= 0 && (slot as usize) < buckets {
+                out[buckets - 1 - slot as usize] = r.get("n");
+            }
+        }
+        Ok(out)
     }
 }
 
