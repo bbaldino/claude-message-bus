@@ -1333,3 +1333,40 @@ async fn the_agent_page_links_to_the_delete_page_with_a_percent_encoded_href() {
         "the delete link must be percent-encoded: {body}"
     );
 }
+
+#[tokio::test]
+async fn the_agents_api_returns_json_in_camel_case() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent(
+                "network-debug#2",
+                "hardac",
+                "/w/nd",
+                Some("sess-1"),
+                false,
+                Some("0.3.3"),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/agents").await;
+
+    assert!(
+        body.contains("application/json"),
+        "must be served as JSON: {body}"
+    );
+    assert!(body.contains("\"name\":\"network-debug#2\""), "got: {body}");
+    assert!(body.contains("\"host\":\"hardac\""), "got: {body}");
+    // camelCase on the wire even though the column is last_seen.
+    assert!(
+        body.contains("\"lastSeen\":"),
+        "wire format must be camelCase: {body}"
+    );
+    assert!(body.contains("\"sessionId\":\"sess-1\""), "got: {body}");
+    // mark_all_offline runs at startup, so a seeded agent is offline.
+    assert!(body.contains("\"online\":false"), "got: {body}");
+}

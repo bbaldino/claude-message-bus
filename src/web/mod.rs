@@ -32,6 +32,7 @@
 //!
 //! See `docs/superpowers/specs/2026-08-05-agent-delete-design.md`.
 
+mod api;
 mod assets;
 pub mod html;
 
@@ -297,6 +298,7 @@ pub fn routes() -> Router<App> {
             get(delete_agent_confirm).post(delete_agent_perform),
         )
         .route("/events", get(events_page))
+        .route("/api/agents", get(api::agents))
         .route("/app", get(assets::app_root))
         .route("/app/{*rest}", get(assets::app_path))
 }
