@@ -57,6 +57,23 @@ async fn get(port: u16, path: &str) -> String {
     buf
 }
 
+/// Minimal HTTP/1.1 POST with an empty body, matching `get`'s no-dependency style.
+/// Returns the whole raw response so a test can assert on the status line as well
+/// as the body.
+async fn post(port: u16, path: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let req = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = String::new();
+    s.read_to_string(&mut buf).await.unwrap();
+    buf
+}
+
 #[tokio::test]
 async fn overview_lists_agents_and_rooms() {
     let dir = tempfile::tempdir().unwrap();
@@ -1007,4 +1024,83 @@ async fn the_confirm_page_of_an_unknown_agent_says_so() {
     let body = get(port, "/agents/nobody/delete").await;
 
     assert!(body.contains("no agent named nobody"), "got: {body}");
+}
+
+#[tokio::test]
+async fn posting_the_delete_removes_the_agent_and_redirects() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
+            .await
+            .unwrap();
+        store
+            .join_room("protocol", "network-debug#2")
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let res = post(port, "/agents/network-debug%232/delete").await;
+    assert!(res.contains("303"), "must redirect after a POST: {res}");
+
+    let agents = get(port, "/agents").await;
+    assert!(
+        !agents.contains("network-debug#2"),
+        "the deleted agent must be gone from the list: {agents}"
+    );
+
+    let room = get(port, "/rooms/protocol").await;
+    assert!(
+        !room.contains("network-debug#2"),
+        "the stranded membership must be gone too: {room}"
+    );
+}
+
+#[tokio::test]
+async fn posting_the_delete_records_an_audit_event() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+    post(port, "/agents/network-debug%232/delete").await;
+
+    let events = get(port, "/events").await;
+    assert!(events.contains("agent_deleted"), "got: {events}");
+    assert!(
+        events.contains("network-debug#2"),
+        "the audit event must name the deleted agent, since its row is gone"
+    );
+}
+
+#[tokio::test]
+async fn posting_the_delete_refuses_an_agent_that_came_online_after_the_confirm_page() {
+    let (_d, port, _path) = common::start_bus_with_dir().await;
+    // Offline when the confirm page would have been rendered...
+    {
+        let ws = common::connect(port, "caas").await;
+        drop(ws);
+    }
+    assert!(
+        common::wait_until(|| async move { !common::agent_is_online(port, "caas").await }).await
+    );
+
+    // ...and online by the time the POST lands.
+    let _ws = common::connect(port, "caas").await;
+    assert!(common::agent_is_online(port, "caas").await);
+
+    let res = post(port, "/agents/caas/delete").await;
+    assert!(
+        res.contains("online"),
+        "the POST must re-check liveness: {res}"
+    );
+
+    let agents = get(port, "/agents").await;
+    assert!(agents.contains("caas"), "the live agent must survive");
 }

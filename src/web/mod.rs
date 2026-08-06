@@ -75,6 +75,19 @@ fn summarize(kind: &str, detail: &serde_json::Value) -> String {
             }
             s
         }
+        "agent_deleted" => {
+            let host = text("host");
+            let mut s = format!("deleted {}", text("name"));
+            if !host.is_empty() {
+                s.push_str(&format!(" on {host}"));
+            }
+            s.push_str(&format!(
+                " · {} memberships, {} cursors",
+                num("memberships").unwrap_or(0),
+                num("cursors").unwrap_or(0),
+            ));
+            s
+        }
         "agent_disconnected" => text("reason").to_string(),
         "room_paused" => match num("count") {
             Some(c) => format!("after {c} exchanges"),
@@ -239,7 +252,10 @@ pub fn routes() -> Router<App> {
         .route("/rooms/{name}/files", get(room_files))
         .route("/agents", get(agents))
         .route("/agents/{name}", get(agent))
-        .route("/agents/{name}/delete", get(delete_agent_confirm))
+        .route(
+            "/agents/{name}/delete",
+            get(delete_agent_confirm).post(delete_agent_perform),
+        )
         .route("/events", get(events_page))
 }
 
@@ -559,6 +575,72 @@ async fn delete_agent_confirm(State(app): State<App>, Path(name): Path<String>) 
         n = esc(&name),
     ));
     Html(page("delete agent", &b))
+}
+
+/// Perform the delete.
+///
+/// Re-checks liveness rather than trusting the confirmation page: an agent can
+/// reconnect between the `GET` and this `POST`, and dropping a live agent's
+/// memberships is exactly what the offline-only rule exists to prevent.
+async fn delete_agent_perform(
+    State(app): State<App>,
+    Path(name): Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    if app.registry.is_online(&name).await {
+        return Html(page(
+            "delete agent",
+            &format!(
+                "<h1>delete {n}</h1><p>{n} came online while this page was open, so nothing \
+                 was deleted. Only offline agents can be deleted.</p>\
+                 <p><a href=\"/agents/{p}\">back</a></p>",
+                n = esc(&name),
+                p = encode_path_segment(&name),
+            ),
+        ))
+        .into_response();
+    }
+
+    let host = app
+        .store
+        .agents()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|a| a.name == name)
+        .map(|a| a.host)
+        .unwrap_or_default();
+
+    match app.store.forget_agent(&name).await {
+        Ok(counts) => {
+            // The only surviving record that this agent ever existed.
+            let _ = app
+                .store
+                .append_event(
+                    "agent_deleted",
+                    Some(&name),
+                    None,
+                    serde_json::json!({
+                        "name": name,
+                        "host": host,
+                        "memberships": counts.memberships,
+                        "cursors": counts.cursors,
+                    }),
+                )
+                .await;
+            axum::response::Redirect::to("/agents").into_response()
+        }
+        Err(e) => Html(page(
+            "delete agent",
+            &format!(
+                "<h1>delete {n}</h1><p>nothing was deleted: {e}</p>",
+                n = esc(&name),
+                e = esc(&e.to_string()),
+            ),
+        ))
+        .into_response(),
+    }
 }
 
 /// The raw event log, optionally narrowed by `kind`, `agent`, and/or `room` query
