@@ -300,6 +300,14 @@ pub fn routes() -> Router<App> {
         .route("/events", get(events_page))
         .route("/api/agents", get(api::agents))
         .route("/app", get(assets::app_root))
+        // `/app/` is registered separately and deliberately: matchit requires a
+        // non-empty remainder for a catch-all, so `/app/{*rest}` does not match
+        // the bare trailing slash and neither does `/app`. That form is the app's
+        // canonical URL — `ui/vite.config.ts` sets `base: '/app/'`, it is what a
+        // `location /app/` + `proxy_pass` reverse proxy produces, and it is what
+        // docs/DEPLOY.md tells operators to open. Without this route it is a bare
+        // 404 from the router, never reaching `resolve` at all.
+        .route("/app/", get(assets::app_root))
         .route("/app/{*rest}", get(assets::app_path))
 }
 

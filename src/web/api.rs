@@ -11,6 +11,7 @@
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
 
 use crate::bus::App;
 
@@ -39,8 +40,18 @@ pub struct Agent {
 /// Every agent the bus has ever seen, with liveness from the registry rather
 /// than the persisted `online` column — the column is only reconciled at
 /// startup, while the registry knows who is routable right now.
-pub(crate) async fn agents(State(app): State<App>) -> Json<Vec<Agent>> {
-    let rows = app.store.agents().await.unwrap_or_default();
+///
+/// A store failure is a 500, not `unwrap_or_default`. The HTML pages next door
+/// degrade to an empty table because a human reading one can see the page is
+/// bare and go look; this is consumed by code that branches on the response, and
+/// `200 []` tells it — confidently, and wrongly — that the fleet is empty. This
+/// is the first endpoint under `/api`, and every later one will be written by
+/// copying it, so the pattern matters more than this single call site.
+pub(crate) async fn agents(State(app): State<App>) -> Result<Json<Vec<Agent>>, StatusCode> {
+    let rows = app.store.agents().await.map_err(|e| {
+        eprintln!("GET /api/agents could not read agents: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let online = app.registry.is_online(&r.name).await;
@@ -55,5 +66,5 @@ pub(crate) async fn agents(State(app): State<App>) -> Json<Vec<Agent>> {
             last_seen: r.last_seen,
         });
     }
-    Json(out)
+    Ok(Json(out))
 }

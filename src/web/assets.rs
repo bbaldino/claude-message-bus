@@ -64,7 +64,12 @@ fn respond(request_path: &str) -> Response {
     let get = |p: &str| Bundle::get(p).map(|f| f.data.into_owned());
     match resolve(&get, request_path) {
         Some((bytes, ct)) => ([(header::CONTENT_TYPE, ct)], bytes).into_response(),
-        None if Bundle::iter().next().is_none() => (
+        // Gated on the shell being absent rather than the bundle being empty:
+        // `ui/dist` always contains the tracked `.gitkeep` and rust-embed does
+        // not filter dotfiles, so `Bundle::iter()` is never empty and an unbuilt
+        // bundle would otherwise answer a bare "not found" — on exactly the
+        // fresh-clone path this hint exists for.
+        None if Bundle::get("index.html").is_none() => (
             StatusCode::SERVICE_UNAVAILABLE,
             "the UI bundle was not built into this binary — run `npm run build` in ui/ \
              and rebuild, or use the server-rendered UI at /",
@@ -129,7 +134,12 @@ mod tests {
 
     #[test]
     fn an_unbuilt_bundle_resolves_to_nothing() {
-        let get = fake(&[]);
+        // What an unbuilt bundle actually looks like: `ui/dist/.gitkeep` is
+        // tracked so the embed folder exists, and rust-embed does not filter
+        // dotfiles. An entirely empty bundle is not a state the real system can
+        // be in, so testing that instead would prove nothing about the 503 path.
+        let get = fake(&[(".gitkeep", "")]);
         assert!(resolve(&get, "/app").is_none());
+        assert!(resolve(&get, "/app/").is_none());
     }
 }

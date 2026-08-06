@@ -1370,3 +1370,71 @@ async fn the_agents_api_returns_json_in_camel_case() {
     // mark_all_offline runs at startup, so a seeded agent is offline.
     assert!(body.contains("\"online\":false"), "got: {body}");
 }
+
+#[tokio::test]
+async fn the_agents_api_returns_an_empty_array_for_a_bus_with_no_agents() {
+    // An empty fleet must be `[]`, not `null` and not an error — the frontend
+    // maps over the result unconditionally.
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+
+    let res = get(port, "/api/agents").await;
+    assert!(res.starts_with("HTTP/1.1 200"), "got: {res}");
+    let body = res.rsplit("\r\n\r\n").next().unwrap();
+    assert_eq!(body.trim(), "[]", "got: {res}");
+}
+
+/// The routing table above `resolve`, which nothing else exercises: `resolve` is
+/// unit-tested in `src/web/assets.rs`, but a path that never reaches it fails
+/// invisibly. `/app/` in particular matches neither `/app` nor `/app/{*rest}`
+/// (matchit requires a non-empty catch-all remainder) and so needs its own
+/// route — and `/app/` is the canonical URL, since `ui/vite.config.ts` sets
+/// `base: '/app/'` and that is what a `location /app/` proxy produces.
+///
+/// Asserts shape rather than content: CI's Rust job has only `.gitkeep` in
+/// `ui/dist`, so there is no built bundle here. What must hold either way is
+/// that all three forms behave identically and that none of them is a bare
+/// route-miss.
+#[tokio::test]
+async fn the_app_routes_all_reach_the_bundle_handler() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+
+    let mut statuses = Vec::new();
+    for path in ["/app", "/app/", "/app/agents/caas"] {
+        let res = get(port, path).await;
+        let status = res
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_string();
+
+        // A bare 404 with no body is axum's router fallback — the request never
+        // reached a handler. The handler's own miss says why.
+        assert_ne!(
+            status, "404",
+            "{path} must reach the bundle handler, not fall off the router: {res}"
+        );
+        statuses.push((path, status));
+    }
+
+    let first = statuses[0].1.clone();
+    for (path, status) in &statuses {
+        assert_eq!(
+            *status, first,
+            "{path} must behave like /app — all three are the same app: {statuses:?}"
+        );
+    }
+
+    // With no bundle built (the state of a fresh clone and of CI's Rust job) the
+    // handler explains itself rather than 404ing. With one built it serves the
+    // shell. Either is fine; silence is not.
+    let res = get(port, "/app/").await;
+    assert!(
+        res.contains("was not built") || res.contains("<!doctype") || res.contains("<!DOCTYPE"),
+        "/app/ must serve the shell or say why it cannot: {res}"
+    );
+}
