@@ -21,7 +21,7 @@ base64 = "0.23.0"
 chrono = "0.4.45"
 futures-util = "0.3.33"
 rmcp = { version = "2.2.0", features = ["server", "transport-io"] }
-rust-embed = "8.12.0"
+rust-embed = { version = "8.12.0", features = ["include-exclude"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"

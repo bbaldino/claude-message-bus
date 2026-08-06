@@ -13,8 +13,18 @@ use axum::extract::Path as AxumPath;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
+// `@fontsource` faces list woff2 first in `src` (`format('woff2'), format('woff')`),
+// and every browser this console targets (React 19 requires a woff2-capable engine
+// already) picks woff2. The woff fallback is therefore unreachable weight, not a
+// safety net — excluding it here keeps it out of the binary without touching Vite's
+// own output, which stays self-consistent for anything that inspects `ui/dist`
+// directly. The pattern is `*.woff` (no trailing wildcard), which globset matches
+// as a literal suffix: a path ending in `.woff2` has an extra trailing `2` and does
+// not satisfy it, so `.woff2` files are unaffected. Verified directly by iterating
+// `Bundle::iter()` against a real `npm run build` output, not just reasoned about.
 #[derive(rust_embed::Embed)]
 #[folder = "ui/dist"]
+#[exclude = "*.woff"]
 struct Bundle;
 
 /// Content type for a bundle path, by extension. Deliberately small: a Vite
