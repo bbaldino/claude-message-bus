@@ -155,6 +155,38 @@ test('switching rooms unwatches the previous one before watching the next', () =
   ])
 })
 
+test('unwatchRoom releases the current room without watching a new one', () => {
+  const live = createLive('ws://x/ws')
+  live.start()
+  const sock = latest()
+  sock.readyState = FakeSocket.OPEN
+  sock.onopen?.()
+
+  live.watchRoom('a')
+  live.unwatchRoom()
+
+  const frames = sock.sent
+    .map((s) => JSON.parse(s) as { type: string; req_id?: number; room?: string })
+    .filter((f) => f.type === 'watch' || f.type === 'unwatch')
+  expect(frames).toEqual([
+    { type: 'watch', req_id: 3, room: 'a' },
+    { type: 'unwatch', req_id: 4, room: 'a' },
+  ])
+})
+
+test('unwatchRoom with nothing watched sends nothing', () => {
+  const live = createLive('ws://x/ws')
+  live.start()
+  const sock = latest()
+  sock.readyState = FakeSocket.OPEN
+  sock.onopen?.()
+
+  live.unwatchRoom()
+
+  const frames = sock.sent.map((s) => (JSON.parse(s) as { type: string }).type)
+  expect(frames).not.toContain('unwatch')
+})
+
 test('re-selecting the same room does not unwatch it', () => {
   // Re-selecting happens on any re-render that re-drives selection; unwatching
   // and immediately re-watching would drop pushes in the gap.

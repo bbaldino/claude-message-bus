@@ -14,6 +14,7 @@ function fakeLive() {
       handlers[kind]?.(payload)
     },
     watchRoom: vi.fn(),
+    unwatchRoom: vi.fn(),
     start: vi.fn(),
     stop: vi.fn(),
   }
@@ -105,6 +106,17 @@ test('a pushed message for another room never enters the transcript', () => {
     human: false,
   })
   expect(store.getState().messages).toEqual([])
+})
+
+test('selecting null clears the room and unwatches, without watching anything new', () => {
+  const store = createStore({ live, fetchRail: async () => emptyRail })
+  store.selectRoom('protocol')
+  store.selectRoom(null)
+  expect(store.getState().room).toBeNull()
+  expect(live.unwatchRoom).toHaveBeenCalledOnce()
+  // Only the two selectRoom calls above should have touched watchRoom, and
+  // only with the real room — clearing must not also call watchRoom.
+  expect(live.watchRoom).toHaveBeenCalledExactlyOnceWith('protocol')
 })
 
 test('subscribers are notified when state changes', () => {

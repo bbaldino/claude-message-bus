@@ -1,6 +1,28 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { expect, test, vi } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import { App } from './App'
+import { store } from './useStore'
+
+function mockEmptyRail() {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    if (url.includes('/api/meta')) {
+      return new Response(JSON.stringify({ host: 'hardac', version: '0.3.3' }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ rooms: [], agents: [] }), {
+      headers: { 'content-type': 'application/json' },
+    })
+  })
+}
+
+afterEach(() => {
+  // store is the app-wide singleton (see useStore.ts) — a stopped socket and
+  // interval from one test must not keep running into the next.
+  store.stop()
+  vi.restoreAllMocks()
+})
 
 test('renders the three shell regions and routes to a room', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -96,4 +118,32 @@ test('typing in the top bar search field filters the rail, and clearing it resto
   expect(screen.getByText('caas')).toBeDefined()
   expect(screen.getByText('dashboard')).toBeDefined()
   expect(within(screen.getByTestId('agents-header')).getByText('1 of 2 online')).toBeDefined()
+})
+
+test('rendering at a room route tells the store to select that room', async () => {
+  // This is the wiring the whole phase rests on: nothing else drives
+  // store.selectRoom in the running app, so without it the store's `room`
+  // stays null forever and the console never actually watches anything.
+  mockEmptyRail()
+  const selectRoom = vi.spyOn(store, 'selectRoom')
+
+  window.history.pushState({}, '', '/app/rooms/protocol')
+  render(<App />)
+
+  await screen.findByTestId('main-placeholder')
+  expect(selectRoom).toHaveBeenCalledWith('protocol')
+})
+
+test('a room name that needs URL encoding reaches the store decoded', async () => {
+  mockEmptyRail()
+  const selectRoom = vi.spyOn(store, 'selectRoom')
+
+  const roomName = 'dm:caas|network-debug#2'
+  window.history.pushState({}, '', `/app/rooms/${encodeURIComponent(roomName)}`)
+  render(<App />)
+
+  await screen.findByTestId('main-placeholder')
+  // The route param comes through useMatch already decoded — selectRoom must
+  // see the real room name, not the percent-encoded form that was in the URL.
+  expect(selectRoom).toHaveBeenCalledWith(roomName)
 })

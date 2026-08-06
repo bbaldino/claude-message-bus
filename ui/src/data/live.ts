@@ -74,6 +74,17 @@ export function createLive(url: string) {
       watching = room
       send({ type: 'watch', req_id: 3, room })
     },
+    // The counterpart `watchRoom` doesn't have: release the current room without
+    // watching anything new. Needed when the operator navigates away from every
+    // room (to an agent route, or back to the index) rather than from one room
+    // to another — `watchRoom` only ever unwatches as a side effect of watching
+    // its replacement.
+    unwatchRoom() {
+      if (watching) {
+        send({ type: 'unwatch', req_id: 4, room: watching })
+        watching = null
+      }
+    },
     // The latch is reset here, in the explicit entry point, and nowhere else.
     // `open()` is also what a scheduled reconnect calls once its backoff
     // elapses — if that call could clear the latch, a `stop()` issued mid-backoff

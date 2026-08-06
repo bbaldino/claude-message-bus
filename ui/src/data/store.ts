@@ -15,6 +15,7 @@ export type State = {
 type Live = {
   on(kind: string, fn: (payload: unknown) => void): void
   watchRoom(room: string): void
+  unwatchRoom(): void
   start(): void
   stop(): void
 }
@@ -129,9 +130,19 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
       subs.add(fn)
       return () => subs.delete(fn)
     },
-    selectRoom(name: string) {
+    // `name: null` clears the selection — used when the route driving this
+    // (see Shell.tsx) is no longer a room route at all, not just a different
+    // room. That case isn't "switch rooms" (which `live.watchRoom` handles by
+    // unwatching the old one as a side effect of watching the new one) — it's
+    // "watch nothing", which needs its own call so the console never stays
+    // subscribed to a room the operator has navigated away from.
+    selectRoom(name: string | null) {
       setState({ room: name, messages: [] })
-      deps.live.watchRoom(name)
+      if (name) {
+        deps.live.watchRoom(name)
+      } else {
+        deps.live.unwatchRoom()
+      }
     },
     async start() {
       const myGeneration = ++generation
