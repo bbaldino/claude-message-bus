@@ -1,6 +1,36 @@
-//! Read-only web views over the bus's own data. Performs no writes: it cannot be the
-//! cause of a bug it is being used to investigate, and with no authentication on the
-//! bus, anything this could do would be available to anything that can reach the port.
+//! Web views over the bus's own data.
+//!
+//! Read-only with exactly one exception: deleting an offline agent. Everything
+//! else performs no writes, so the UI cannot be the cause of a bug it is being
+//! used to investigate.
+//!
+//! The exception is deliberate and deliberately narrow. The bus has no
+//! authentication and binds `0.0.0.0`, so anything this can do is available to
+//! anything that can reach the port — which is why the delete refuses an agent
+//! that is online, touches no messages or events, and records what it removed.
+//! An unauthenticated caller can clear metadata for connections that are
+//! already dead, and nothing more.
+//!
+//! Three things hold that boundary, and this doc is the canonical statement of
+//! them:
+//!
+//! - **Offline only**, decided by the in-memory registry rather than the
+//!   persisted `online` column, and held across the delete by
+//!   `Registry::if_offline` so an agent cannot register into the gap between
+//!   the check and the commit.
+//! - **Known names only.** The `POST` looks the agent up itself; an unknown
+//!   name renders a page and writes nothing, so the audit event cannot be
+//!   forged and `events` cannot be grown by anyone who can reach the port.
+//! - **Same-origin only.** A form POST is a "simple request" no browser
+//!   preflights, so without a check any page the operator's browser loads could
+//!   submit one — reaching a bus on `127.0.0.1` or behind NAT that is otherwise
+//!   unreachable. A request whose `Origin` disagrees with the `Host` it was sent
+//!   to is refused; one with no `Origin` at all (curl, scripts) is allowed,
+//!   since it could already reach the port directly. This is not
+//!   authentication: it narrows reach back to the network boundary the rest of
+//!   the bus already assumes, nothing more.
+//!
+//! See `docs/superpowers/specs/2026-08-05-agent-delete-design.md`.
 
 pub mod html;
 
@@ -73,6 +103,28 @@ fn summarize(kind: &str, detail: &serde_json::Value) -> String {
                 }
                 s.push_str(&format!("on {host}"));
             }
+            s
+        }
+        "agent_deleted" => {
+            let host = text("host");
+            let mut s = format!("deleted {}", text("name"));
+            if !host.is_empty() {
+                s.push_str(&format!(" on {host}"));
+            }
+            // The agent row is gone, so this event is the only remaining record
+            // of when it was last alive — dropping `last_seen` here would
+            // destroy that irreversibly. `agents` is rendered for the same
+            // reason in reverse: a delete that removed no agent row at all is
+            // only self-evident in the log if the count is shown.
+            if let Some(t) = num("last_seen") {
+                s.push_str(&format!(" · last seen {}", fmt_time(t)));
+            }
+            s.push_str(&format!(
+                " · {} agent rows, {} memberships, {} cursors",
+                num("agents").unwrap_or(0),
+                num("memberships").unwrap_or(0),
+                num("cursors").unwrap_or(0),
+            ));
             s
         }
         "agent_disconnected" => text("reason").to_string(),
@@ -239,6 +291,10 @@ pub fn routes() -> Router<App> {
         .route("/rooms/{name}/files", get(room_files))
         .route("/agents", get(agents))
         .route("/agents/{name}", get(agent))
+        .route(
+            "/agents/{name}/delete",
+            get(delete_agent_confirm).post(delete_agent_perform),
+        )
         .route("/events", get(events_page))
 }
 
@@ -470,7 +526,12 @@ async fn agent(State(app): State<App>, Path(name): Path<String>) -> Html<String>
         .await
         .unwrap_or_default();
 
-    let mut b = format!("<h1>{}</h1><h2>rooms</h2><ul>", esc(&name));
+    let mut b = format!(
+        "<h1>{n}</h1><p><a href=\"/agents/{p}/delete\">delete this agent</a></p>\
+         <h2>rooms</h2><ul>",
+        n = esc(&name),
+        p = encode_path_segment(&name),
+    );
     for r in &mine {
         b.push_str(&format!(
             "<li><a href=\"/rooms/{p}\">{n}</a></li>",
@@ -493,6 +554,262 @@ async fn agent(State(app): State<App>, Path(name): Path<String>) -> Html<String>
     }
     b.push_str("</table>");
     Html(page(&name, &b))
+}
+
+/// A delete page: body wrapped in the shared chrome, titled with the agent's
+/// name rather than a generic "delete agent" so a tab full of these is
+/// distinguishable — matching the neighbouring `agent()` handler.
+fn delete_page(name: &str, body: &str) -> Html<String> {
+    Html(page(&format!("delete {name}"), body))
+}
+
+/// The page both delete routes render for a name that has no `agents` row.
+///
+/// Shared so the `GET` and the `POST` cannot drift: the `POST` needs it not
+/// just for tidiness but for correctness — without the guard, any name at all
+/// deletes nothing and still writes an `agent_deleted` event, forging the one
+/// record this feature promises will outlive the agent.
+fn no_such_agent(name: &str) -> Html<String> {
+    delete_page(
+        name,
+        &format!("<h1>delete agent</h1><p>no agent named {}</p>", esc(name)),
+    )
+}
+
+/// The refusal page for an agent that is connected right now.
+fn agent_is_online_page(name: &str, why: &str) -> Html<String> {
+    delete_page(
+        name,
+        &format!(
+            "<h1>delete {n}</h1><p>{why}</p><p><a href=\"/agents/{p}\">back</a></p>",
+            n = esc(name),
+            p = encode_path_segment(name),
+        ),
+    )
+}
+
+/// Confirmation page for deleting an agent. Renders the blast radius before
+/// anything is removed, and renders no button at all when the agent is online —
+/// a button known to fail is worse than none.
+async fn delete_agent_confirm(State(app): State<App>, Path(name): Path<String>) -> Html<String> {
+    let known = app
+        .store
+        .agents()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .any(|a| a.name == name);
+    if !known {
+        return no_such_agent(&name);
+    }
+
+    if app.registry.is_online(&name).await {
+        return agent_is_online_page(
+            &name,
+            &format!(
+                "{n} is online. Only offline agents can be deleted — deleting a connected \
+                 agent would drop the room memberships it is still receiving messages through.",
+                n = esc(&name),
+            ),
+        );
+    }
+
+    // A failed read must not render as an empty blast radius. This listing is
+    // the only safeguard on the action, and `unwrap_or_default` here would make
+    // a database error indistinguishable from "this agent belongs to nothing"
+    // while still offering the button.
+    let fp = match app.store.agent_footprint(&name).await {
+        Ok(fp) => fp,
+        Err(e) => {
+            return delete_page(
+                &name,
+                &format!(
+                    "<h1>delete {n}</h1><p>could not read what deleting {n} would remove: \
+                     {e}</p><p>Nothing was deleted. Without that listing there is no way to \
+                     see the blast radius, so no button is offered.</p>\
+                     <p><a href=\"/agents/{p}\">back</a></p>",
+                    n = esc(&name),
+                    e = esc(&e.to_string()),
+                    p = encode_path_segment(&name),
+                ),
+            );
+        }
+    };
+
+    let mut b = format!("<h1>delete {}</h1>", esc(&name));
+    b.push_str("<h2>this will remove</h2><ul>");
+    b.push_str(&format!("<li>the agent row for {}</li>", esc(&name)));
+    for r in &fp.rooms {
+        b.push_str(&format!("<li>membership of room {}</li>", esc(r)));
+    }
+    b.push_str(&format!(
+        "<li>{n} cursor{s}</li></ul>",
+        n = fp.cursors,
+        s = if fp.cursors == 1 { "" } else { "s" },
+    ));
+    b.push_str(
+        "<p class=\"note\">messages and events are kept: room transcripts stay \
+                readable and the audit trail outlives the agent.</p>",
+    );
+    b.push_str(&format!(
+        "<form method=\"post\" action=\"/agents/{p}/delete\">\
+         <button type=\"submit\">delete {n}</button></form>\
+         <p><a href=\"/agents/{p}\">cancel</a></p>",
+        p = encode_path_segment(&name),
+        n = esc(&name),
+    ));
+    delete_page(&name, &b)
+}
+
+/// Whether a request's `Origin` names the same origin as the `Host` it was sent
+/// to, i.e. whether this POST came from a page served by this bus.
+///
+/// Compared against `Host` rather than a configured origin so the bus still
+/// works behind a reverse proxy or under any name the operator reaches it by.
+/// Anything that is not an `http`/`https` origin — including the literal
+/// `null` a sandboxed frame sends — is not same-origin and is refused.
+fn origin_matches_host(origin: &str, host: &str) -> bool {
+    let (scheme, authority) = match origin.split_once("://") {
+        Some(("http", a)) => ("http", a),
+        Some(("https", a)) => ("https", a),
+        _ => return false,
+    };
+    if authority == host {
+        return true;
+    }
+    // A browser omits the default port from `Origin`; a `Host` header may still
+    // carry it (and vice versa), and those two spellings are the same origin.
+    let default_port = if scheme == "https" { ":443" } else { ":80" };
+    host.strip_suffix(default_port) == Some(authority)
+        || authority.strip_suffix(default_port) == Some(host)
+}
+
+/// Perform the delete.
+///
+/// Three guards, in the order that lets each one narrow what the next has to
+/// handle:
+///
+/// 1. **Cross-origin.** An HTML form POST is a "simple request": any page a
+///    browser loads can auto-submit one at this URL with no preflight, which
+///    would extend the bus's reach from "anything that can reach the port" to
+///    "anything the operator's browser will load" — including a bus on
+///    `127.0.0.1` or behind NAT. A request with *no* `Origin` (curl, the test
+///    harness) is allowed: those were already able to reach the port directly,
+///    so refusing them buys nothing.
+/// 2. **Unknown name.** Looked up once, here, rather than trusted from the
+///    `GET`: it is what stops any name at all from forging an `agent_deleted`
+///    event, and the row it returns supplies the `host` and `last_seen` the
+///    event must carry — the last trace of when this agent was alive.
+/// 3. **Liveness**, held across the delete by `Registry::if_offline`. Checking
+///    and then deleting is a race an agent can lose: `attach` inserts into the
+///    registry *before* the `agents` row is written, so a `Register` landing in
+///    between would leave a live agent with nothing in the database.
+async fn delete_agent_perform(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::http::header;
+    use axum::response::IntoResponse;
+
+    let header_str = |h: header::HeaderName| {
+        headers
+            .get(h)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+
+    if let Some(origin) = header_str(header::ORIGIN) {
+        let host = header_str(header::HOST).unwrap_or_default();
+        if !origin_matches_host(&origin, &host) {
+            return delete_page(
+                &name,
+                &format!(
+                    "<h1>delete {n}</h1><p>nothing was deleted: this request came from \
+                     {o}, which is not this bus. A delete must be submitted from a page \
+                     this bus served.</p><p><a href=\"/agents/{p}\">back</a></p>",
+                    n = esc(&name),
+                    o = esc(&origin),
+                    p = encode_path_segment(&name),
+                ),
+            )
+            .into_response();
+        }
+    }
+
+    let row = match app.store.agents().await {
+        Ok(rows) => rows.into_iter().find(|a| a.name == name),
+        Err(e) => {
+            return delete_page(
+                &name,
+                &format!(
+                    "<h1>delete {n}</h1><p>nothing was deleted: {e}</p>",
+                    n = esc(&name),
+                    e = esc(&e.to_string()),
+                ),
+            )
+            .into_response();
+        }
+    };
+    let Some(row) = row else {
+        return no_such_agent(&name).into_response();
+    };
+
+    // The store call inside must not touch the registry — the connection lock
+    // is held for its whole duration.
+    let deleted = app
+        .registry
+        .if_offline(&name, || app.store.forget_agent(&name))
+        .await;
+
+    let Some(result) = deleted else {
+        return agent_is_online_page(
+            &name,
+            &format!(
+                "{n} came online while this page was open, so nothing was deleted. \
+                 Only offline agents can be deleted.",
+                n = esc(&name),
+            ),
+        )
+        .into_response();
+    };
+
+    match result {
+        Ok(counts) => {
+            // The only surviving record that this agent ever existed, so a
+            // failure to write it is worth saying out loud — `eprintln!` to
+            // match the disconnect paths next door.
+            if let Err(e) = app
+                .store
+                .append_event(
+                    "agent_deleted",
+                    Some(&name),
+                    None,
+                    serde_json::json!({
+                        "name": name,
+                        "host": row.host,
+                        "last_seen": row.last_seen,
+                        "agents": counts.agents,
+                        "memberships": counts.memberships,
+                        "cursors": counts.cursors,
+                    }),
+                )
+                .await
+            {
+                eprintln!("agent_deleted event for {name} was not recorded: {e}");
+            }
+            axum::response::Redirect::to("/agents").into_response()
+        }
+        Err(e) => delete_page(
+            &name,
+            &format!(
+                "<h1>delete {n}</h1><p>nothing was deleted: {e}</p>",
+                n = esc(&name),
+                e = esc(&e.to_string()),
+            ),
+        )
+        .into_response(),
+    }
 }
 
 /// The raw event log, optionally narrowed by `kind`, `agent`, and/or `room` query
@@ -698,6 +1015,48 @@ mod tests {
         let s = summarize("something_new", &json!({"a": 1}));
         assert!(s.contains("\"a\""), "{s}");
         assert_eq!(summarize("something_new", &json!({})), "");
+    }
+
+    #[test]
+    fn the_delete_summary_keeps_the_last_trace_of_a_deleted_agent() {
+        // The agents row is gone by the time this renders, so last_seen and the
+        // agent-row count exist nowhere else. Dropping either from the summary
+        // makes the log unable to answer "when was it last alive" or "did that
+        // delete actually remove an agent".
+        let d = json!({
+            "name": "network-debug#2", "host": "hardac", "last_seen": 1_785_000_000_123i64,
+            "agents": 1, "memberships": 2, "cursors": 3,
+        });
+        let s = summarize("agent_deleted", &d);
+        assert!(s.contains("network-debug#2"), "{s}");
+        assert!(s.contains("hardac"), "{s}");
+        assert!(s.contains("last seen"), "{s}");
+        assert!(s.contains("1 agent rows"), "{s}");
+        assert!(s.contains("2 memberships"), "{s}");
+        assert!(s.contains("3 cursors"), "{s}");
+    }
+
+    #[test]
+    fn a_same_origin_form_post_is_accepted() {
+        assert!(origin_matches_host("http://nas:7777", "nas:7777"));
+        assert!(origin_matches_host("https://bus.example", "bus.example"));
+        // A browser omits the default port from Origin; Host may still carry it.
+        assert!(origin_matches_host("http://nas", "nas:80"));
+        assert!(origin_matches_host("https://nas", "nas:443"));
+    }
+
+    #[test]
+    fn a_cross_origin_form_post_is_refused() {
+        // The attack: a page the operator's browser loads auto-submits a form
+        // at a bus it could not otherwise reach.
+        assert!(!origin_matches_host("http://evil.example", "nas:7777"));
+        // Same host, different port is a different origin.
+        assert!(!origin_matches_host("http://nas:8080", "nas:7777"));
+        // Scheme matters, and so does the default-port pairing.
+        assert!(!origin_matches_host("http://nas", "nas:443"));
+        // A sandboxed frame sends this, and it is not this bus.
+        assert!(!origin_matches_host("null", "nas:7777"));
+        assert!(!origin_matches_host("file://", "nas:7777"));
     }
 
     #[test]

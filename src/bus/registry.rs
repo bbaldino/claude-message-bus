@@ -172,6 +172,41 @@ impl Registry {
         names
     }
 
+    /// Whether `name` currently holds a live connection.
+    ///
+    /// The authority for liveness, in preference to the persisted
+    /// `agents.online` column: that column is reconciled at startup by
+    /// `Store::mark_all_offline`, but between reconciliations only this map
+    /// knows who is actually routable.
+    pub async fn is_online(&self, name: &str) -> bool {
+        self.conns.lock().await.contains_key(name)
+    }
+
+    /// Run `f` only if `name` is offline, holding the connection lock for its
+    /// duration so a concurrent `attach` cannot make it live midway.
+    ///
+    /// `is_online` followed by an action is a race, not a check: registration
+    /// inserts into this map *before* writing the `agents` row, so a `Register`
+    /// landing between the two would leave a connected agent whose row and
+    /// memberships had just been deleted — severed for the session, and never
+    /// repaired. Holding the lock across both is what closes that window.
+    ///
+    /// `f` must not touch the registry: the lock is held, so any registry call
+    /// inside it deadlocks. Routing blocks for the duration, which is
+    /// acceptable only because the one caller is a rare, manual, single
+    /// transaction.
+    pub async fn if_offline<F, Fut, T>(&self, name: &str, f: F) -> Option<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let conns = self.conns.lock().await;
+        if conns.contains_key(name) {
+            return None;
+        }
+        Some(f().await)
+    }
+
     /// Every effective name whose base matches `base`, for building the
     /// "ambiguous: dashboard@lisa, dashboard@nas" error.
     pub async fn hosts_for(&self, base: &str) -> Vec<String> {
@@ -421,6 +456,19 @@ mod tests {
         reg.attach("dashboard", "lisa", tx1).await;
         reg.attach("caas", "lisa", tx2).await;
         assert_eq!(reg.online().await, vec!["caas", "dashboard"]);
+    }
+
+    #[tokio::test]
+    async fn is_online_reports_attached_names_only() {
+        let reg = Registry::new();
+        let (tx, _rx) = channel();
+        reg.attach("network-debug", "hardac", tx).await;
+
+        assert!(reg.is_online("network-debug").await);
+        // The suffixed tombstone is a different name and must not be shadowed
+        // by the live bare name.
+        assert!(!reg.is_online("network-debug#2").await);
+        assert!(!reg.is_online("never-existed").await);
     }
 
     #[tokio::test]

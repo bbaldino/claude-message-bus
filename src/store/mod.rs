@@ -36,6 +36,24 @@ pub struct RoomRow {
     pub members: Vec<String>,
 }
 
+/// What deleting an agent would remove, for display before it happens.
+///
+/// Rooms are names rather than a count because the confirmation page lists
+/// them individually — a count would not tell anyone what they were losing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentFootprint {
+    pub rooms: Vec<String>,
+    pub cursors: i64,
+}
+
+/// Rows actually removed by `forget_agent`, for the audit event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForgetCounts {
+    pub agents: u64,
+    pub memberships: u64,
+    pub cursors: u64,
+}
+
 pub struct Store {
     pool: SqlitePool,
     blobs_dir: std::path::PathBuf,
@@ -276,6 +294,81 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// The rooms and cursors `forget_agent` would delete. Mutates nothing.
+    pub async fn agent_footprint(&self, name: &str) -> anyhow::Result<AgentFootprint> {
+        let rooms: Vec<String> =
+            sqlx::query("SELECT room FROM room_members WHERE agent_name = ?1 ORDER BY room")
+                .bind(name)
+                .fetch_all(&self.pool)
+                .await?
+                .iter()
+                .map(|r| r.get("room"))
+                .collect();
+        let cursors: i64 = sqlx::query("SELECT COUNT(*) AS n FROM cursors WHERE agent_name = ?1")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await?
+            .get("n");
+        Ok(AgentFootprint { rooms, cursors })
+    }
+
+    /// Delete an agent's own rows: its `agents` entry, its room memberships,
+    /// and its cursors. Messages and events are deliberately untouched — the
+    /// transcript stays readable and the audit trail outlives the agent.
+    ///
+    /// Transactional because a partial failure is worse than none: losing the
+    /// `agents` row while leaving memberships behind strands them, since the
+    /// row is what makes an agent reachable in the UI and therefore deletable.
+    ///
+    /// Refuses an agent whose `online` column is set, rolling the whole
+    /// transaction back. This is defence in depth, not the real guard: the
+    /// authority for liveness is the in-memory registry (see
+    /// `Registry::if_offline`, which the web handler holds across this call),
+    /// and `upsert_agent` sets `online = 1` only *after* the registry insert,
+    /// so there is a window where a live agent's column still reads offline.
+    /// What this does buy is that a caller added later — this is a public
+    /// method whose only other protection lives in a different module —
+    /// cannot silently drop a connected agent's memberships.
+    pub async fn forget_agent(&self, name: &str) -> anyhow::Result<ForgetCounts> {
+        let mut tx = self.pool.begin().await?;
+        let memberships = sqlx::query("DELETE FROM room_members WHERE agent_name = ?1")
+            .bind(name)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let cursors = sqlx::query("DELETE FROM cursors WHERE agent_name = ?1")
+            .bind(name)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let agents = sqlx::query("DELETE FROM agents WHERE name = ?1 AND online = 0")
+            .bind(name)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if agents == 0 {
+            // Zero rows means either "no such agent" — which is not an error,
+            // the caller asked to forget something already forgotten — or "the
+            // row is there but online", which must take the memberships and
+            // cursors back with it.
+            let still_there = sqlx::query("SELECT 1 FROM agents WHERE name = ?1")
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some();
+            if still_there {
+                tx.rollback().await?;
+                anyhow::bail!("{name} is online; only offline agents can be deleted");
+            }
+        }
+        tx.commit().await?;
+        Ok(ForgetCounts {
+            agents,
+            memberships,
+            cursors,
+        })
     }
 
     pub async fn rooms(&self) -> anyhow::Result<Vec<RoomRow>> {
