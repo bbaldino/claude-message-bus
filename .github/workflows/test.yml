@@ -3,8 +3,16 @@ name: test
 # Reusable gate. Both publish-image.yml and release-plz.yml `uses:` this so a
 # red main blocks both — no image AND no release PR. Ownership lives here so the
 # two callers can't drift.
+#
+# `pull_request` as well as `workflow_call`, so work on a branch is gated before
+# it reaches main rather than only after. Without it nothing runs on a feature
+# branch at all: release-plz fires on pushes to main, publish-image on tags, and
+# a reusable workflow with no trigger of its own runs only when called. A long
+# branch would otherwise accumulate every change unchecked and meet this gate for
+# the first time at the merge.
 on:
   workflow_call:
+  pull_request:
 
 jobs:
   test:
