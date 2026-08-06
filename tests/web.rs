@@ -941,3 +941,70 @@ async fn a_relayer_configured_under_a_name_no_agent_uses_is_still_visible() {
         "and nothing should be badged, which is the tell: {body}"
     );
 }
+
+#[tokio::test]
+async fn the_confirm_page_lists_what_will_be_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
+            .await
+            .unwrap();
+        store
+            .join_room("protocol", "network-debug#2")
+            .await
+            .unwrap();
+        store
+            .set_cursor("protocol", "network-debug#2", 4)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    // `#` must be percent-encoded or the path silently truncates at the fragment.
+    let body = get(port, "/agents/network-debug%232/delete").await;
+
+    assert!(body.contains("network-debug#2"), "name must appear: {body}");
+    assert!(
+        body.contains("protocol"),
+        "the membership at risk must be listed"
+    );
+    assert!(body.contains("1 cursor"), "the cursor count must appear");
+    assert!(
+        body.contains("messages and events are kept"),
+        "the page must say what survives"
+    );
+    assert!(
+        body.contains("<form"),
+        "an offline agent must get a real button"
+    );
+}
+
+#[tokio::test]
+async fn the_confirm_page_refuses_an_online_agent() {
+    let (_d, port, _path) = common::start_bus_with_dir().await;
+    let _ws = common::connect(port, "caas").await;
+    assert!(common::agent_is_online(port, "caas").await);
+
+    let body = get(port, "/agents/caas/delete").await;
+
+    assert!(
+        body.contains("online"),
+        "the refusal reason must be shown: {body}"
+    );
+    assert!(
+        !body.contains("<form"),
+        "there must be no button that is known to fail"
+    );
+}
+
+#[tokio::test]
+async fn the_confirm_page_of_an_unknown_agent_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/agents/nobody/delete").await;
+
+    assert!(body.contains("no agent named nobody"), "got: {body}");
+}

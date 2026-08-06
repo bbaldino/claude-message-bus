@@ -239,6 +239,7 @@ pub fn routes() -> Router<App> {
         .route("/rooms/{name}/files", get(room_files))
         .route("/agents", get(agents))
         .route("/agents/{name}", get(agent))
+        .route("/agents/{name}/delete", get(delete_agent_confirm))
         .route("/events", get(events_page))
 }
 
@@ -493,6 +494,71 @@ async fn agent(State(app): State<App>, Path(name): Path<String>) -> Html<String>
     }
     b.push_str("</table>");
     Html(page(&name, &b))
+}
+
+/// Confirmation page for deleting an agent. Renders the blast radius before
+/// anything is removed, and renders no button at all when the agent is online —
+/// a button known to fail is worse than none.
+async fn delete_agent_confirm(State(app): State<App>, Path(name): Path<String>) -> Html<String> {
+    let known = app
+        .store
+        .agents()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .any(|a| a.name == name);
+    if !known {
+        return Html(page(
+            "delete agent",
+            &format!("<h1>delete agent</h1><p>no agent named {}</p>", esc(&name)),
+        ));
+    }
+
+    if app.registry.is_online(&name).await {
+        return Html(page(
+            "delete agent",
+            &format!(
+                "<h1>delete {n}</h1><p>{n} is online. Only offline agents can be deleted — \
+                 deleting a connected agent would drop the room memberships it is still \
+                 receiving messages through.</p><p><a href=\"/agents/{p}\">back</a></p>",
+                n = esc(&name),
+                p = encode_path_segment(&name),
+            ),
+        ));
+    }
+
+    let fp = app
+        .store
+        .agent_footprint(&name)
+        .await
+        .unwrap_or(crate::store::AgentFootprint {
+            rooms: Vec::new(),
+            cursors: 0,
+        });
+
+    let mut b = format!("<h1>delete {}</h1>", esc(&name));
+    b.push_str("<h2>this will remove</h2><ul>");
+    b.push_str(&format!("<li>the agent row for {}</li>", esc(&name)));
+    for r in &fp.rooms {
+        b.push_str(&format!("<li>membership of room {}</li>", esc(r)));
+    }
+    b.push_str(&format!(
+        "<li>{n} cursor{s}</li></ul>",
+        n = fp.cursors,
+        s = if fp.cursors == 1 { "" } else { "s" },
+    ));
+    b.push_str(
+        "<p class=\"note\">messages and events are kept: room transcripts stay \
+                readable and the audit trail outlives the agent.</p>",
+    );
+    b.push_str(&format!(
+        "<form method=\"post\" action=\"/agents/{p}/delete\">\
+         <button type=\"submit\">delete {n}</button></form>\
+         <p><a href=\"/agents/{p}\">cancel</a></p>",
+        p = encode_path_segment(&name),
+        n = esc(&name),
+    ));
+    Html(page("delete agent", &b))
 }
 
 /// The raw event log, optionally narrowed by `kind`, `agent`, and/or `room` query
