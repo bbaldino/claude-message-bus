@@ -44,11 +44,18 @@ function useTicker(intervalMs: number): number {
   return now
 }
 
-export function Rail() {
+/// Case-insensitive substring on the name only — rooms and agents are all this
+/// filters, matching the top bar's placeholder. An empty query matches
+/// everything, since `''.includes` is trivially true for every string.
+function matches(name: string, query: string): boolean {
+  return name.toLowerCase().includes(query.trim().toLowerCase())
+}
+
+export function Rail({ query = '' }: { query?: string }) {
   const { rail } = useStore()
   const now = useTicker(1000)
-  const rooms = sortRooms(rail?.rooms ?? [])
-  const agents = sortAgents(rail?.agents ?? [])
+  const rooms = sortRooms((rail?.rooms ?? []).filter((r) => matches(r.name, query)))
+  const agents = sortAgents((rail?.agents ?? []).filter((a) => matches(a.name, query)))
   const online = agents.filter((a) => a.online).length
 
   return (

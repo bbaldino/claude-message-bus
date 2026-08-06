@@ -1,18 +1,51 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fetchMeta } from './data/api'
 import type { Meta } from './types/Meta'
 import { useStore } from './useStore'
 import './TopBar.css'
 
-export function TopBar() {
+type Props = {
+  // Optional and uncontrolled by default so a bare `<TopBar />` (as the
+  // existing tests render it) still works; `Shell` supplies both to make it a
+  // controlled field shared with `Rail`.
+  value?: string
+  onChange?: (value: string) => void
+}
+
+export function TopBar({ value = '', onChange = () => {} }: Props) {
   const { connection } = useStore()
   // The generated type, not a hand-written equivalent — see Global Constraints.
   const [meta, setMeta] = useState<Meta | null>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     fetchMeta()
       .then(setMeta)
       .catch(() => setMeta(null))
+  }, [])
+
+  useEffect(() => {
+    // "/" focuses search — but only when the user isn't already typing
+    // somewhere, or they could never type a literal "/". `preventDefault` is
+    // what stops the character landing in the field the moment it gains
+    // focus; without it the browser's normal keypress handling still runs
+    // after this handler and inserts it.
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== '/') return
+      const active = document.activeElement
+      const tag = active?.tagName
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        (active as HTMLElement | null)?.isContentEditable
+      ) {
+        return
+      }
+      e.preventDefault()
+      searchRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
   return (
@@ -22,13 +55,14 @@ export function TopBar() {
       <div className="search">
         <span className="search-icon" />
         <input
+          ref={searchRef}
           className="search-input"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
           // Rooms and agents filter client-side from the rail summary. Message
           // text has no endpoint, so the placeholder must not promise it.
           placeholder="search agents and rooms"
         />
-        {/* Decorative only — matches the handoff's "/" key badge. No keyboard
-            handler is wired up here; global "/" focus is not in this task's scope. */}
         <span className="search-key">/</span>
       </div>
       {/* The websocket state, not a decoration — the handoff is emphatic. */}

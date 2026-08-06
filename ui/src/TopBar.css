@@ -19,11 +19,7 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-quaternary-dim);
-  /* Handoff spec is #1a1e24, which has no dedicated token in theme.css.
-     --border-hairline (#191d23) is one unit off per channel — effectively the
-     same colour — and is the closest existing token, so it is reused here
-     rather than adding a new one. See task-6-report.md. */
-  background: var(--border-hairline);
+  background: var(--surface-control);
   border: 1px solid var(--border-control);
   border-radius: 3px;
   padding: 3px 7px;
@@ -35,8 +31,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Same #1a1e24-via-border-hairline substitution as .host-pill. */
-  background: var(--border-hairline);
+  background: var(--surface-control);
   border: 1px solid var(--border-control);
   border-radius: 4px;
   padding: 5px 10px;
@@ -46,7 +41,7 @@
   flex: none;
   width: 9px;
   height: 9px;
-  border: 1.5px solid var(--text-dim);
+  border: 1.5px solid var(--text-placeholder);
   border-radius: 50%;
 }
 
@@ -63,7 +58,7 @@
 }
 
 .search-input::placeholder {
-  color: var(--text-dim);
+  color: var(--text-placeholder);
 }
 
 .search-key {
@@ -72,7 +67,7 @@
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-dimmer);
-  border: 1px solid var(--border-emphasis);
+  border: 1px solid var(--border-key);
   border-radius: 3px;
   padding: 1px 5px;
 }

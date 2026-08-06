@@ -52,10 +52,10 @@ vi.mock('../useStore', () => ({
   useStore: () => ({ rail, events: [], messages: [], room: null, connection: 'live' }),
 }))
 
-function renderRail() {
+function renderRail(query?: string) {
   return render(
     <MemoryRouter>
-      <Rail />
+      <Rail query={query} />
     </MemoryRouter>,
   )
 }
@@ -109,6 +109,28 @@ test('the agent section counts how many are online', () => {
   renderRail()
   const header = screen.getByTestId('agents-header')
   expect(within(header).getByText('1 of 2 online')).toBeDefined()
+})
+
+test('a query filters both rooms and agents by a case-insensitive substring match', () => {
+  renderRail('ONLINE')
+  expect(screen.getAllByTestId('agent-name').map((n) => n.textContent)).toEqual(['online-one'])
+  // None of the room fixtures contain "online" — the rooms section empties out.
+  expect(screen.queryAllByTestId('room-name')).toEqual([])
+})
+
+test('an empty query restores every room and agent', () => {
+  renderRail('')
+  expect(screen.getAllByTestId('room-name')).toHaveLength(3)
+  expect(screen.getAllByTestId('agent-name')).toHaveLength(2)
+})
+
+test('the agent count reflects the filtered list, not the full one', () => {
+  // Unfiltered this fixture is "1 of 2 online" (see the test above). Filtering
+  // down to a single, online agent must move the denominator to 1, not leave
+  // it reporting against the full unfiltered set of 2.
+  renderRail('online-one')
+  const header = screen.getByTestId('agents-header')
+  expect(within(header).getByText('1 of 1 online')).toBeDefined()
 })
 
 test('an online agent name is styled distinguishably from an offline one', () => {

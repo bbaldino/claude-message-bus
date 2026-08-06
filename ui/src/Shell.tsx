@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Outlet, useParams } from 'react-router-dom'
 import { Rail } from './rail/Rail'
 import { TopBar } from './TopBar'
@@ -15,11 +16,15 @@ export function MainPlaceholder() {
 }
 
 export function Shell() {
+  // Lifted here, not in the store: it's transient UI state private to this
+  // pair of siblings, not something any other consumer needs to read.
+  const [query, setQuery] = useState('')
+
   return (
     <div className="shell">
-      <TopBar />
+      <TopBar value={query} onChange={setQuery} />
       <div className="shell-body">
-        <Rail />
+        <Rail query={query} />
         <main className="shell-main">
           <Outlet />
         </main>

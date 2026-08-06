@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { expect, test, vi } from 'vitest'
 import { TopBar } from './TopBar'
 
@@ -42,4 +42,31 @@ test('the search placeholder does not promise message search', () => {
   // There is no search endpoint; rooms and agents filter client-side and message
   // text has no data path. The placeholder must not claim otherwise.
   expect(input.getAttribute('placeholder')).not.toMatch(/message/i)
+})
+
+test('pressing / focuses the search field', () => {
+  render(<TopBar />)
+  const input = screen.getByPlaceholderText(/search/)
+  expect(document.activeElement).not.toBe(input)
+
+  // dispatchEvent (what fireEvent wraps) returns false when the event was
+  // cancelled — i.e. when the handler called preventDefault, which it must,
+  // or the "/" would land in the field the instant it gains focus.
+  const notCancelled = fireEvent.keyDown(window, { key: '/' })
+  expect(notCancelled).toBe(false)
+  expect(document.activeElement).toBe(input)
+})
+
+test('pressing / while the search field already has focus does not steal the keystroke', () => {
+  render(<TopBar />)
+  const input = screen.getByPlaceholderText(/search/)
+  input.focus()
+  expect(document.activeElement).toBe(input)
+
+  // dispatchEvent returns true when nothing cancelled it — the handler must
+  // back off entirely so the browser's normal keydown handling inserts the
+  // character, letting the user type a literal "/" into the box.
+  const notCancelled = fireEvent.keyDown(input, { key: '/' })
+  expect(notCancelled).toBe(true)
+  expect(document.activeElement).toBe(input)
 })

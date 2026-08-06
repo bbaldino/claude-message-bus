@@ -11,6 +11,11 @@
   --surface-raised: #14171c;
   --surface-recessed: #0f1217;
   --surface-modal-footer: #12151a;
+  /* Inset controls sitting on --surface-raised: the top bar's host pill and
+     search field, plus (not yet built) the room header's member pills and the
+     composer's "is composing" rule. All four use this exact value in the
+     handoff — do not re-derive it per component. */
+  --surface-control: #1a1e24;
 
   /* Borders */
   --border-primary: #22262e;
@@ -18,6 +23,8 @@
   --border-emphasis: #2a303a;
   --border-hairline: #191d23;
   --border-rule: #1e222a;
+  /* Keyboard-key badge border (the top bar's "/" affordance). */
+  --border-key: #2c313a;
 
   /* Row states */
   --row-hover: #181c22;
@@ -38,6 +45,9 @@
   --text-dimmer: #4d545e;
   --text-dimmest: #454c56;
   --text-faintest: #3f4650;
+  /* Placeholder text and the search field's circle affordance outline — a
+     distinct value from --text-dim, not a rounding of it. */
+  --text-placeholder: #59626e;
 
   /* Semantic — hue meanings are constant across themes */
   --accent: #6ea8fe;
