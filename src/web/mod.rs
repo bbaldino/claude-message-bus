@@ -299,6 +299,8 @@ pub fn routes() -> Router<App> {
         )
         .route("/events", get(events_page))
         .route("/api/agents", get(api::agents))
+        .route("/api/rail", get(api::rail))
+        .route("/api/meta", get(api::meta))
         .route("/app", get(assets::app_root))
         // `/app/` is registered separately and deliberately: matchit requires a
         // non-empty remainder for a catch-all, so `/app/{*rest}` does not match

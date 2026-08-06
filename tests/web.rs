@@ -1384,6 +1384,59 @@ async fn the_agents_api_returns_an_empty_array_for_a_bus_with_no_agents() {
     assert_eq!(body.trim(), "[]", "got: {res}");
 }
 
+#[tokio::test]
+async fn the_rail_summarises_rooms_and_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w/caas", None, false, Some("0.3.3"))
+            .await
+            .unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+        // The sender must not be a room member, or `unread_count`'s `from_agent
+        // != ?3` filter means `caas` never counts its own message as unread and
+        // no flag is derived at all. See src/store/mod.rs:497.
+        store
+            .append_message("protocol", "bbaldino", "hello", false, true)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/rail").await;
+
+    assert!(body.contains("\"rooms\""), "got: {body}");
+    assert!(body.contains("\"agents\""), "got: {body}");
+    assert!(
+        body.contains("\"protocol\""),
+        "the room must appear: {body}"
+    );
+    assert!(body.contains("\"caas\""), "the agent must appear: {body}");
+    // 12 five-minute buckets, oldest first, always full length.
+    assert!(
+        body.contains("\"buckets\":["),
+        "buckets must be present: {body}"
+    );
+    // The agent is offline (mark_all_offline runs at startup), and the room has
+    // an unread message for it, so the room is blocked.
+    assert!(body.contains("\"blocked\""), "flag must be derived: {body}");
+}
+
+#[tokio::test]
+async fn meta_reports_the_host_and_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/meta").await;
+
+    assert!(body.contains("\"version\""), "got: {body}");
+    assert!(
+        body.contains(env!("CARGO_PKG_VERSION")),
+        "must report the running version: {body}"
+    );
+}
+
 /// The routing table above `resolve`, which nothing else exercises: `resolve` is
 /// unit-tested in `src/web/assets.rs`, but a path that never reaches it fails
 /// invisibly. `/app/` in particular matches neither `/app` nor `/app/{*rest}`
