@@ -4,10 +4,18 @@
 //!
 //! POC 1 established that channel events arrive as user-role messages, so
 //! nothing in the transport itself distinguishes a human's words from an
-//! agent's. The bus now stamps each message with a `human` attribute
-//! carrying its origin, and the instructions below key off it: agent-origin
-//! messages get the discuss-only restraint, human-origin messages are
-//! treated like anything else typed in the session. Both branches must
+//! agent's. The bus now stamps each message with a `human` attribute, and the
+//! instructions below key off it: agent-origin messages get the discuss-only
+//! restraint, messages carrying human authority are treated like anything else
+//! typed in the session.
+//!
+//! Authority rather than origin, and the asymmetry is deliberate: `human="false"`
+//! really does mean an agent composed it, but `human="true"` means the message
+//! carries a human's authority and not necessarily that a human typed it — it is
+//! true for a configured relayer too, and a relayer writes plenty of its own
+//! prose. See `has_human_authority` in `bus::commands`, and `Relayers` in
+//! `bus::mod` for why that grant is configuration rather than a per-message
+//! claim. Both branches must
 //! answer on the bus: the agent-origin branch still defers to the worker's
 //! own human locally, but must announce on the bus that it is doing so — a
 //! worker that defers silently is invisible to whoever asked, which is the

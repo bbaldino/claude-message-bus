@@ -706,7 +706,7 @@ fn instructions_distinguish_a_humans_request_from_an_agents() {
     let instructions = claude_bus::agent::instructions::for_agent("tester");
     assert!(
         instructions.contains("human=\"true\""),
-        "the model must be told which attribute carries origin: {instructions}"
+        "the model must be told which attribute carries authority: {instructions}"
     );
     assert!(
         instructions.to_lowercase().contains("not instructions"),
