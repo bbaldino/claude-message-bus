@@ -22,7 +22,7 @@ export function VolumeStrip({
       : `messages per 5 min · last ${minutes} min`
 
   return (
-    <div className={`volume-strip ${variant}`} aria-label={label}>
+    <div className={`volume-strip ${variant}`} role="img" aria-label={label}>
       {buckets.map((n, i) => (
         <div
           key={i}

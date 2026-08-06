@@ -19,7 +19,11 @@
 .volume-bar {
   flex: 1;
   border-radius: 1px;
-  background: var(--volume-idle);
+  /* No default background here: every bar always gets `.never` or `.active`
+     below, which are the only two of the design's four bar states
+     (idle/dead/never/active) with a trigger actually wired up. --volume-idle
+     and --volume-dead stay defined in theme.css for whenever idle/dead get
+     one, but nothing here should reference them until they do. */
 }
 
 .volume-bar.never {
