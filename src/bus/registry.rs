@@ -154,6 +154,13 @@ impl Registry {
         self.conns.lock().await.remove(name);
     }
 
+    /// The host a live connection registered from, or `None` if it holds no
+    /// connection. Read at teardown so the offline presence push can carry the
+    /// real host — it must be called *before* `detach`, which is what forgets it.
+    pub async fn host_of(&self, name: &str) -> Option<String> {
+        self.conns.lock().await.get(name).map(|c| c.host.clone())
+    }
+
     /// `true` means the event was actually queued onto the peer's connection
     /// — the sole basis for the `delivered_to` / `queued_for` split callers
     /// report back to the model. `false` covers both "no such peer" and "that
