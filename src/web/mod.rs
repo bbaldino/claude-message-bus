@@ -32,6 +32,7 @@
 //!
 //! See `docs/superpowers/specs/2026-08-05-agent-delete-design.md`.
 
+mod assets;
 pub mod html;
 
 use std::collections::HashMap;
@@ -296,6 +297,8 @@ pub fn routes() -> Router<App> {
             get(delete_agent_confirm).post(delete_agent_perform),
         )
         .route("/events", get(events_page))
+        .route("/app", get(assets::app_root))
+        .route("/app/{*rest}", get(assets::app_path))
 }
 
 async fn overview(State(app): State<App>) -> Html<String> {
