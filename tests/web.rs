@@ -1080,7 +1080,12 @@ async fn the_confirm_page_offers_no_button_when_the_footprint_cannot_be_read() {
 #[tokio::test]
 async fn the_confirm_page_refuses_an_online_agent() {
     let (_d, port, _path) = common::start_bus_with_dir().await;
-    let _ws = common::connect(port, "caas").await;
+    // Await the Registered reply before asserting presence. `connect` returns as
+    // soon as the Register frame is written, so checking immediately races the
+    // server's handling of it — the assertion below can run before the agent is in
+    // the registry at all. This failed on a loaded CI runner while passing locally.
+    let mut ws = common::connect(port, "caas").await;
+    common::next_event(&mut ws).await; // Registered
     assert!(common::agent_is_online(port, "caas").await);
 
     let body = get(port, "/agents/caas/delete").await;

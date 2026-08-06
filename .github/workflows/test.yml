@@ -16,8 +16,11 @@ name: test
 # and the same trigger having fired earlier for the PR's `opened` event. Being
 # able to start the gate by hand turns that from "wait and hope" into a check.
 #
-# Note it only becomes usable once this file is on the default branch: GitHub
-# reads `workflow_dispatch` from there, not from the branch being dispatched.
+# Dispatching a non-default branch works: `gh workflow run test.yml --ref <branch>`
+# started this gate on a feature branch while the copy on the default branch had
+# no `workflow_dispatch` trigger at all. GitHub's docs say the file must be on the
+# default branch; that is about the Actions UI listing the workflow, not about the
+# API refusing the call. Verified, not assumed.
 on:
   workflow_call:
   pull_request:
