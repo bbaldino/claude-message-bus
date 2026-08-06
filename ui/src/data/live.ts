@@ -64,6 +64,13 @@ export function createLive(url: string) {
       ;(handlers[kind] ??= []).push(fn)
     },
     watchRoom(room: string) {
+      // Release the previous room. Without this the observer accumulates every
+      // room ever selected: `Registry::watch` only inserts, and the client-side
+      // room filter in the store hides the symptom while the subscription set
+      // keeps growing.
+      if (watching && watching !== room) {
+        send({ type: 'unwatch', req_id: 4, room: watching })
+      }
       watching = room
       send({ type: 'watch', req_id: 3, room })
     },

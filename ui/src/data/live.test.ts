@@ -132,3 +132,41 @@ test('a reconnect that succeeds goes back to live and resets the backoff', () =>
   latest().onclose?.()
   expect(states[states.length - 1]).toBe('reconnecting')
 })
+
+test('switching rooms unwatches the previous one before watching the next', () => {
+  const live = createLive('ws://x/ws')
+  live.start()
+  const sock = latest()
+  sock.readyState = FakeSocket.OPEN
+  sock.onopen?.()
+
+  live.watchRoom('a')
+  live.watchRoom('b')
+
+  // `onopen` already sent observe / watch_presence / watch_events, so filter to
+  // the room subscriptions rather than asserting on the whole frame log.
+  const frames = sock.sent
+    .map((s) => JSON.parse(s) as { type: string; req_id?: number; room?: string })
+    .filter((f) => f.type === 'watch' || f.type === 'unwatch')
+  expect(frames).toEqual([
+    { type: 'watch', req_id: 3, room: 'a' },
+    { type: 'unwatch', req_id: 4, room: 'a' },
+    { type: 'watch', req_id: 3, room: 'b' },
+  ])
+})
+
+test('re-selecting the same room does not unwatch it', () => {
+  // Re-selecting happens on any re-render that re-drives selection; unwatching
+  // and immediately re-watching would drop pushes in the gap.
+  const live = createLive('ws://x/ws')
+  live.start()
+  const sock = latest()
+  sock.readyState = FakeSocket.OPEN
+  sock.onopen?.()
+
+  live.watchRoom('a')
+  live.watchRoom('a')
+
+  const kinds = sock.sent.map((s) => (JSON.parse(s) as { type: string }).type)
+  expect(kinds).not.toContain('unwatch')
+})
