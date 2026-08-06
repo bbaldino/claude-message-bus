@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3](https://github.com/bbaldino/claude-message-bus/compare/v0.3.2...v0.3.3) - 2026-08-06
+
+### Added
+
+- delete an offline agent from the web UI
+
+### Fixed
+
+- the web UI is no longer read-only, and the docs must say so
+- close the agent-delete TOCTOU and guard the POST
+
+### Other
+
+- make the delete liveness re-check test deterministic
+- perform the agent delete and record it
+- add the agent delete confirmation page
+- add Store::forget_agent
+- add Store::agent_footprint
+- add Registry::is_online for single-name liveness checks
+- implementation plan for deleting an agent from the web UI
+- design for deleting an agent from the web UI
+- drop the unreferenced release_pr step id
+- make release PR auto-merge idempotent
+- build images on tags only
+- stop the tag run from writing sha-<short>
+- revert release-plz cache experiment (negative result)
+- cache the release-plz toolchain (experiment)
+- gate releases on the test suite
+
 ## [0.3.2](https://github.com/bbaldino/claude-message-bus/compare/v0.3.1...v0.3.2) - 2026-08-01
 
 ### Added
