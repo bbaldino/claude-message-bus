@@ -1034,3 +1034,144 @@ async fn message_buckets_scope_to_one_agent() {
         "only that agent's own messages"
     );
 }
+
+#[tokio::test]
+async fn a_paused_room_needs_you() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store
+        .append_event(
+            "room_paused",
+            Some("caas"),
+            Some("protocol"),
+            serde_json::json!({"count": 20}),
+        )
+        .await
+        .unwrap();
+
+    let flag = store
+        .room_flag("protocol", &["caas".to_string()])
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(flag, Some(RoomFlag::NeedsYou { exchanges: 20 })),
+        "room_paused carries the exchange count, got {flag:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_resumed_room_no_longer_needs_you() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store
+        .append_event(
+            "room_paused",
+            Some("caas"),
+            Some("protocol"),
+            serde_json::json!({"count": 20}),
+        )
+        .await
+        .unwrap();
+    store
+        .append_event(
+            "resumed",
+            Some("bbaldino"),
+            Some("protocol"),
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+
+    let flag = store
+        .room_flag("protocol", &["caas".to_string()])
+        .await
+        .unwrap();
+
+    assert!(
+        !matches!(flag, Some(RoomFlag::NeedsYou { .. })),
+        "the later resumed clears it, got {flag:?}"
+    );
+}
+
+#[tokio::test]
+async fn rate_limited_does_not_need_you() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    // rate_limited is the send-interval limiter, NOT the exchange cap. The design
+    // handoff conflates them; this test pins the distinction.
+    store
+        .append_event(
+            "rate_limited",
+            Some("caas"),
+            Some("protocol"),
+            serde_json::json!({"retry_in_ms": 420}),
+        )
+        .await
+        .unwrap();
+
+    let flag = store
+        .room_flag("protocol", &["caas".to_string()])
+        .await
+        .unwrap();
+
+    assert!(
+        !matches!(flag, Some(RoomFlag::NeedsYou { .. })),
+        "rate limiting is not a request for a human, got {flag:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_room_whose_members_are_all_offline_with_unread_is_blocked() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store.join_room("protocol", "dashboard").await.unwrap();
+    store
+        .append_message("protocol", "bbaldino", "anyone?", false, true)
+        .await
+        .unwrap();
+    store
+        .append_message("protocol", "bbaldino", "still there?", false, true)
+        .await
+        .unwrap();
+
+    // Nobody online.
+    let flag = store.room_flag("protocol", &[]).await.unwrap();
+
+    match flag {
+        Some(RoomFlag::Blocked { queued, waiting_on }) => {
+            assert_eq!(queued, 4, "two messages unread by each of two members");
+            assert_eq!(
+                waiting_on,
+                vec!["caas".to_string(), "dashboard".to_string()]
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_room_with_one_member_online_is_not_blocked() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store.join_room("protocol", "dashboard").await.unwrap();
+    store
+        .append_message("protocol", "bbaldino", "anyone?", false, true)
+        .await
+        .unwrap();
+
+    let flag = store
+        .room_flag("protocol", &["caas".to_string()])
+        .await
+        .unwrap();
+
+    assert!(
+        !matches!(flag, Some(RoomFlag::Blocked { .. })),
+        "blocked means ALL members are offline, got {flag:?}"
+    );
+}

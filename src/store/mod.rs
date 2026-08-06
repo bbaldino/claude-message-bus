@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use anyhow::Context;
+use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
@@ -575,6 +576,74 @@ impl Store {
             }
         }
         Ok(out)
+    }
+}
+
+/// A room's state, derived from the event stream and membership rather than
+/// stored as a column. Only two exist, deliberately — an earlier design draft
+/// had four and they blurred together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoomFlag {
+    /// The exchange cap tripped and the room cannot continue without a person.
+    NeedsYou { exchanges: i64 },
+    /// Messages are waiting for members who are all offline.
+    Blocked {
+        queued: i64,
+        waiting_on: Vec<String>,
+    },
+}
+
+impl Store {
+    /// The room's flag, if any. `online` is the registry's live name list —
+    /// liveness is never read from the persisted `agents.online` column, which
+    /// is only reconciled at process start.
+    ///
+    /// `NeedsYou` wins over `Blocked`: it is the state addressed to the operator,
+    /// so if both hold, the one asking for action is the one shown.
+    pub async fn room_flag(
+        &self,
+        room: &str,
+        online: &[String],
+    ) -> anyhow::Result<Option<RoomFlag>> {
+        // Latest of the pause/resume pair decides. `room_paused` is the exchange
+        // cap; `rate_limited` is the send-interval limiter and is NOT this.
+        let paused = sqlx::query(
+            "SELECT kind, detail_json FROM events
+             WHERE room = ?1 AND kind IN ('room_paused', 'resumed')
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(room)
+        .fetch_optional(self.pool())
+        .await?;
+
+        if let Some(row) = paused {
+            let kind: String = row.get("kind");
+            if kind == "room_paused" {
+                let detail: Value =
+                    serde_json::from_str(&row.get::<String, _>("detail_json")).unwrap_or_default();
+                let exchanges = detail.get("count").and_then(Value::as_i64).unwrap_or(0);
+                return Ok(Some(RoomFlag::NeedsYou { exchanges }));
+            }
+        }
+
+        let members = self.room_members(room).await?;
+        if members.is_empty() || members.iter().any(|m| online.contains(m)) {
+            return Ok(None);
+        }
+
+        let mut queued = 0i64;
+        let mut waiting_on = Vec::new();
+        for m in &members {
+            let n = self.unread_count(room, m).await?;
+            if n > 0 {
+                queued += n;
+                waiting_on.push(m.clone());
+            }
+        }
+        if waiting_on.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(RoomFlag::Blocked { queued, waiting_on }))
     }
 }
 
