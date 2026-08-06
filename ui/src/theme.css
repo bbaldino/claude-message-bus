@@ -1,0 +1,88 @@
+/* Design tokens.
+ *
+ * Named by the roles the handoff's own light-mode table uses, so adding light
+ * mode later is one more block of values under [data-theme='light'] and zero
+ * component changes. No component may contain a hex colour.
+ */
+:root {
+  /* Surfaces */
+  --surface-page: #0e1013;
+  --surface-rail: #111419;
+  --surface-raised: #14171c;
+  --surface-recessed: #0f1217;
+  --surface-modal-footer: #12151a;
+
+  /* Borders */
+  --border-primary: #22262e;
+  --border-control: #262b34;
+  --border-emphasis: #2a303a;
+  --border-hairline: #191d23;
+  --border-rule: #1e222a;
+
+  /* Row states */
+  --row-hover: #181c22;
+  --row-hover-dock: #161a20;
+  --row-selected: #1d222a;
+
+  /* Text ramp */
+  --text-primary: #eef1f4;
+  --text-body-strong: #dfe3e8;
+  --text-body: #c8cfd8;
+  --text-secondary: #c2c9d2;
+  --text-tertiary: #9aa3af;
+  --text-tertiary-dim: #8d96a2;
+  --text-quaternary: #79818d;
+  --text-quaternary-dim: #6f7885;
+  --text-label: #616a76;
+  --text-dim: #565e69;
+  --text-dimmer: #4d545e;
+  --text-dimmest: #454c56;
+  --text-faintest: #3f4650;
+
+  /* Semantic — hue meanings are constant across themes */
+  --accent: #6ea8fe;
+  --code-fg: #9fd0ff;
+  --code-bg: #191d24;
+  --code-border: #23282f;
+  --presence: #5fc48a;
+  --presence-bg: #12251b;
+  --presence-border: #1e4030;
+  --human: #b18cf0;
+  --human-border: #3a2e55;
+  --attention: #e0b25f;
+  --attention-bg: #221c10;
+  --attention-border: #4a3a1c;
+  --destructive: #e8836f;
+  --destructive-bg: #241715;
+  --destructive-border: #56302a;
+  --files: #5fc4b8;
+  --offline-dot: #333a44;
+
+  /* Volume strip */
+  --volume-idle: #4a5360;
+  --volume-dead: #3b434f;
+  --volume-never: #1c2028;
+
+  /* Type */
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* Fixed dimensions the handoff specifies */
+  --rail-width: 330px;
+  --topbar-height: 46px;
+  --dock-width-open: 340px;
+  --dock-width-closed: 40px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-page);
+  color: var(--text-body);
+  font-family: var(--font-sans);
+  /* Numeric columns are scanned; keep digits aligned everywhere. */
+  font-variant-numeric: tabular-nums;
+}
