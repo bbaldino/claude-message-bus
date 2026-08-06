@@ -182,6 +182,31 @@ impl Registry {
         self.conns.lock().await.contains_key(name)
     }
 
+    /// Run `f` only if `name` is offline, holding the connection lock for its
+    /// duration so a concurrent `attach` cannot make it live midway.
+    ///
+    /// `is_online` followed by an action is a race, not a check: registration
+    /// inserts into this map *before* writing the `agents` row, so a `Register`
+    /// landing between the two would leave a connected agent whose row and
+    /// memberships had just been deleted — severed for the session, and never
+    /// repaired. Holding the lock across both is what closes that window.
+    ///
+    /// `f` must not touch the registry: the lock is held, so any registry call
+    /// inside it deadlocks. Routing blocks for the duration, which is
+    /// acceptable only because the one caller is a rare, manual, single
+    /// transaction.
+    pub async fn if_offline<F, Fut, T>(&self, name: &str, f: F) -> Option<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let conns = self.conns.lock().await;
+        if conns.contains_key(name) {
+            return None;
+        }
+        Some(f().await)
+    }
+
     /// Every effective name whose base matches `base`, for building the
     /// "ambiguous: dashboard@lisa, dashboard@nas" error.
     pub async fn hosts_for(&self, base: &str) -> Vec<String> {

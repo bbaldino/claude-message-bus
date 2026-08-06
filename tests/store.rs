@@ -836,6 +836,9 @@ async fn forget_agent_removes_row_memberships_and_cursors_but_keeps_history() {
         .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
         .await
         .unwrap();
+    // `upsert_agent` marks the row online; a tombstone is by definition a
+    // disconnected one, and `forget_agent` refuses anything else.
+    store.set_online("network-debug#2", false).await.unwrap();
     store
         .join_room("protocol", "network-debug#2")
         .await
@@ -905,4 +908,44 @@ async fn forget_agent_on_an_unknown_name_removes_nothing_and_does_not_error() {
     assert_eq!(counts.agents, 0);
     assert_eq!(counts.memberships, 0);
     assert_eq!(counts.cursors, 0);
+}
+
+/// Defence in depth for a public method whose only other guard lives in a
+/// different module: a caller added later must not be able to drop a connected
+/// agent's memberships just by not knowing to check the registry first. The
+/// refusal has to take the *whole* transaction back — deleting the memberships
+/// and cursors while leaving the row is the one outcome worse than doing
+/// nothing, because those are what a live agent is still receiving through.
+#[tokio::test]
+async fn forget_agent_refuses_an_online_agent_and_rolls_the_whole_delete_back() {
+    let (_d, store) = temp_store().await;
+    store
+        .upsert_agent("caas", "lisa", "/w/caas", None, false, None)
+        .await
+        .unwrap();
+    store.join_room("protocol", "caas").await.unwrap();
+    store.set_cursor("protocol", "caas", 7).await.unwrap();
+
+    let err = store.forget_agent("caas").await.unwrap_err();
+    assert!(err.to_string().contains("online"), "got: {err}");
+
+    assert!(
+        store
+            .agents()
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.name == "caas"),
+        "the row must survive"
+    );
+    assert_eq!(
+        store.room_members("protocol").await.unwrap(),
+        vec!["caas".to_string()],
+        "the membership must survive the rollback"
+    );
+    assert_eq!(
+        store.cursor("protocol", "caas").await.unwrap(),
+        7,
+        "the cursor must survive the rollback"
+    );
 }

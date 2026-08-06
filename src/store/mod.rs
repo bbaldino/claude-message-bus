@@ -321,6 +321,16 @@ impl Store {
     /// Transactional because a partial failure is worse than none: losing the
     /// `agents` row while leaving memberships behind strands them, since the
     /// row is what makes an agent reachable in the UI and therefore deletable.
+    ///
+    /// Refuses an agent whose `online` column is set, rolling the whole
+    /// transaction back. This is defence in depth, not the real guard: the
+    /// authority for liveness is the in-memory registry (see
+    /// `Registry::if_offline`, which the web handler holds across this call),
+    /// and `upsert_agent` sets `online = 1` only *after* the registry insert,
+    /// so there is a window where a live agent's column still reads offline.
+    /// What this does buy is that a caller added later — this is a public
+    /// method whose only other protection lives in a different module —
+    /// cannot silently drop a connected agent's memberships.
     pub async fn forget_agent(&self, name: &str) -> anyhow::Result<ForgetCounts> {
         let mut tx = self.pool.begin().await?;
         let memberships = sqlx::query("DELETE FROM room_members WHERE agent_name = ?1")
@@ -333,11 +343,26 @@ impl Store {
             .execute(&mut *tx)
             .await?
             .rows_affected();
-        let agents = sqlx::query("DELETE FROM agents WHERE name = ?1")
+        let agents = sqlx::query("DELETE FROM agents WHERE name = ?1 AND online = 0")
             .bind(name)
             .execute(&mut *tx)
             .await?
             .rows_affected();
+        if agents == 0 {
+            // Zero rows means either "no such agent" — which is not an error,
+            // the caller asked to forget something already forgotten — or "the
+            // row is there but online", which must take the memberships and
+            // cursors back with it.
+            let still_there = sqlx::query("SELECT 1 FROM agents WHERE name = ?1")
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some();
+            if still_there {
+                tx.rollback().await?;
+                anyhow::bail!("{name} is online; only offline agents can be deleted");
+            }
+        }
         tx.commit().await?;
         Ok(ForgetCounts {
             agents,

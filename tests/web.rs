@@ -59,15 +59,27 @@ async fn get(port: u16, path: &str) -> String {
 
 /// Minimal HTTP/1.1 POST with an empty body, matching `get`'s no-dependency style.
 /// Returns the whole raw response so a test can assert on the status line as well
-/// as the body.
+/// as the body. Sends no `Origin`, like `curl` — which the delete route must allow,
+/// since the same-origin check only exists to stop a *browser* being used as a
+/// proxy into a network it can reach and the caller cannot.
 async fn post(port: u16, path: &str) -> String {
+    post_with_headers(port, path, &[]).await
+}
+
+/// `post`, plus arbitrary extra request headers — for asserting the same-origin
+/// check, which is invisible to a request that carries no `Origin` at all.
+async fn post_with_headers(port: u16, path: &str, extra: &[(&str, &str)]) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .unwrap();
-    let req = format!(
-        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    let mut req = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n"
     );
+    for (k, v) in extra {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
     s.write_all(req.as_bytes()).await.unwrap();
     let mut buf = String::new();
     s.read_to_string(&mut buf).await.unwrap();
@@ -998,6 +1010,47 @@ async fn the_confirm_page_lists_what_will_be_removed() {
     );
 }
 
+/// The footprint listing is the only safeguard on this action, so a failed read
+/// must not render as an empty one. `unwrap_or_default` made a database error
+/// indistinguishable from "this agent belongs to nothing" — and still offered
+/// the button.
+#[tokio::test]
+async fn the_confirm_page_offers_no_button_when_the_footprint_cannot_be_read() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
+            .await
+            .unwrap();
+        store
+            .join_room("protocol", "network-debug#2")
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    // Break the footprint query out from under the running bus, the same way
+    // `tests/events.rs` breaks the event log.
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        sqlx::query("DROP TABLE cursors")
+            .execute(store.pool_for_test())
+            .await
+            .unwrap();
+    }
+
+    let body = get(port, "/agents/network-debug%232/delete").await;
+    assert!(
+        !body.contains("<form"),
+        "no button may be offered when the blast radius is unknown: {body}"
+    );
+    assert!(
+        body.contains("could not read"),
+        "the failure must be stated rather than rendered as an empty list: {body}"
+    );
+}
+
 #[tokio::test]
 async fn the_confirm_page_refuses_an_online_agent() {
     let (_d, port, _path) = common::start_bus_with_dir().await;
@@ -1043,7 +1096,13 @@ async fn posting_the_delete_removes_the_agent_and_redirects() {
     let port = start(dir.path()).await;
 
     let res = post(port, "/agents/network-debug%232/delete").await;
-    assert!(res.contains("303"), "must redirect after a POST: {res}");
+    // Matched on the status line, not anywhere in the response: "303" also
+    // appears in a rendered agent name, a port number, or a timestamp, so a
+    // substring match would pass for a page that deleted nothing.
+    assert!(
+        res.starts_with("HTTP/1.1 303"),
+        "must redirect after a POST: {res}"
+    );
 
     let agents = get(port, "/agents").await;
     assert!(
@@ -1051,10 +1110,12 @@ async fn posting_the_delete_removes_the_agent_and_redirects() {
         "the deleted agent must be gone from the list: {agents}"
     );
 
-    let room = get(port, "/rooms/protocol").await;
+    // `/rooms` is the page that renders each room's *members*; the per-room
+    // transcript does not, so asserting against it would pass for any input.
+    let rooms = get(port, "/rooms").await;
     assert!(
-        !room.contains("network-debug#2"),
-        "the stranded membership must be gone too: {room}"
+        !rooms.contains("network-debug#2"),
+        "the stranded membership must be gone too: {rooms}"
     );
 }
 
@@ -1067,6 +1128,17 @@ async fn posting_the_delete_records_an_audit_event() {
             .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
             .await
             .unwrap();
+        // Deliberately non-empty: with no membership and no cursor every count
+        // renders as 0 whether the event carries them or not, so the test would
+        // pass against an event that dropped them entirely.
+        store
+            .join_room("protocol", "network-debug#2")
+            .await
+            .unwrap();
+        store
+            .set_cursor("protocol", "network-debug#2", 4)
+            .await
+            .unwrap();
     }
     let port = start(dir.path()).await;
     post(port, "/agents/network-debug%232/delete").await;
@@ -1077,11 +1149,111 @@ async fn posting_the_delete_records_an_audit_event() {
         events.contains("network-debug#2"),
         "the audit event must name the deleted agent, since its row is gone"
     );
+    assert!(
+        events.contains("hardac"),
+        "the host must survive the row: {events}"
+    );
+    // The row is gone, so this event is the only remaining record of when the
+    // agent was last alive and of what the delete actually removed.
+    assert!(
+        events.contains("last seen"),
+        "last_seen must be recorded: {events}"
+    );
+    assert!(
+        events.contains("1 agent rows"),
+        "the agent-row count makes a phantom delete self-evident: {events}"
+    );
+    assert!(
+        events.contains("1 memberships"),
+        "the membership count must be non-zero and rendered: {events}"
+    );
+    assert!(
+        events.contains("1 cursors"),
+        "the cursor count must be non-zero and rendered: {events}"
+    );
+}
+
+/// Without an unknown-name guard on the `POST`, any name at all passes the
+/// offline check trivially, deletes nothing, and still writes an
+/// `agent_deleted` event — forging the one record this feature promises will
+/// outlive the agent, and letting anyone who can reach the port grow `events`
+/// unboundedly, several KB at a time, through the URL path alone.
+#[tokio::test]
+async fn posting_the_delete_for_an_unknown_agent_writes_no_audit_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+
+    let res = post(port, "/agents/nobody/delete").await;
+    assert!(
+        res.contains("no agent named nobody"),
+        "the POST must render the same refusal the GET does: {res}"
+    );
+
+    let events = get(port, "/events").await;
+    assert!(
+        !events.contains("agent_deleted"),
+        "an unknown name must forge no audit event: {events}"
+    );
+    assert!(
+        !events.contains("nobody"),
+        "and must write nothing naming the caller's string: {events}"
+    );
+}
+
+/// A form POST is a "simple request" — no preflight — so any page the
+/// operator's browser loads could otherwise submit one to a bus on `127.0.0.1`
+/// or behind NAT that the attacker cannot reach directly.
+#[tokio::test]
+async fn a_cross_origin_post_is_refused_and_deletes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
+            .await
+            .unwrap();
+        store
+            .join_room("protocol", "network-debug#2")
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let res = post_with_headers(
+        port,
+        "/agents/network-debug%232/delete",
+        &[("Origin", "http://evil.example")],
+    )
+    .await;
+    assert!(
+        !res.starts_with("HTTP/1.1 303"),
+        "a cross-origin POST must not succeed: {res}"
+    );
+    assert!(
+        res.contains("evil.example"),
+        "the refusal must say what was rejected: {res}"
+    );
+
+    let agents = get(port, "/agents").await;
+    assert!(
+        agents.contains("network-debug#2"),
+        "the agent must survive a refused POST: {agents}"
+    );
+    let rooms = get(port, "/rooms").await;
+    assert!(
+        rooms.contains("network-debug#2"),
+        "and so must its membership: {rooms}"
+    );
+    let events = get(port, "/events").await;
+    assert!(
+        !events.contains("agent_deleted"),
+        "a refused POST must record no delete: {events}"
+    );
 }
 
 #[tokio::test]
 async fn posting_the_delete_refuses_an_agent_that_came_online_after_the_confirm_page() {
-    let (_d, port, _path) = common::start_bus_with_dir().await;
+    let (_d, port, path) = common::start_bus_with_dir().await;
     // Offline when the confirm page would have been rendered...
     {
         let ws = common::connect(port, "caas").await;
@@ -1095,6 +1267,13 @@ async fn posting_the_delete_refuses_an_agent_that_came_online_after_the_confirm_
     let _ws = common::connect(port, "caas").await;
     assert!(common::agent_is_online(port, "caas").await);
 
+    // The memberships and cursors are the point of the rule: they are what a
+    // live agent is still receiving messages through, and nothing repairs them
+    // if they are dropped out from under a connected session.
+    let store = Store::open(&path).await.unwrap();
+    store.join_room("protocol", "caas").await.unwrap();
+    store.set_cursor("protocol", "caas", 9).await.unwrap();
+
     let res = post(port, "/agents/caas/delete").await;
     assert!(
         res.contains("online"),
@@ -1103,6 +1282,16 @@ async fn posting_the_delete_refuses_an_agent_that_came_online_after_the_confirm_
 
     let agents = get(port, "/agents").await;
     assert!(agents.contains("caas"), "the live agent must survive");
+    assert_eq!(
+        store.room_members("protocol").await.unwrap(),
+        vec!["caas".to_string()],
+        "the live agent's membership must survive"
+    );
+    assert_eq!(
+        store.cursor("protocol", "caas").await.unwrap(),
+        9,
+        "and so must its cursor"
+    );
 }
 
 #[tokio::test]
