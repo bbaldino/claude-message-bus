@@ -12,6 +12,10 @@ export function createLive(url: string) {
   let backoff = 500
   let stopped = false
 
+  /// The reconnect ceiling, and also the threshold for calling the connection
+  /// dead: reaching it means ~30s of failed attempts have already gone by.
+  const MAX_BACKOFF = 15_000
+
   const emit = (kind: string, payload: unknown) => {
     for (const h of handlers[kind] ?? []) h(payload)
   }
@@ -40,12 +44,19 @@ export function createLive(url: string) {
 
     ws.onclose = () => {
       if (stopped) return
-      emit('connection', 'reconnecting')
+      // `disconnected` is entered here, on a saturated backoff, and nowhere else.
+      // Emitting it from `onerror` could never make the pill rest on red: a
+      // browser always fires `onclose` immediately after `onerror`, so the state
+      // was overwritten with `reconnecting` within the same tick every time. Amber
+      // means "retrying and it might work"; red has to mean "this has been failing
+      // for a while", and the backoff hitting its ceiling is that fact.
+      emit('connection', backoff >= MAX_BACKOFF ? 'disconnected' : 'reconnecting')
       setTimeout(open, backoff)
-      backoff = Math.min(backoff * 2, 15_000)
+      backoff = Math.min(backoff * 2, MAX_BACKOFF)
     }
 
-    ws.onerror = () => emit('connection', 'disconnected')
+    // No `onerror` handler: the close that follows it is what this reacts to.
+    // See `onclose`.
   }
 
   return {

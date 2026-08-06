@@ -1,6 +1,7 @@
 import type { RailSummary } from '../types/RailSummary'
 import type { Event } from '../types/Event'
 import type { Message } from '../types/Message'
+import type { FromBus } from '../types/FromBus'
 import type { Connection } from './live'
 
 export type State = {
@@ -39,41 +40,40 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
 
   deps.live.on('connection', (p) => setState({ connection: p as Connection }))
 
+  // Every push handler below narrows the frame against `FromBus`, the union
+  // ts-rs generates from `src/proto.rs`. The single `as FromBus` sits at the
+  // `unknown` boundary where the JSON arrives; every field access after the
+  // `type` check is compiler-verified against the server's own definition. The
+  // hand-written object literals these replaced were the reason a snake_case /
+  // camelCase mismatch could reach the browser as a silent `undefined` three
+  // times in one phase: a cast to a literal you wrote yourself agrees with you.
+  //
+  // The snake_case → camelCase normalisations stay, deliberately. They are not
+  // the bug — the wire really is snake_case (`rename_all` on an enum renames
+  // variant names, not variant fields) while the REST DTOs really are camelCase.
+  // What changed is that the source shape is now checked rather than asserted.
   deps.live.on('event', (p) => {
-    const push = p as {
-      id: number
-      kind: string
-      agent: string | null
-      room: string | null
-      detail: unknown
-      created_at: number
-    }
-    // FromBus carries only `rename_all = "snake_case"` on the enum, which renames
-    // variant names but not variant fields, so FromBus::Event puts `created_at` on
-    // the wire. The REST DTO (`Event.ts`) comes from a separate struct with
-    // `rename_all = "camelCase"`, so it declares `createdAt`. Normalise here so
-    // `state.events` is homogeneous rather than silently `undefined` for every
-    // live-pushed event.
+    const frame = p as FromBus
+    if (frame.type !== 'event') return
     const event: Event = {
-      id: push.id,
-      kind: push.kind,
-      agent: push.agent,
-      room: push.room,
-      detail: push.detail,
-      createdAt: push.created_at,
+      id: frame.id,
+      kind: frame.kind,
+      agent: frame.agent,
+      room: frame.room,
+      detail: frame.detail,
+      createdAt: frame.created_at,
     }
     setState({ events: [event, ...state.events].slice(0, 500) })
   })
 
   deps.live.on('message', (p) => {
-    const push = p as {
-      id: number
-      room: string
-      from: string
-      text: string
-      done: boolean
-      human: boolean
-    }
+    const frame = p as FromBus
+    if (frame.type !== 'message') return
+    // Only the open room's traffic belongs in the transcript. The socket
+    // accumulates a `Watch` per room the operator has visited and the protocol
+    // has no `Unwatch`, so without this filter room A's messages land under room
+    // B — in a list `selectRoom` has just cleared, which makes them look current.
+    if (frame.room !== state.room) return
     // FromBus::Message and the REST Message DTO are deliberately different
     // shapes: the push is the wire event (`text`), the DTO is the stored row
     // (`body`, `createdAt`). Normalise here so `state.messages` is homogeneous
@@ -84,12 +84,12 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
     // refetch of the room replaces the approximation with the authoritative
     // value. Do not present it as anything more precise than that.
     const message: Message = {
-      id: push.id,
-      room: push.room,
-      from: push.from,
-      body: push.text,
-      done: push.done,
-      human: push.human,
+      id: frame.id,
+      room: frame.room,
+      from: frame.from,
+      body: frame.text,
+      done: frame.done,
+      human: frame.human,
       createdAt: Date.now(),
     }
     // Appended, never scrolled to: the design requires a "3 new below" affordance
@@ -99,10 +99,9 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
   })
 
   deps.live.on('presence', (p) => {
-    // Destructured against the real wire shape (including the fields unused here)
-    // so the snake_case mapping is visible at the point of use, not latent — see
-    // the note on the event handler above for why FromBus is snake_case.
-    const { name, online } = p as { name: string; host: string; online: boolean; last_seen: number }
+    const frame = p as FromBus
+    if (frame.type !== 'presence') return
+    const { name, online } = frame
     if (!state.rail) return
     setState({
       rail: {
