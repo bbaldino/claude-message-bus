@@ -642,6 +642,34 @@ pub enum RoomFlag {
 }
 
 impl Store {
+    /// Every room whose latest pause/resume event is a pause — the rooms the
+    /// log currently claims are waiting on a person.
+    ///
+    /// Exists for startup reconciliation. The exchange guard's counters live in
+    /// memory (`bus::delivery::Guards`), so a fresh process has no paused rooms
+    /// at all, while every `room_paused` row survives in the database — leaving
+    /// every previously paused room flagged `needs_you` forever after a restart.
+    /// This is the same class of stale-truth problem `mark_all_offline` solves
+    /// for presence, and it is fixed the same way and in the same place.
+    pub async fn paused_rooms(&self) -> anyhow::Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT e.room AS room, e.kind AS kind FROM events e
+             WHERE e.room IS NOT NULL
+               AND e.kind IN ('room_paused', 'resumed')
+               AND e.id = (
+                 SELECT MAX(id) FROM events
+                 WHERE room = e.room AND kind IN ('room_paused', 'resumed')
+               )",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| r.get::<String, _>("kind") == "room_paused")
+            .map(|r| r.get("room"))
+            .collect())
+    }
+
     /// The room's flag, if any. `online` is the registry's live name list —
     /// liveness is never read from the persisted `agents.online` column, which
     /// is only reconciled at process start.
@@ -679,19 +707,64 @@ impl Store {
             return Ok(None);
         }
 
-        let mut queued = 0i64;
         let mut waiting_on = Vec::new();
         for m in &members {
-            let n = self.unread_count(room, m).await?;
-            if n > 0 {
-                queued += n;
+            if self.unread_count(room, m).await? > 0 {
                 waiting_on.push(m.clone());
             }
         }
         if waiting_on.is_empty() {
             return Ok(None);
         }
+        let queued = self.queued_message_count(room, &waiting_on).await?;
         Ok(Some(RoomFlag::Blocked { queued, waiting_on }))
+    }
+
+    /// How many distinct messages in `room` at least one of `waiting` has not
+    /// seen.
+    ///
+    /// Messages, not deliveries. Summing `unread_count` across members counts the
+    /// same message once per member who has not read it, so two messages and two
+    /// offline members reads as four — while the rail renders the number as a
+    /// message count ("2 queued, 0 delivered"). The server ships data rather than
+    /// sentences precisely so the client can write that sentence, which only works
+    /// if the datum means what the sentence says.
+    ///
+    /// `from_agent != rm.agent_name` matches `unread_count`'s rule: a member's own
+    /// message is never unread for it, and so never counts as queued for it.
+    pub async fn queued_message_count(
+        &self,
+        room: &str,
+        waiting: &[String],
+    ) -> anyhow::Result<i64> {
+        if waiting.is_empty() {
+            return Ok(0);
+        }
+        // `?1` is the room; the waiting members take `?2` onwards. Only the
+        // placeholder *count* varies with the input — every value is still bound,
+        // so no caller data reaches the SQL text. `AssertSqlSafe` is sqlx's speed
+        // bump against building SQL from untrusted data, not a claim of staticness
+        // (see `add_column_if_missing`, which does the same for PRAGMA).
+        let placeholders = (0..waiting.len())
+            .map(|i| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT COUNT(DISTINCT m.id) AS n
+             FROM messages m
+             JOIN room_members rm
+               ON rm.room = m.room AND rm.agent_name IN ({placeholders})
+             LEFT JOIN cursors c
+               ON c.room = m.room AND c.agent_name = rm.agent_name
+             WHERE m.room = ?1
+               AND m.from_agent != rm.agent_name
+               AND m.id > COALESCE(c.last_delivered_id, 0)"
+        );
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(room);
+        for w in waiting {
+            q = q.bind(w);
+        }
+        Ok(q.fetch_one(self.pool()).await?.get("n"))
     }
 }
 

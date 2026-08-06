@@ -137,6 +137,9 @@ pub struct RailSummary {
 #[ts(export, export_to = "../ui/src/types/")]
 #[serde(rename_all = "camelCase")]
 pub struct Meta {
+    /// The host the bus itself is running on. Half of the top bar's pill
+    /// ("hardac · 0.3.3") — the reason this endpoint exists.
+    pub host: String,
     pub version: String,
 }
 
@@ -231,7 +234,11 @@ pub(crate) async fn rail(State(app): State<App>) -> Result<Json<RailSummary>, St
 }
 
 pub(crate) async fn meta() -> Json<Meta> {
+    use crate::config::EnvSource;
     Json(Meta {
+        // The same source `chat.rs` registers with, so the pill names the host the
+        // same way every other surface does.
+        host: crate::config::RealEnv.hostname(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
@@ -268,6 +275,10 @@ pub struct Event {
     pub created_at: i64,
 }
 
+/// The most rows any client-supplied `limit` can ask for. Both list endpoints
+/// clamp to it — they are the only HTTP endpoints that take a limit at all.
+const MAX_LIMIT: i64 = 1000;
+
 #[derive(serde::Deserialize)]
 pub(crate) struct TranscriptQuery {
     limit: Option<i64>,
@@ -288,7 +299,10 @@ pub(crate) async fn room_messages(
     Path(name): Path<String>,
     Query(q): Query<TranscriptQuery>,
 ) -> Result<Json<Vec<Message>>, StatusCode> {
-    let limit = q.limit.unwrap_or(100);
+    // Clamped, not merely defaulted: SQLite reads a negative LIMIT as unlimited, so
+    // `?limit=-1` would serialise the entire `messages` table out of an
+    // unauthenticated endpoint on a bus bound to 0.0.0.0.
+    let limit = q.limit.unwrap_or(100).clamp(1, MAX_LIMIT);
     let rows = match q.before {
         Some(before) => app.store.history_before(&name, before, limit).await,
         None => app.store.history(&name, limit).await,
@@ -315,7 +329,12 @@ pub(crate) async fn events(
 ) -> Result<Json<Vec<Event>>, StatusCode> {
     let rows = app
         .store
-        .events_filtered(q.room.as_deref(), q.kind.as_deref(), q.limit.unwrap_or(200))
+        // Clamped for the same reason as the transcript's — see `room_messages`.
+        .events_filtered(
+            q.room.as_deref(),
+            q.kind.as_deref(),
+            q.limit.unwrap_or(200).clamp(1, MAX_LIMIT),
+        )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(

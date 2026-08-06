@@ -113,8 +113,16 @@ pub(crate) async fn handle(
             //
             // A relayer is not stuck: it clears a pause through `Resume`, which is an
             // explicit, audited action rather than an implicit side effect of speaking.
-            match app.guards.check(&room, me, now_ms(), is_human).await {
-                GuardVerdict::Allow => {}
+            //
+            // `cleared_pause` is carried down to just after the send lands, where it
+            // becomes a `resumed` event. See `GuardVerdict::Allow`: the guard knows a
+            // pause was lifted, the event log is the only durable record of it, and
+            // `Store::room_flag` reads that log to decide whether the rail still says
+            // "needs you". Deliberately not written here at verdict time — a send that
+            // then fails to store never happened, and must not leave a `resumed`
+            // behind claiming a human unblocked the room.
+            let cleared_pause = match app.guards.check(&room, me, now_ms(), is_human).await {
+                GuardVerdict::Allow { cleared_pause } => cleared_pause,
                 GuardVerdict::RateLimited { retry_in_ms } => {
                     let _ = app
                         .store
@@ -164,7 +172,7 @@ pub(crate) async fn handle(
                     });
                     return;
                 }
-            }
+            };
 
             // One binding, three uses (the row, the member fan-out, the observer
             // fan-out): the connection's own origin, or a relay grant that lives in
@@ -258,6 +266,25 @@ pub(crate) async fn handle(
                     }),
                 )
                 .await;
+
+            // The room was paused and this human's message lifted it (see
+            // `GuardVerdict::Allow`). `ToBus::Resume` is not the only way a pause
+            // ends — it is the rarest — so without this the log would record every
+            // pause and only some of the resumes, and `Store::room_flag` would leave
+            // "needs you" on a room the operator had already unblocked by typing in
+            // it. Appended after the message is stored, so it can never claim a
+            // resume for a send that failed.
+            if cleared_pause {
+                let _ = app
+                    .store
+                    .append_event(
+                        "resumed",
+                        Some(me),
+                        Some(&room),
+                        json!({ "via": "human_message", "msg_id": msg_id }),
+                    )
+                    .await;
+            }
 
             let _ = control_tx.try_send(FromBus::Reply {
                 req_id,

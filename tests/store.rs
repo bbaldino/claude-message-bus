@@ -1188,11 +1188,48 @@ async fn a_room_whose_members_are_all_offline_with_unread_is_blocked() {
 
     match flag {
         Some(RoomFlag::Blocked { queued, waiting_on }) => {
-            assert_eq!(queued, 4, "two messages unread by each of two members");
+            // Messages, not deliveries. Two messages unread by two members is two
+            // things waiting, not four: the rail renders this as "2 queued", and
+            // shipping data rather than sentences only works if the datum means
+            // what the sentence says.
+            assert_eq!(
+                queued, 2,
+                "two messages, however many members have not read them"
+            );
             assert_eq!(
                 waiting_on,
                 vec!["caas".to_string(), "dashboard".to_string()]
             );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn queued_counts_distinct_messages_not_per_member_deliveries() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store.join_room("protocol", "dashboard").await.unwrap();
+    let first = store
+        .append_message("protocol", "bbaldino", "anyone?", false, true)
+        .await
+        .unwrap();
+    store
+        .append_message("protocol", "bbaldino", "still there?", false, true)
+        .await
+        .unwrap();
+    // caas has seen the first message; dashboard has seen nothing.
+    store.set_cursor("protocol", "caas", first).await.unwrap();
+
+    let flag = store.room_flag("protocol", &[]).await.unwrap();
+
+    match flag {
+        Some(RoomFlag::Blocked { queued, .. }) => {
+            // Two distinct messages are waiting on somebody. Summing unread across
+            // members — the arithmetic this replaced — would say three: one for
+            // caas plus two for dashboard, double-counting the second message.
+            assert_eq!(queued, 2, "distinct messages, not deliveries");
         }
         other => panic!("expected Blocked, got {other:?}"),
     }

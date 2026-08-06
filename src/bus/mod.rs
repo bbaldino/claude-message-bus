@@ -221,6 +221,26 @@ pub async fn serve_on_full(
     // `online` is a ghost from a process that died without running its teardown.
     // Reconcile before serving rather than letting the stale rows be read as truth.
     store.mark_all_offline().await?;
+    // The same reconciliation, for pauses. `Guards` keeps its exchange counters in
+    // memory, so this process starts with nothing paused, while every `room_paused`
+    // row it inherits is still the latest word in the log — which is what
+    // `Store::room_flag` derives the operator-facing `needs_you` from. Without this,
+    // every room that was ever paused comes back flagged after a restart and nothing
+    // a human does can clear it, because as far as the guards are concerned there is
+    // no pause left to lift.
+    for room in store.paused_rooms().await.unwrap_or_default() {
+        if let Err(e) = store
+            .append_event(
+                "resumed",
+                None,
+                Some(&room),
+                json!({ "via": "bus_restart" }),
+            )
+            .await
+        {
+            eprintln!("could not record the restart resume for {room}: {e}");
+        }
+    }
     let app = App {
         store: Arc::new(store),
         registry,
@@ -231,15 +251,22 @@ pub async fn serve_on_full(
     // Events reach observers through the store's broadcast channel, so every
     // append is fanned out regardless of which call site produced it.
     {
-        let app_for_events = app.clone();
+        // The registry, NOT the whole `App`. `App` holds the `Store`, and the
+        // `Store` owns the broadcast sender this task is waiting on — so cloning
+        // `App` here would mean the task keeps alive the very sender whose drop is
+        // the only thing that can ever end it. `Closed` would be unreachable in
+        // production (contradicting the comment below), and every bus would leak
+        // this task plus an `App`, a `Store` and its `SqlitePool` for the life of
+        // the process; the test suites start hundreds of buses in one process. The
+        // task only ever touches `.registry`, which is `Clone` in its own right.
+        let registry_for_events = app.registry.clone();
         let mut rx = app.store.subscribe_events();
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Ok(e) => {
                         let room = e.room.clone();
-                        app_for_events
-                            .registry
+                        registry_for_events
                             .notify_event(
                                 room.as_deref(),
                                 FromBus::Event {
@@ -308,7 +335,24 @@ async fn human_active(
         .filter(|r| r.members.contains(&q.agent))
         .map(|r| r.name)
         .collect();
-    app.guards.reset_all_for(&rooms).await;
+    // One `resumed` event per room this actually un-paused. This hook is the
+    // *usual* way a pause clears — `contrib/human-active-hook.sh` is the standard
+    // deployment documented in DEPLOY.md, and it fires on every prompt the operator
+    // types — so a pause cleared here and never recorded left `Store::room_flag`
+    // deriving "needs you" from a half-written log forever. `reset_all_for` returns
+    // only the rooms that had genuinely hit the cap, so the ordinary case (the
+    // operator typing in a room that was never paused) writes nothing at all.
+    for room in app.guards.reset_all_for(&rooms).await {
+        let _ = app
+            .store
+            .append_event(
+                "resumed",
+                Some(&q.agent),
+                Some(&room),
+                json!({ "via": "human_active" }),
+            )
+            .await;
+    }
     "ok"
 }
 
@@ -602,11 +646,16 @@ async fn connection(socket: WebSocket, app: App) {
         if let Err(e) = app.store.set_online(&name, false).await {
             eprintln!("could not mark {name} offline on disconnect: {e}");
         }
+        // Read before `detach` drops the entry: the registry still knows this
+        // connection's host here, and an offline push carrying an empty host is a
+        // field that is sometimes a lie — which every consumer would then have to
+        // write defensive code around.
+        let host = app.registry.host_of(&name).await.unwrap_or_default();
         app.registry.detach(&name).await;
         app.registry
             .notify_presence(FromBus::Presence {
                 name: name.clone(),
-                host: String::new(),
+                host,
                 online: false,
                 last_seen: crate::store::now_ms(),
             })

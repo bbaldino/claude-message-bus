@@ -43,6 +43,31 @@ async fn start_with_relayers(dir: &std::path::Path, names: &[&str]) -> u16 {
     port
 }
 
+/// Like `start`, but with the exchange guard's cap set directly (and the rate
+/// limit off). `serve_on` uses the production cap of 20, which is a lot of
+/// round trips to trip on purpose.
+async fn start_with_cap(dir: &std::path::Path, cap: u32) -> u16 {
+    let path = dir.to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        claude_bus::bus::serve_on_full(
+            listener,
+            path,
+            claude_bus::bus::delivery::Guards::new(cap, 0),
+            claude_bus::bus::Keepalive::default(),
+            claude_bus::bus::registry::Registry::new(),
+            claude_bus::bus::Relayers::default(),
+        )
+        .await
+        .unwrap()
+    });
+    common::wait_until_bus_ready(port).await;
+    port
+}
+
 async fn get(port: u16, path: &str) -> String {
     let url = format!("http://127.0.0.1:{port}{path}");
     // Minimal HTTP/1.1 GET so the test needs no HTTP client dependency.
@@ -1425,6 +1450,7 @@ async fn the_rail_summarises_rooms_and_agents() {
 
 #[tokio::test]
 async fn meta_reports_the_host_and_version() {
+    use claude_bus::config::EnvSource;
     let dir = tempfile::tempdir().unwrap();
     let port = start(dir.path()).await;
 
@@ -1434,6 +1460,227 @@ async fn meta_reports_the_host_and_version() {
     assert!(
         body.contains(env!("CARGO_PKG_VERSION")),
         "must report the running version: {body}"
+    );
+    // The pill is "hardac · 0.3.3" — both halves, or 2b cannot render it. The
+    // test was named for the host long before it asserted one.
+    assert!(body.contains("\"host\""), "got: {body}");
+    assert!(
+        body.contains(&claude_bus::config::RealEnv.hostname()),
+        "must report the host the bus is running on: {body}"
+    );
+}
+
+/// Drive a real bus to the exchange cap, then clear the pause the way the
+/// operator actually does — by typing in their own session — and check the rail
+/// agrees. Deliberately end to end rather than seeding events: the whole defect
+/// was that the two paths which actually clear a pause wrote no event at all, so
+/// every store-level test that seeded `resumed` by hand passed while the shipped
+/// flag never cleared.
+#[tokio::test]
+async fn a_humans_message_clears_needs_you_on_the_rail() {
+    use claude_bus::proto::{Target, ToBus};
+
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_with_cap(dir.path(), 1).await;
+
+    // An agent talks until the room pauses.
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    for _ in 0..2 {
+        common::send(
+            &mut caas,
+            &ToBus::Send {
+                req_id: 1,
+                target: Target::Room {
+                    room: "protocol".into(),
+                },
+                text: "still going".into(),
+                done: false,
+            },
+        )
+        .await;
+        common::next_event(&mut caas).await;
+    }
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        body.contains("needsYou"),
+        "the cap tripped, so the rail must ask for a person: {body}"
+    );
+
+    // The human types in their session. No `resume` call — this is the ordinary
+    // way a paused room continues.
+    let mut human = common::connect_human(port, "bbaldino").await;
+    common::next_event(&mut human).await; // Registered
+    common::send(
+        &mut human,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "carry on".into(),
+            done: false,
+        },
+    )
+    .await;
+    common::next_event(&mut human).await; // Sent
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        !body.contains("needsYou"),
+        "the room resumed the moment the human spoke; the rail must not still \
+         be asking for one: {body}"
+    );
+}
+
+/// The other clearing path, and the usual one: `contrib/human-active-hook.sh`
+/// POSTs here on every prompt the operator submits, and DEPLOY.md documents it
+/// as the standard deployment.
+#[tokio::test]
+async fn the_human_active_hook_clears_needs_you_on_the_rail() {
+    use claude_bus::proto::{Target, ToBus};
+
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_with_cap(dir.path(), 1).await;
+
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    for _ in 0..2 {
+        common::send(
+            &mut caas,
+            &ToBus::Send {
+                req_id: 1,
+                target: Target::Room {
+                    room: "protocol".into(),
+                },
+                text: "still going".into(),
+                done: false,
+            },
+        )
+        .await;
+        common::next_event(&mut caas).await;
+    }
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        body.contains("needsYou"),
+        "the cap must have tripped: {body}"
+    );
+
+    let res = post(port, "/human-active?agent=caas").await;
+    assert!(res.starts_with("HTTP/1.1 200"), "got: {res}");
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        !body.contains("needsYou"),
+        "the hook un-paused the room, so the flag must be gone: {body}"
+    );
+}
+
+/// SQLite reads a negative `LIMIT` as *unlimited*, so `?limit=-1` on either list
+/// endpoint used to dump the whole table — from an unauthenticated endpoint, on a
+/// bus that binds 0.0.0.0. Clamping to at least 1 is what makes the parameter mean
+/// what it says.
+#[tokio::test]
+async fn a_negative_limit_does_not_dump_the_whole_table() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        for i in 0..5 {
+            store
+                .append_message("protocol", "caas", &format!("m{i}"), false, false)
+                .await
+                .unwrap();
+            store
+                .append_event("ack", Some("caas"), Some("protocol"), serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/rooms/protocol/messages?limit=-1").await;
+    assert_eq!(
+        body.matches("\"body\"").count(),
+        1,
+        "a negative limit must clamp to one row, not every row: {body}"
+    );
+
+    let body = get(port, "/api/events?limit=-1").await;
+    assert_eq!(
+        body.matches("\"kind\"").count(),
+        1,
+        "a negative limit must clamp to one row, not every row: {body}"
+    );
+}
+
+/// The third way a pause disappears: the bus restarts. `Guards` keeps its
+/// counters in memory, so a fresh process has no paused rooms while every
+/// `room_paused` row it inherits is still the latest word in the log. Left
+/// alone, every room that was ever paused comes back flagged and nothing can
+/// clear it, because there is no pause left for a human to lift.
+#[tokio::test]
+async fn a_restart_clears_needs_you_for_rooms_whose_pause_it_did_not_inherit() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+        store
+            .append_event(
+                "room_paused",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({ "count": 20 }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.paused_rooms().await.unwrap(),
+            vec!["protocol".to_string()],
+            "the fixture must actually leave a pause behind"
+        );
+    }
+
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/rail").await;
+    assert!(
+        !body.contains("needsYou"),
+        "this process has no such pause, so the rail must not report one: {body}"
+    );
+}
+
+/// The hook fires on every prompt the operator types, almost always for rooms
+/// that were never paused. Those must not each leave a `resumed` in the log
+/// claiming a pause was lifted — the audit trail is the thing being fixed here,
+/// and filling it with false resumes would be its own defect.
+#[tokio::test]
+async fn the_human_active_hook_writes_nothing_for_a_room_that_was_not_paused() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_with_cap(dir.path(), 20).await;
+    let path = dir.path().to_path_buf();
+
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    common::send(
+        &mut caas,
+        &claude_bus::proto::ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut caas).await; // Joined
+
+    let res = post(port, "/human-active?agent=caas").await;
+    assert!(res.starts_with("HTTP/1.1 200"), "got: {res}");
+
+    let store = Store::open(&path).await.unwrap();
+    let resumed = store.events_of_kind("resumed", 10).await.unwrap();
+    assert!(
+        resumed.is_empty(),
+        "nothing was paused, so nothing was resumed: {resumed:?}"
     );
 }
 
