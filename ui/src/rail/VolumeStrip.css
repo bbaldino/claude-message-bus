@@ -1,0 +1,31 @@
+.volume-strip {
+  display: flex;
+  align-items: flex-end;
+  flex: none;
+}
+
+.volume-strip.rail {
+  width: 78px;
+  height: 14px;
+  gap: 1.5px;
+}
+
+.volume-strip.detail {
+  width: 100%;
+  height: 44px;
+  gap: 2px;
+}
+
+.volume-bar {
+  flex: 1;
+  border-radius: 1px;
+  background: var(--volume-idle);
+}
+
+.volume-bar.never {
+  background: var(--volume-never);
+}
+
+.volume-bar.active {
+  background: var(--accent);
+}
