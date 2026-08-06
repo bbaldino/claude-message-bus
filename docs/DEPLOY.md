@@ -146,7 +146,13 @@ hides outbound message text — so this is the authoritative view.
 
 ## Reading the record afterwards
 
-The bus serves a web UI on the same port:
+The bus serves two web UIs on the same port, during the transition to the new one:
+
+- `/` — the original server-rendered pages, described below
+- `/app` — the TypeScript single-page app, which replaces them once the redesign lands
+
+Both come out of the same binary; there is no second service and nothing is fetched
+from the internet at runtime.
 
 ```
 http://nas.lan:7777/
