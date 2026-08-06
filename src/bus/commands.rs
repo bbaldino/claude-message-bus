@@ -82,6 +82,23 @@ pub(crate) async fn handle(
         } => {
             let room = rooms::resolve(&target, me);
 
+            // `is_human` here, deliberately NOT the relayer-expanded `has_human_authority`
+            // computed further down. The two look like the same question and are not:
+            // this gate asks whether a person is actually present, while that label
+            // asks whose authority the message carries. Authority is delegable by
+            // configuration — that is exactly what `--relayer` grants — but attendance
+            // is not, because the bus cannot tell whether a relayer is passing on words
+            // a human typed or composing its own. A relayer does both.
+            //
+            // It matters because the `is_human` branch of `check` does not merely permit
+            // the send: it zeroes the exchange counter and un-pauses the room. If a relay
+            // grant counted as human here, a relayer talking to an agent would reset the
+            // counter on every message, the cap could never trip, and the one property
+            // this guard exists to provide would be gone — for the exact pairing most
+            // able to run away unattended.
+            //
+            // A relayer is not stuck: it clears a pause through `Resume`, which is an
+            // explicit, audited action rather than an implicit side effect of speaking.
             match app.guards.check(&room, me, now_ms(), is_human).await {
                 GuardVerdict::Allow => {}
                 GuardVerdict::RateLimited { retry_in_ms } => {
@@ -138,7 +155,20 @@ pub(crate) async fn handle(
             // One binding, three uses (the row, the member fan-out, the observer
             // fan-out): the connection's own origin, or a relay grant that lives in
             // the bus's configuration. Never anything the sender put in the payload.
-            let human_origin = is_human || app.relayers.contains(me);
+            //
+            // Named for authority rather than origin, and that is the whole point: a
+            // relayed message carries a human's authority but need not have come from
+            // a human at all — a relayer composes plenty of its own prose. `is_human`
+            // is the only value in this function that literally means "a person typed
+            // this", which is why it, and not this, is what the gate above consults.
+            //
+            // Deliberately wider than the `is_human` handed to `guards.check` above,
+            // and the difference is load-bearing rather than an oversight — see that
+            // call for the reasoning. In short: this labels a message that has already
+            // passed the gate; that decides whether the message exists at all. Making
+            // the two agree by widening the gate would silently delete the exchange
+            // cap for relayed conversations.
+            let has_human_authority = is_human || app.relayers.contains(me);
 
             // A DM auto-creates its room and enrolls both sides.
             let _ = app.store.join_room(&room, me).await;
@@ -148,7 +178,7 @@ pub(crate) async fn handle(
 
             let msg_id = match app
                 .store
-                .append_message(&room, me, &text, done, human_origin)
+                .append_message(&room, me, &text, done, has_human_authority)
                 .await
             {
                 Ok(id) => id,
@@ -171,7 +201,7 @@ pub(crate) async fn handle(
                     from: me.to_string(),
                     text: text.clone(),
                     done,
-                    human: human_origin,
+                    human: has_human_authority,
                 };
                 if app.registry.send_to(member, event).await {
                     delivered_to.push(member.clone());
@@ -195,7 +225,7 @@ pub(crate) async fn handle(
                         from: me.to_string(),
                         text,
                         done,
-                        human: human_origin,
+                        human: has_human_authority,
                     },
                 )
                 .await;
