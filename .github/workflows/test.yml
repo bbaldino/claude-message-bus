@@ -10,9 +10,18 @@ name: test
 # a reusable workflow with no trigger of its own runs only when called. A long
 # branch would otherwise accumulate every change unchecked and meet this gate for
 # the first time at the merge.
+# `workflow_dispatch` is a manual escape hatch, independent of PR events. A push
+# to this branch once produced no run at all — no `synchronize`, and cycling the
+# PR produced no `reopened` either — with Actions enabled, the workflow active,
+# and the same trigger having fired earlier for the PR's `opened` event. Being
+# able to start the gate by hand turns that from "wait and hope" into a check.
+#
+# Note it only becomes usable once this file is on the default branch: GitHub
+# reads `workflow_dispatch` from there, not from the branch being dispatched.
 on:
   workflow_call:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
