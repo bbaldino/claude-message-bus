@@ -1,6 +1,17 @@
-//! Read-only web views over the bus's own data. Performs no writes: it cannot be the
-//! cause of a bug it is being used to investigate, and with no authentication on the
-//! bus, anything this could do would be available to anything that can reach the port.
+//! Web views over the bus's own data.
+//!
+//! Read-only with exactly one exception: deleting an offline agent. Everything
+//! else performs no writes, so the UI cannot be the cause of a bug it is being
+//! used to investigate.
+//!
+//! The exception is deliberate and deliberately narrow. The bus has no
+//! authentication and binds `0.0.0.0`, so anything this can do is available to
+//! anything that can reach the port — which is why the delete refuses an agent
+//! that is online, touches no messages or events, and records what it removed.
+//! An unauthenticated caller can clear metadata for connections that are
+//! already dead, and nothing more.
+//!
+//! See `docs/superpowers/specs/2026-08-05-agent-delete-design.md`.
 
 pub mod html;
 
@@ -487,7 +498,12 @@ async fn agent(State(app): State<App>, Path(name): Path<String>) -> Html<String>
         .await
         .unwrap_or_default();
 
-    let mut b = format!("<h1>{}</h1><h2>rooms</h2><ul>", esc(&name));
+    let mut b = format!(
+        "<h1>{n}</h1><p><a href=\"/agents/{p}/delete\">delete this agent</a></p>\
+         <h2>rooms</h2><ul>",
+        n = esc(&name),
+        p = encode_path_segment(&name),
+    );
     for r in &mine {
         b.push_str(&format!(
             "<li><a href=\"/rooms/{p}\">{n}</a></li>",

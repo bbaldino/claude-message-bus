@@ -1104,3 +1104,25 @@ async fn posting_the_delete_refuses_an_agent_that_came_online_after_the_confirm_
     let agents = get(port, "/agents").await;
     assert!(agents.contains("caas"), "the live agent must survive");
 }
+
+#[tokio::test]
+async fn the_agent_page_links_to_the_delete_page_with_a_percent_encoded_href() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/agents/network-debug%232").await;
+
+    // A bare `#` here would make the browser treat everything after it as a
+    // fragment and request `/agents/network-debug` instead.
+    assert!(
+        body.contains("href=\"/agents/network-debug%232/delete\""),
+        "the delete link must be percent-encoded: {body}"
+    );
+}
