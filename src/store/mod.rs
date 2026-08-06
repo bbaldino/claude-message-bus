@@ -46,6 +46,14 @@ pub struct AgentFootprint {
     pub cursors: i64,
 }
 
+/// Rows actually removed by `forget_agent`, for the audit event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForgetCounts {
+    pub agents: u64,
+    pub memberships: u64,
+    pub cursors: u64,
+}
+
 pub struct Store {
     pool: SqlitePool,
     blobs_dir: std::path::PathBuf,
@@ -304,6 +312,38 @@ impl Store {
             .await?
             .get("n");
         Ok(AgentFootprint { rooms, cursors })
+    }
+
+    /// Delete an agent's own rows: its `agents` entry, its room memberships,
+    /// and its cursors. Messages and events are deliberately untouched — the
+    /// transcript stays readable and the audit trail outlives the agent.
+    ///
+    /// Transactional because a partial failure is worse than none: losing the
+    /// `agents` row while leaving memberships behind strands them, since the
+    /// row is what makes an agent reachable in the UI and therefore deletable.
+    pub async fn forget_agent(&self, name: &str) -> anyhow::Result<ForgetCounts> {
+        let mut tx = self.pool.begin().await?;
+        let memberships = sqlx::query("DELETE FROM room_members WHERE agent_name = ?1")
+            .bind(name)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let cursors = sqlx::query("DELETE FROM cursors WHERE agent_name = ?1")
+            .bind(name)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let agents = sqlx::query("DELETE FROM agents WHERE name = ?1")
+            .bind(name)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(ForgetCounts {
+            agents,
+            memberships,
+            cursors,
+        })
     }
 
     pub async fn rooms(&self) -> anyhow::Result<Vec<RoomRow>> {

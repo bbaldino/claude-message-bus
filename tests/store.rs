@@ -828,3 +828,81 @@ async fn agent_footprint_of_an_unknown_agent_is_empty() {
     assert!(fp.rooms.is_empty());
     assert_eq!(fp.cursors, 0);
 }
+
+#[tokio::test]
+async fn forget_agent_removes_row_memberships_and_cursors_but_keeps_history() {
+    let (_d, store) = temp_store().await;
+    store
+        .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
+        .await
+        .unwrap();
+    store
+        .join_room("protocol", "network-debug#2")
+        .await
+        .unwrap();
+    store.join_room("protocol", "caas").await.unwrap();
+    store
+        .set_cursor("protocol", "network-debug#2", 3)
+        .await
+        .unwrap();
+    store
+        .append_message("protocol", "network-debug#2", "hello", false, false)
+        .await
+        .unwrap();
+    store
+        .append_event(
+            "agent_registered",
+            Some("network-debug#2"),
+            None,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+
+    let counts = store.forget_agent("network-debug#2").await.unwrap();
+
+    assert_eq!(counts.agents, 1);
+    assert_eq!(counts.memberships, 1);
+    assert_eq!(counts.cursors, 1);
+
+    // Gone from the three tables it owns.
+    assert!(
+        !store
+            .agents()
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.name == "network-debug#2")
+    );
+    assert_eq!(
+        store.room_members("protocol").await.unwrap(),
+        vec!["caas".to_string()]
+    );
+    assert_eq!(
+        store.cursor("protocol", "network-debug#2").await.unwrap(),
+        0
+    );
+
+    // History and audit trail survive — this is the whole reason they are excluded.
+    let msgs = store.history("protocol", 10).await.unwrap();
+    assert_eq!(msgs.len(), 1, "the message must survive the delete");
+    assert_eq!(msgs[0].from_agent, "network-debug#2");
+    assert_eq!(
+        store
+            .events_for_agent("network-debug#2", 10)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the audit trail must survive the delete"
+    );
+}
+
+#[tokio::test]
+async fn forget_agent_on_an_unknown_name_removes_nothing_and_does_not_error() {
+    let (_d, store) = temp_store().await;
+    let counts = store.forget_agent("never-existed").await.unwrap();
+    assert_eq!(counts.agents, 0);
+    assert_eq!(counts.memberships, 0);
+    assert_eq!(counts.cursors, 0);
+}
