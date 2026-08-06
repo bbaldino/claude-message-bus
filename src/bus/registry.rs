@@ -275,6 +275,14 @@ impl Registry {
         }
     }
 
+    /// Stop fanning `room`'s messages to this observer. Removes one entry — an
+    /// observer watching several rooms keeps the rest.
+    pub async fn unwatch(&self, id: ObserverId, room: &str) {
+        if let Some(o) = self.observers.lock().await.get_mut(&id) {
+            o.rooms.remove(room);
+        }
+    }
+
     /// Fan a room event out to every observer currently watching it.
     /// Observers are spectators, not recipients: unlike `send_to`, there is
     /// no boolean result and no `delivered_to`/`queued_for` bookkeeping —

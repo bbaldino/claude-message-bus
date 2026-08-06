@@ -739,6 +739,14 @@ async fn handle_observer(
             });
         }
 
+        ToBus::Unwatch { req_id, room } => {
+            app.registry.unwatch(id, &room).await;
+            let _ = control_tx.try_send(FromBus::Reply {
+                req_id,
+                result: ReplyResult::Watching { room },
+            });
+        }
+
         ToBus::History {
             req_id,
             room,
@@ -800,6 +808,7 @@ fn req_id_of(cmd: &ToBus) -> Option<u64> {
         | ToBus::ListFiles { req_id, .. }
         | ToBus::Resume { req_id, .. }
         | ToBus::Watch { req_id, .. }
+        | ToBus::Unwatch { req_id, .. }
         | ToBus::WatchPresence { req_id }
         | ToBus::WatchEvents { req_id, .. } => Some(*req_id),
         ToBus::Register { .. } | ToBus::Observe { .. } | ToBus::Ack { .. } => None,

@@ -2712,3 +2712,138 @@ async fn a_disconnect_presence_push_carries_the_agents_real_host() {
         "the offline push must carry the host the connection registered from"
     );
 }
+
+#[tokio::test]
+async fn unwatching_stops_a_rooms_messages() {
+    let (_d, port) = common::start_bus().await;
+    let mut obs = common::connect_observer(port, "console").await;
+    common::next_event(&mut obs).await; // Observing
+    common::send(
+        &mut obs,
+        &ToBus::Watch {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut obs).await; // Watching
+
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    common::send(
+        &mut caas,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "before".into(),
+            done: false,
+        },
+    )
+    .await;
+
+    let saw_before = matches!(
+        common::next_event(&mut obs).await,
+        FromBus::Message { text, .. } if text == "before"
+    );
+    assert!(saw_before, "the observer must receive while watching");
+
+    common::send(
+        &mut obs,
+        &ToBus::Unwatch {
+            req_id: 3,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut obs).await; // reply
+
+    common::send(
+        &mut caas,
+        &ToBus::Send {
+            req_id: 4,
+            target: Target::Room {
+                room: "protocol".into(),
+            },
+            text: "after".into(),
+            done: false,
+        },
+    )
+    .await;
+
+    // Nothing message-shaped may arrive now.
+    let mut leaked = false;
+    for _ in 0..3 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            common::next_event(&mut obs),
+        )
+        .await
+        {
+            Ok(FromBus::Message { .. }) => leaked = true,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert!(!leaked, "unwatch must stop delivery");
+}
+
+#[tokio::test]
+async fn unwatching_one_room_leaves_another_watched() {
+    // The bug an Unwatch implementation actually produces: clearing the set
+    // rather than removing one entry.
+    let (_d, port) = common::start_bus().await;
+    let mut obs = common::connect_observer(port, "console").await;
+    common::send(
+        &mut obs,
+        &ToBus::Watch {
+            req_id: 1,
+            room: "a".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut obs).await;
+    common::send(
+        &mut obs,
+        &ToBus::Watch {
+            req_id: 2,
+            room: "b".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut obs).await;
+    common::send(
+        &mut obs,
+        &ToBus::Unwatch {
+            req_id: 3,
+            room: "a".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut obs).await;
+
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    common::send(
+        &mut caas,
+        &ToBus::Send {
+            req_id: 4,
+            target: Target::Room { room: "b".into() },
+            text: "still watching b".into(),
+            done: false,
+        },
+    )
+    .await;
+
+    let mut saw = false;
+    for _ in 0..6 {
+        if let FromBus::Message { text, .. } = common::next_event(&mut obs).await
+            && text == "still watching b"
+        {
+            saw = true;
+            break;
+        }
+    }
+    assert!(saw, "unwatching a must not disturb b");
+}

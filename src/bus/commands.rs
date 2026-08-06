@@ -54,6 +54,12 @@ pub(crate) async fn handle(
                 message: "watch is for observers; a registered agent should use join".into(),
             });
         }
+        ToBus::Unwatch { req_id, .. } => {
+            let _ = control_tx.try_send(FromBus::Error {
+                req_id: Some(req_id),
+                message: "unwatch is for observers; a registered agent should use join".into(),
+            });
+        }
         ToBus::WatchPresence { req_id } => {
             let _ = control_tx.try_send(FromBus::Error {
                 req_id: Some(req_id),

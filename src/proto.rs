@@ -56,6 +56,15 @@ pub enum ToBus {
         req_id: u64,
         room: String,
     },
+    /// Stop watching a room. Observer-only.
+    ///
+    /// `Watch` alone would let a console accumulate every room it has ever
+    /// selected, which both wastes fan-out and undoes the narrowing that made
+    /// the observer subscriptions opt-in.
+    Unwatch {
+        req_id: u64,
+        room: String,
+    },
     Send {
         req_id: u64,
         target: Target,
