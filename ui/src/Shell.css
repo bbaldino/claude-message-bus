@@ -1,0 +1,24 @@
+.shell {
+  display: grid;
+  grid-template-rows: var(--topbar-height) 1fr;
+  height: 100vh;
+}
+
+.shell-body {
+  display: grid;
+  grid-template-columns: var(--rail-width) 1fr;
+  min-height: 0;
+}
+
+.shell-main {
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--surface-page);
+}
+
+.shell-placeholder {
+  color: var(--text-quaternary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 24px;
+}

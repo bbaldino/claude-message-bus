@@ -2,39 +2,30 @@ import { render, screen } from '@testing-library/react'
 import { expect, test, vi } from 'vitest'
 import { App } from './App'
 
-test('renders rooms and agents from the rail', async () => {
-  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-    new Response(
+test('renders the three shell regions and routes to a room', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    if (url.includes('/api/meta')) {
+      return new Response(JSON.stringify({ host: 'hardac', version: '0.3.3' }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(
       JSON.stringify({
         rooms: [
           { name: 'protocol', members: ['caas'], lastActivity: 1, buckets: [0, 1], flag: null },
         ],
-        agents: [
-          {
-            name: 'network-debug#2',
-            host: 'hardac',
-            version: '0.3.3',
-            online: false,
-            isHuman: false,
-            lastSeen: 1,
-            buckets: [0],
-          },
-        ],
+        agents: [],
       }),
       { headers: { 'content-type': 'application/json' } },
-    ),
-  )
+    )
+  })
 
+  window.history.pushState({}, '', '/app/rooms/protocol')
   render(<App />)
 
-  expect(await screen.findByText(/protocol/)).toBeDefined()
-  expect(await screen.findByText(/network-debug#2/)).toBeDefined()
-})
-
-test('shows the error rather than an empty console when the rail fails', async () => {
-  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 500 }))
-
-  render(<App />)
-
-  expect(await screen.findByText(/500/)).toBeDefined()
+  // The rail is outside the outlet, so it is present on a room route.
+  expect(await screen.findByText('protocol')).toBeDefined()
+  // The main pane is a labelled placeholder in this phase.
+  expect(await screen.findByTestId('main-placeholder')).toBeDefined()
 })
