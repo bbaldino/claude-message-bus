@@ -84,6 +84,38 @@ test('the pill reaches disconnected once the reconnect backoff saturates', () =>
   expect(states[states.length - 1]).toBe('disconnected')
 })
 
+test('a start after a stop reconnects: the latch does not stay latched forever', () => {
+  // React StrictMode double-invokes the mount effect in dev — start(); stop();
+  // start() — with nothing to reset the `stopped` flag in between, the second
+  // start() was a silent no-op and the socket never opened again.
+  const live = createLive('ws://x/ws')
+  live.start()
+  expect(FakeSocket.instances.length).toBe(1)
+
+  live.stop()
+  live.start()
+
+  expect(FakeSocket.instances.length).toBe(2)
+})
+
+test('stop kills the retry loop: no socket appears when the old reconnect timer would have fired', () => {
+  // The complementary property: fixing the latch reset must not resurrect the
+  // reconnect that a `stop()` mid-backoff is supposed to have cancelled.
+  const live = createLive('ws://x/ws')
+  live.start()
+  const before = FakeSocket.instances.length
+
+  // Drop the socket so a reconnect gets scheduled for `backoff` ms out.
+  latest().onclose?.()
+
+  live.stop()
+
+  // Advance well past the point the scheduled reconnect would have fired.
+  vi.advanceTimersByTime(20_000)
+
+  expect(FakeSocket.instances.length).toBe(before)
+})
+
 test('a reconnect that succeeds goes back to live and resets the backoff', () => {
   const live = createLive('ws://x/ws')
   live.on('connection', (p) => states.push(p as Connection))

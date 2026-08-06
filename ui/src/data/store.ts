@@ -112,6 +112,15 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
   })
 
   let timer: ReturnType<typeof setInterval> | null = null
+  // Bumped by every `start()` and `stop()` so an in-flight `start()` can tell,
+  // once its `fetchRail` await resolves, whether it has since been superseded.
+  // Without this, a `stop()` that lands while `timer` is still null (the fetch
+  // hasn't finished, so no interval exists yet to clear) is a no-op, and the
+  // `start()` that was already in flight installs its interval anyway — one
+  // React StrictMode's double-invoked effect leaves running forever, because
+  // the *next* `start()`'s interval overwrites the `timer` variable without
+  // ever having cleared the first one.
+  let generation = 0
 
   return {
     getState: () => state,
@@ -125,6 +134,7 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
       deps.live.watchRoom(name)
     },
     async start() {
+      const myGeneration = ++generation
       deps.live.start()
       const refresh = async () => {
         try {
@@ -135,10 +145,18 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
         }
       }
       await refresh()
+      // A `stop()` (or a newer `start()`) ran while the fetch above was in
+      // flight. This run has been superseded; installing an interval here
+      // would be the leaked one nothing ever clears.
+      if (myGeneration !== generation) return
       timer = setInterval(refresh, 25_000)
     },
     stop() {
-      if (timer) clearInterval(timer)
+      generation++
+      if (timer) {
+        clearInterval(timer)
+        timer = null
+      }
       deps.live.stop()
     },
   }

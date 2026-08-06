@@ -114,3 +114,39 @@ test('subscribers are notified when state changes', () => {
   live.emit('connection', 'reconnecting')
   expect(seen).toHaveBeenCalled()
 })
+
+test('an interleaved start()/stop()/start() during the initial fetch leaves no leaked interval', async () => {
+  // React StrictMode double-invokes the mount effect in dev: start(); stop();
+  // start() — all three synchronous, before the first fetchRail() promise
+  // settles. `start()` is async and only assigns `timer` after awaiting
+  // fetchRail, so the `stop()` in the middle used to find `timer` still null
+  // and its `clearInterval` was a no-op — leaving the first start()'s interval
+  // running forever once the second start() overwrote the `timer` variable.
+  vi.useFakeTimers()
+  try {
+    let calls = 0
+    const fetchRail = () =>
+      new Promise<RailSummary>((resolve) => {
+        calls++
+        queueMicrotask(() => resolve(emptyRail))
+      })
+    const store = createStore({ live, fetchRail })
+
+    const first = store.start()
+    store.stop()
+    const second = store.start()
+    await Promise.all([first, second])
+
+    // Only the surviving (second) start() should have installed an interval.
+    expect(vi.getTimerCount()).toBe(1)
+
+    calls = 0
+    vi.advanceTimersByTime(25_000)
+    expect(calls).toBe(1)
+
+    store.stop()
+    expect(vi.getTimerCount()).toBe(0)
+  } finally {
+    vi.useRealTimers()
+  }
+})
