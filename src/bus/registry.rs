@@ -49,6 +49,9 @@ pub type ObserverId = u64;
 struct ObserverConn {
     tx: Sender,
     rooms: HashSet<String>,
+    presence: bool,
+    /// `None` = not subscribed. `Some(None)` = whole bus. `Some(Some(room))` = one room.
+    events: Option<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -242,6 +245,8 @@ impl Registry {
             ObserverConn {
                 tx,
                 rooms: HashSet::new(),
+                presence: false,
+                events: None,
             },
         );
         id
@@ -272,6 +277,44 @@ impl Registry {
         let observers = self.observers.lock().await;
         for o in observers.values().filter(|o| o.rooms.contains(room)) {
             let _ = o.tx.try_send(msg.clone());
+        }
+    }
+
+    /// Start sending presence changes to this observer.
+    pub async fn watch_presence(&self, id: ObserverId) {
+        if let Some(o) = self.observers.lock().await.get_mut(&id) {
+            o.presence = true;
+        }
+    }
+
+    /// Start sending events to this observer, optionally scoped to one room.
+    pub async fn watch_events(&self, id: ObserverId, room: Option<String>) {
+        if let Some(o) = self.observers.lock().await.get_mut(&id) {
+            o.events = Some(room);
+        }
+    }
+
+    /// Fan a presence change to every observer that subscribed. Like
+    /// `notify_watchers`, observers are spectators: a full queue is dropped.
+    pub async fn notify_presence(&self, msg: FromBus) {
+        let observers = self.observers.lock().await;
+        for o in observers.values().filter(|o| o.presence) {
+            let _ = o.tx.try_send(msg.clone());
+        }
+    }
+
+    /// Fan an event to every observer whose subscription scope matches.
+    pub async fn notify_event(&self, room: Option<&str>, msg: FromBus) {
+        let observers = self.observers.lock().await;
+        for o in observers.values() {
+            let matches = match &o.events {
+                None => false,
+                Some(None) => true,
+                Some(Some(want)) => room == Some(want.as_str()),
+            };
+            if matches {
+                let _ = o.tx.try_send(msg.clone());
+            }
         }
     }
 }

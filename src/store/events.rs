@@ -42,18 +42,32 @@ impl Store {
         room: Option<&str>,
         detail: Value,
     ) -> anyhow::Result<i64> {
+        let created_at = now_ms();
         let res = sqlx::query(
             "INSERT INTO events (created_at, kind, agent, room, detail_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )
-        .bind(now_ms())
+        .bind(created_at)
         .bind(kind)
         .bind(agent)
         .bind(room)
         .bind(detail.to_string())
         .execute(self.pool())
         .await?;
-        Ok(res.last_insert_rowid())
+        let id = res.last_insert_rowid();
+
+        // Ignored deliberately: an error here means nobody is listening, which is
+        // the normal case for the CLI and for tests.
+        let _ = self.events_tx.send(EventRow {
+            id,
+            created_at,
+            kind: kind.to_string(),
+            agent: agent.map(str::to_string),
+            room: room.map(str::to_string),
+            detail: detail.clone(),
+        });
+
+        Ok(id)
     }
 
     /// Most recent first — what a dashboard wants.

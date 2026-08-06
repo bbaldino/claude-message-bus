@@ -54,6 +54,20 @@ pub(crate) async fn handle(
                 message: "watch is for observers; a registered agent should use join".into(),
             });
         }
+        ToBus::WatchPresence { req_id } => {
+            let _ = control_tx.try_send(FromBus::Error {
+                req_id: Some(req_id),
+                message: "watch_presence is for observers; a registered agent has no use for it"
+                    .into(),
+            });
+        }
+        ToBus::WatchEvents { req_id, .. } => {
+            let _ = control_tx.try_send(FromBus::Error {
+                req_id: Some(req_id),
+                message: "watch_events is for observers; a registered agent has no use for it"
+                    .into(),
+            });
+        }
 
         ToBus::Join { req_id, room } => {
             if let Err(e) = app.store.join_room(&room, me).await {

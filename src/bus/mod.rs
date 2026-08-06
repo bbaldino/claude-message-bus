@@ -228,6 +228,57 @@ pub async fn serve_on_full(
         keepalive,
         relayers,
     };
+    // Events reach observers through the store's broadcast channel, so every
+    // append is fanned out regardless of which call site produced it.
+    {
+        let app_for_events = app.clone();
+        let mut rx = app.store.subscribe_events();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(e) => {
+                        let room = e.room.clone();
+                        app_for_events
+                            .registry
+                            .notify_event(
+                                room.as_deref(),
+                                FromBus::Event {
+                                    id: e.id,
+                                    kind: e.kind,
+                                    agent: e.agent,
+                                    room: e.room,
+                                    detail: e.detail,
+                                    created_at: e.created_at,
+                                },
+                            )
+                            .await;
+                    }
+                    // `Lagged` and `Closed` are not the same failure and must
+                    // not be handled identically — a bare `while let Ok(e) =
+                    // rx.recv().await` treats a recoverable lag as a reason to
+                    // exit forever, which silently stops relaying events to
+                    // every observer for the rest of the process's life. Log
+                    // and keep going on `Lagged` (dropping the missed tail is
+                    // acceptable); only `Closed` — the store dropping its
+                    // sender, i.e. shutdown — actually ends the relay.
+                    // `event_relay_keep_going` isolates that decision so it
+                    // can be unit-tested without a live channel; resist
+                    // "simplifying" this back into a `while let`.
+                    Err(e) => {
+                        if let tokio::sync::broadcast::error::RecvError::Lagged(n) = &e {
+                            eprintln!(
+                                "event relay lagged; {n} events were not delivered to observers"
+                            );
+                        }
+                        if !event_relay_keep_going(&e) {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     let router = Router::new()
         .route("/ws", get(upgrade))
         .route("/human-active", axum::routing::post(human_active))
@@ -460,6 +511,14 @@ async fn connection(socket: WebSocket, app: App) {
                         name: effective.clone(),
                     });
                     send_unread_summaries(&app, &effective, &control_tx).await;
+                    app.registry
+                        .notify_presence(FromBus::Presence {
+                            name: effective.clone(),
+                            host: host.clone(),
+                            online: true,
+                            last_seen: crate::store::now_ms(),
+                        })
+                        .await;
                     continue;
                 }
 
@@ -544,6 +603,14 @@ async fn connection(socket: WebSocket, app: App) {
             eprintln!("could not mark {name} offline on disconnect: {e}");
         }
         app.registry.detach(&name).await;
+        app.registry
+            .notify_presence(FromBus::Presence {
+                name: name.clone(),
+                host: String::new(),
+                online: false,
+                last_seen: crate::store::now_ms(),
+            })
+            .await;
         if is_human {
             // Ephemeral by design — see `leave_all_rooms`.
             let _ = app.store.leave_all_rooms(&name).await;
@@ -638,6 +705,26 @@ async fn handle_observer(
 
         ToBus::ListRooms { req_id } => commands::reply_list_rooms(app, control_tx, req_id).await,
 
+        ToBus::WatchPresence { req_id } => {
+            app.registry.watch_presence(id).await;
+            let _ = control_tx.try_send(FromBus::Reply {
+                req_id,
+                result: ReplyResult::Watching {
+                    room: "<presence>".to_string(),
+                },
+            });
+        }
+
+        ToBus::WatchEvents { req_id, room } => {
+            app.registry.watch_events(id, room.clone()).await;
+            let _ = control_tx.try_send(FromBus::Reply {
+                req_id,
+                result: ReplyResult::Watching {
+                    room: room.unwrap_or_else(|| "<all>".to_string()),
+                },
+            });
+        }
+
         other => {
             let _ = control_tx.try_send(FromBus::Error {
                 req_id: req_id_of(&other),
@@ -663,7 +750,45 @@ fn req_id_of(cmd: &ToBus) -> Option<u64> {
         | ToBus::GetFile { req_id, .. }
         | ToBus::ListFiles { req_id, .. }
         | ToBus::Resume { req_id, .. }
-        | ToBus::Watch { req_id, .. } => Some(*req_id),
+        | ToBus::Watch { req_id, .. }
+        | ToBus::WatchPresence { req_id }
+        | ToBus::WatchEvents { req_id, .. } => Some(*req_id),
         ToBus::Register { .. } | ToBus::Observe { .. } | ToBus::Ack { .. } => None,
+    }
+}
+
+/// Whether the event relay task (spawned in `serve_on_full`) should keep
+/// running after `rx.recv()` on the store's broadcast channel returns `err`.
+///
+/// `Lagged` is recoverable — the relay merely missed some events because it
+/// fell behind the channel's capacity — and must return `true`. `Closed`
+/// means the store dropped its sender (process shutdown) and must return
+/// `false`. Pulled out as its own function so this decision is unit-testable
+/// without standing up a live broadcast channel and actually forcing a lag.
+fn event_relay_keep_going(err: &tokio::sync::broadcast::error::RecvError) -> bool {
+    matches!(err, tokio::sync::broadcast::error::RecvError::Lagged(_))
+}
+
+#[cfg(test)]
+mod event_relay_tests {
+    use super::*;
+    use tokio::sync::broadcast::error::RecvError;
+
+    #[test]
+    fn a_lag_is_recoverable_but_closed_stops_the_relay() {
+        // This is the regression the fix targets: a bare `while let Ok(e) =
+        // rx.recv().await` treats every `Err` the same way, so `Lagged` —
+        // which just means some events were skipped, not that anything is
+        // wrong — would silently and permanently stop the relay on its first
+        // burst of traffic. Sabotage check: `matches!(err, _)` (always true)
+        // would pass the first assertion here but fail the second.
+        assert!(
+            event_relay_keep_going(&RecvError::Lagged(5)),
+            "a lag must not stop the relay — it must log and keep receiving"
+        );
+        assert!(
+            !event_relay_keep_going(&RecvError::Closed),
+            "a closed channel (store dropped, i.e. shutdown) must stop the relay"
+        );
     }
 }

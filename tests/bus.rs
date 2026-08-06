@@ -2494,3 +2494,79 @@ async fn the_list_agents_reply_carries_each_agents_version() {
         other => panic!("expected an Agents reply, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_subscribed_observer_receives_presence_and_events() {
+    let (_d, port) = common::start_bus().await;
+    let mut obs = common::connect_observer(port, "console").await;
+    common::send(&mut obs, &ToBus::WatchPresence { req_id: 1 }).await;
+    common::send(
+        &mut obs,
+        &ToBus::WatchEvents {
+            req_id: 2,
+            room: None,
+        },
+    )
+    .await;
+    // Drain the two replies.
+    common::next_event(&mut obs).await;
+    common::next_event(&mut obs).await;
+
+    // A registering agent produces both a presence change and an event.
+    let _agent = common::connect(port, "caas").await;
+
+    let mut saw_presence = false;
+    let mut saw_event = false;
+    for _ in 0..8 {
+        match common::next_event(&mut obs).await {
+            FromBus::Presence { name, online, .. } if name == "caas" && online => {
+                saw_presence = true
+            }
+            FromBus::Event { kind, .. } if kind == "agent_registered" => saw_event = true,
+            _ => {}
+        }
+        if saw_presence && saw_event {
+            break;
+        }
+    }
+    assert!(saw_presence, "a subscribed observer must see presence");
+    assert!(saw_event, "a subscribed observer must see events");
+}
+
+#[tokio::test]
+async fn an_unsubscribed_observer_receives_neither() {
+    let (_d, port) = common::start_bus().await;
+    // Watch a room only — exactly what `claude-bus tail` does.
+    let mut obs = common::connect_observer(port, "tail").await;
+    common::send(
+        &mut obs,
+        &ToBus::Watch {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut obs).await; // Watching reply
+
+    let _agent = common::connect(port, "caas").await;
+
+    // Nothing presence- or event-shaped may arrive. This is the guarantee that
+    // made the subscriptions opt-in rather than a firehose.
+    let mut leaked = false;
+    for _ in 0..3 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            common::next_event(&mut obs),
+        )
+        .await
+        {
+            Ok(FromBus::Presence { .. }) | Ok(FromBus::Event { .. }) => leaked = true,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert!(
+        !leaked,
+        "an unsubscribed observer must see neither — this is tail's guarantee"
+    );
+}

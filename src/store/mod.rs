@@ -58,6 +58,7 @@ pub struct ForgetCounts {
 pub struct Store {
     pool: SqlitePool,
     blobs_dir: std::path::PathBuf,
+    events_tx: tokio::sync::broadcast::Sender<crate::store::events::EventRow>,
 }
 
 pub fn now_ms() -> i64 {
@@ -95,10 +96,30 @@ impl Store {
                 .with_context(|| format!("applying schema statement: {sql}"))?;
         }
 
-        let store = Self { pool, blobs_dir };
+        // 256 is ample for a personal bus; a lagging receiver drops rather than
+        // blocking the write path, which is the correct trade for an audit tail.
+        let (events_tx, _) = tokio::sync::broadcast::channel(256);
+
+        let store = Self {
+            pool,
+            blobs_dir,
+            events_tx,
+        };
         store.migrate().await?;
 
         Ok(store)
+    }
+
+    /// Subscribe to events as they are appended.
+    ///
+    /// A broadcast channel rather than a registry callback, so `Store` stays
+    /// unaware of the bus. Hooking `append_event` — the single funnel every kind
+    /// already passes through — is what stops a kind added later from silently
+    /// failing to appear in the dock.
+    pub fn subscribe_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::store::events::EventRow> {
+        self.events_tx.subscribe()
     }
 
     /// Bring an existing database up to the current schema.

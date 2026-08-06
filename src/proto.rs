@@ -99,6 +99,16 @@ pub enum ToBus {
         room: String,
         last_delivered_id: i64,
     },
+    /// Subscribe to agent connect/disconnect. Observer-only, opt-in: a `tail`
+    /// watching one room must not start receiving fleet-wide traffic.
+    WatchPresence {
+        req_id: u64,
+    },
+    /// Subscribe to the event stream. `room: None` is the whole bus.
+    WatchEvents {
+        req_id: u64,
+        room: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -235,6 +245,22 @@ pub enum FromBus {
     Error {
         req_id: Option<u64>,
         message: String,
+    },
+    /// An agent connected or disconnected. Only sent to observers that asked.
+    Presence {
+        name: String,
+        host: String,
+        online: bool,
+        last_seen: i64,
+    },
+    /// A bus event, as appended to the audit log. Only sent to observers that asked.
+    Event {
+        id: i64,
+        kind: String,
+        agent: Option<String>,
+        room: Option<String>,
+        detail: serde_json::Value,
+        created_at: i64,
     },
 }
 
