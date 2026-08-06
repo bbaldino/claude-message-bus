@@ -1,0 +1,146 @@
+.rail {
+  background: var(--surface-rail);
+  border-right: 1px solid var(--border-primary);
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.rail-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 16px 16px 9px;
+}
+
+.rail-header.agents {
+  padding-top: 22px;
+}
+
+.rail-label {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-label);
+}
+
+.rail-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dimmest);
+}
+
+.rail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.row {
+  display: block;
+  padding: 8px 9px;
+  border-radius: 5px;
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+
+.row:hover {
+  background: var(--row-hover);
+}
+
+.row.selected {
+  background: var(--row-selected);
+  border-left-color: var(--accent);
+}
+
+.row-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row-name {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.row.selected .row-name {
+  color: var(--text-primary);
+}
+
+.row-name.empty {
+  color: var(--text-quaternary);
+}
+
+.row-subtitle {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-quaternary-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flag {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex: none;
+}
+
+.flag.needs-you {
+  color: var(--attention);
+  background: var(--attention-bg);
+  border: 1px solid var(--attention-border);
+}
+
+.flag.blocked {
+  color: var(--destructive);
+  background: var(--destructive-bg);
+  border: 1px solid var(--destructive-border);
+}
+
+.row.flag-needs-you {
+  border-left-color: var(--attention);
+}
+
+.agent-row {
+  padding: 7px 9px;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--offline-dot);
+}
+
+.dot.online {
+  background: var(--presence);
+}
+
+.agent-age {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dimmer);
+  width: 26px;
+  text-align: right;
+  flex: none;
+}
+
+.spacer {
+  margin-left: auto;
+}
