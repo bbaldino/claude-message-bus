@@ -39,3 +39,14 @@ test('shows the error rather than an empty page when the api fails', async () =>
 
   expect(await screen.findByText(/connection refused/)).toBeDefined()
 })
+
+test('shows the status when the api returns a non-2xx', async () => {
+  // fetch does not reject on a 500 — it resolves with ok: false. Without the
+  // explicit check the body would go to JSON.parse and the page would fail
+  // somewhere less legible than "the server said 500".
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 500 }))
+
+  render(<App />)
+
+  expect(await screen.findByText(/500/)).toBeDefined()
+})
