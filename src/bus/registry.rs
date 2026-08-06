@@ -172,6 +172,16 @@ impl Registry {
         names
     }
 
+    /// Whether `name` currently holds a live connection.
+    ///
+    /// The authority for liveness, in preference to the persisted
+    /// `agents.online` column: that column is reconciled at startup by
+    /// `Store::mark_all_offline`, but between reconciliations only this map
+    /// knows who is actually routable.
+    pub async fn is_online(&self, name: &str) -> bool {
+        self.conns.lock().await.contains_key(name)
+    }
+
     /// Every effective name whose base matches `base`, for building the
     /// "ambiguous: dashboard@lisa, dashboard@nas" error.
     pub async fn hosts_for(&self, base: &str) -> Vec<String> {
@@ -421,6 +431,19 @@ mod tests {
         reg.attach("dashboard", "lisa", tx1).await;
         reg.attach("caas", "lisa", tx2).await;
         assert_eq!(reg.online().await, vec!["caas", "dashboard"]);
+    }
+
+    #[tokio::test]
+    async fn is_online_reports_attached_names_only() {
+        let reg = Registry::new();
+        let (tx, _rx) = channel();
+        reg.attach("network-debug", "hardac", tx).await;
+
+        assert!(reg.is_online("network-debug").await);
+        // The suffixed tombstone is a different name and must not be shadowed
+        // by the live bare name.
+        assert!(!reg.is_online("network-debug#2").await);
+        assert!(!reg.is_online("never-existed").await);
     }
 
     #[tokio::test]
