@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useStore } from '../useStore'
 import type { RailAgent } from '../types/RailAgent'
 import type { RailRoom } from '../types/RailRoom'
@@ -27,9 +28,25 @@ function sortAgents(agents: RailAgent[]): RailAgent[] {
   return [...agents].sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen)
 }
 
+/// One ticker shared by the whole rail, not one per row — the handoff says
+/// relative timestamps are "derived per render... re-derive on a timer so '4s
+/// ago' stays true". A single interval here re-renders every row at once; eight
+/// rows each owning an interval is the version of this that causes problems
+/// later. One second matches the handoff's own "4s ago" granularity. Cleaned up
+/// on unmount — this codebase has already had a bug where an interval outlived
+/// its owner.
+function useTicker(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs)
+    return () => clearInterval(id)
+  }, [intervalMs])
+  return now
+}
+
 export function Rail() {
   const { rail } = useStore()
-  const now = Date.now()
+  const now = useTicker(1000)
   const rooms = sortRooms(rail?.rooms ?? [])
   const agents = sortAgents(rail?.agents ?? [])
   const online = agents.filter((a) => a.online).length

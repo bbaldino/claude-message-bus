@@ -23,12 +23,18 @@ export function AgentRow({ agent, now }: { agent: RailAgent; now: number }) {
     >
       <div className="row-line">
         <span className={`dot ${agent.online ? 'online' : ''}`} />
-        <span className={`row-name ${agent.online ? '' : 'empty'}`} data-testid="agent-name">
+        <span
+          className={`agent-name ${agent.online ? 'online' : 'offline'}`}
+          data-testid="agent-name"
+        >
           {agent.name}
         </span>
+        {agent.isHuman && <span className="badge-human">human</span>}
         <div className="spacer" />
         <VolumeStrip buckets={agent.buckets} variant="rail" />
-        <span className="agent-age">{age(agent.lastSeen, now)}</span>
+        <span className="agent-age" data-testid="agent-age">
+          {age(agent.lastSeen, now)}
+        </span>
       </div>
     </Link>
   )

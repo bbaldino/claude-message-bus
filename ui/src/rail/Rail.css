@@ -120,6 +120,45 @@
   padding: 7px 9px;
 }
 
+/* Distinct from .row-name: the agent row's name is mono 400 (identity, not the
+ * emphasis a room name carries) and its colour tracks presence rather than
+ * selection — online #dfe3e8 (--text-body-strong), offline #79818d
+ * (--text-quaternary), per the handoff's agent row spec. */
+.agent-name {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.agent-name.online {
+  color: var(--text-body-strong);
+}
+
+.agent-name.offline {
+  color: var(--text-quaternary);
+}
+
+/* Same chip geometry as the flag/message-byline `human` badge, violet hue,
+ * no fill — the handoff's byline spec (mono 500 9px, .08em, uppercase, colour +
+ * border only) is the only place this badge's exact styling is pinned, and it is
+ * referenced by name elsewhere as the same badge. */
+.badge-human {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--human);
+  border: 1px solid var(--human-border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex: none;
+}
+
 .dot {
   width: 6px;
   height: 6px;
