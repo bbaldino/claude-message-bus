@@ -337,12 +337,16 @@ body {
 Replace the top of `ui/src/main.tsx` so the imports precede the render:
 
 ```tsx
-import '@fontsource/ibm-plex-sans/400.css'
-import '@fontsource/ibm-plex-sans/500.css'
-import '@fontsource/ibm-plex-sans/600.css'
-import '@fontsource/ibm-plex-mono/400.css'
-import '@fontsource/ibm-plex-mono/500.css'
-import '@fontsource/ibm-plex-mono/600.css'
+// The `latin-` prefix is load-bearing. The unprefixed entrypoints emit @font-face
+// rules for every subset — cyrillic, greek, vietnamese, latin-ext — which builds
+// 33 WOFF2 files totalling ~472K, all of them embedded into the binary. Latin-only
+// is 6 files and ~90K, which is what the spec asks for.
+import '@fontsource/ibm-plex-sans/latin-400.css'
+import '@fontsource/ibm-plex-sans/latin-500.css'
+import '@fontsource/ibm-plex-sans/latin-600.css'
+import '@fontsource/ibm-plex-mono/latin-400.css'
+import '@fontsource/ibm-plex-mono/latin-500.css'
+import '@fontsource/ibm-plex-mono/latin-600.css'
 import './theme.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -359,11 +363,14 @@ createRoot(document.getElementById('root')!).render(
 
 ```bash
 npm run build
-ls dist/assets/*.woff2 | head
+ls dist/assets/*.woff2 | wc -l          # expect 6, not 33
+du -ch dist/assets/*.woff2 | tail -1    # expect ~90K, not ~472K
 grep -ric "fonts.googleapis\|fonts.gstatic" dist/ || echo "no CDN references: good"
 ```
 
-Expected: WOFF2 files present in `dist/assets`, and zero references to Google's font hosts. If any appear, a stylesheet is pulling from the CDN and the build must be fixed before continuing — on an isolated LAN those fonts never load.
+Expected: six WOFF2 files in `dist/assets` totalling roughly 90K, and zero references
+to Google's font hosts. A count near 33 means an unprefixed entrypoint slipped back
+in and every Unicode subset is being embedded. If any appear, a stylesheet is pulling from the CDN and the build must be fixed before continuing — on an isolated LAN those fonts never load.
 
 - [ ] **Step 5: Run the frontend gate and commit**
 
