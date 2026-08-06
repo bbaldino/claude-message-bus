@@ -7,3 +7,6 @@ blobs/
 node_modules/
 .claude/worktrees/
 .superpowers/
+ui/node_modules
+ui/dist/*
+!ui/dist/.gitkeep
