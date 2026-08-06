@@ -447,6 +447,33 @@ impl Store {
         Ok(rows.iter().map(message_row).collect())
     }
 
+    /// The `limit` messages immediately before `before_id`, returned
+    /// oldest-first like `history` — the backwards-scrollback counterpart.
+    ///
+    /// `history` is left untouched rather than growing an `Option<i64>`
+    /// cursor parameter: it has many call sites, and threading an unused
+    /// `AND id < ?` through all of them for the sake of this one caller would
+    /// be the wrong trade.
+    pub async fn history_before(
+        &self,
+        room: &str,
+        before_id: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<MessageRow>> {
+        let rows = sqlx::query(
+            "SELECT * FROM (
+               SELECT id, room, from_agent, body, done, created_at, human
+               FROM messages WHERE room = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3
+             ) ORDER BY id ASC",
+        )
+        .bind(room)
+        .bind(before_id)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(message_row).collect())
+    }
+
     /// The most recent `limit` messages across every room, newest first.
     ///
     /// `history` answers "what happened in this room"; this answers "what is happening

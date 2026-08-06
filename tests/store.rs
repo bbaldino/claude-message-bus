@@ -134,6 +134,50 @@ async fn history_returns_oldest_first_and_respects_limit() {
 }
 
 #[tokio::test]
+async fn history_before_walks_backward_without_gaps_or_overlap() {
+    let (_d, store) = seeded().await;
+    let mut ids = Vec::with_capacity(5);
+    for i in 0..5 {
+        let id = store
+            .append_message("protocol", "caas", &format!("msg{i}"), false, false)
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+
+    // Page 1: the newest two.
+    let page1 = store.history("protocol", 2).await.unwrap();
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1[0].body, "msg3");
+    assert_eq!(page1[1].body, "msg4");
+
+    // Page 2: walk backwards from the oldest id on page 1.
+    let oldest_on_page1 = page1[0].id;
+    let page2 = store
+        .history_before("protocol", oldest_on_page1, 2)
+        .await
+        .unwrap();
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2[0].body, "msg1", "oldest first");
+    assert_eq!(page2[1].body, "msg2");
+
+    // No id repeats across the two pages, and no id is skipped between them.
+    let page1_ids: Vec<i64> = page1.iter().map(|m| m.id).collect();
+    let page2_ids: Vec<i64> = page2.iter().map(|m| m.id).collect();
+    for id in &page2_ids {
+        assert!(
+            !page1_ids.contains(id),
+            "page 2 must not repeat a page 1 id: {page1_ids:?} vs {page2_ids:?}"
+        );
+    }
+    assert_eq!(
+        page2_ids[1] + 1,
+        page1_ids[0],
+        "no gap between the two pages: {page2_ids:?} then {page1_ids:?}"
+    );
+}
+
+#[tokio::test]
 async fn cursor_starts_at_zero_and_advances() {
     let (_d, store) = seeded().await;
     assert_eq!(store.cursor("protocol", "dashboard").await.unwrap(), 0);

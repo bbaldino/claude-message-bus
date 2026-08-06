@@ -1491,3 +1491,210 @@ async fn the_app_routes_all_reach_the_bundle_handler() {
         "/app/ must serve the shell or say why it cannot: {res}"
     );
 }
+
+#[tokio::test]
+async fn the_transcript_returns_a_rooms_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_message("protocol", "caas", "first", false, false)
+            .await
+            .unwrap();
+        store
+            .append_message("protocol", "bbaldino", "second", true, true)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/rooms/protocol/messages?limit=10").await;
+
+    assert!(body.contains("\"first\""), "got: {body}");
+    assert!(body.contains("\"second\""), "got: {body}");
+    assert!(
+        body.contains("\"human\":true"),
+        "human authority must survive: {body}"
+    );
+    assert!(
+        body.contains("\"done\":true"),
+        "the done marker must survive: {body}"
+    );
+}
+
+#[tokio::test]
+async fn the_transcript_pages_backward_with_before() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        for i in 0..5 {
+            store
+                .append_message("protocol", "caas", &format!("msg{i}"), false, false)
+                .await
+                .unwrap();
+        }
+    }
+    let port = start(dir.path()).await;
+
+    let page1_res = get(port, "/api/rooms/protocol/messages?limit=2").await;
+    let page1_body = page1_res.rsplit("\r\n\r\n").next().unwrap();
+    let page1: serde_json::Value = serde_json::from_str(page1_body).unwrap();
+    let page1 = page1.as_array().unwrap();
+    assert_eq!(page1.len(), 2, "got: {page1_res}");
+    assert_eq!(page1[0]["body"], "msg3", "got: {page1_res}");
+    assert_eq!(page1[1]["body"], "msg4", "got: {page1_res}");
+    let oldest_on_page1 = page1[0]["id"].as_i64().unwrap();
+
+    let page2_res = get(
+        port,
+        &format!("/api/rooms/protocol/messages?limit=2&before={oldest_on_page1}"),
+    )
+    .await;
+    let page2_body = page2_res.rsplit("\r\n\r\n").next().unwrap();
+    let page2: serde_json::Value = serde_json::from_str(page2_body).unwrap();
+    let page2 = page2.as_array().unwrap();
+    assert_eq!(page2.len(), 2, "got: {page2_res}");
+    assert_eq!(page2[0]["body"], "msg1", "oldest first: {page2_res}");
+    assert_eq!(page2[1]["body"], "msg2", "got: {page2_res}");
+
+    // No id repeats across the two pages, and no id is skipped between them.
+    let page1_ids: Vec<i64> = page1.iter().map(|m| m["id"].as_i64().unwrap()).collect();
+    let page2_ids: Vec<i64> = page2.iter().map(|m| m["id"].as_i64().unwrap()).collect();
+    for id in &page2_ids {
+        assert!(
+            !page1_ids.contains(id),
+            "page 2 must not repeat a page 1 id: {page1_ids:?} vs {page2_ids:?}"
+        );
+    }
+    assert_eq!(
+        page2_ids[1] + 1,
+        page1_ids[0],
+        "no gap between the two pages: {page2_ids:?} then {page1_ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_events_endpoint_scopes_to_a_room_or_the_whole_bus() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_event(
+                "room_joined",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "room_joined",
+                Some("dash"),
+                Some("other"),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let scoped = get(port, "/api/events?room=protocol&limit=50").await;
+    assert!(scoped.contains("\"protocol\""), "got: {scoped}");
+    assert!(
+        !scoped.contains("\"other\""),
+        "must not leak other rooms: {scoped}"
+    );
+
+    let whole = get(port, "/api/events?limit=50").await;
+    assert!(whole.contains("\"protocol\""), "got: {whole}");
+    assert!(
+        whole.contains("\"other\""),
+        "whole-bus scope sees everything: {whole}"
+    );
+}
+
+#[tokio::test]
+async fn the_events_endpoint_filters_by_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_event(
+                "room_joined",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event("ack", Some("caas"), Some("protocol"), serde_json::json!({}))
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/events?kind=ack&limit=50").await;
+
+    assert!(body.contains("\"ack\""), "got: {body}");
+    assert!(
+        !body.contains("room_joined"),
+        "kind must narrow the fetch: {body}"
+    );
+}
+
+#[tokio::test]
+async fn the_events_endpoint_combines_room_and_kind_with_and_semantics() {
+    // The combination the other three tests don't reach: room-only and kind-only each
+    // pass even if the SQL's AND is secretly an OR (the other clause is NULL and always
+    // true), or if one filter is silently ignored. Only asserting the row that matches
+    // both would still pass against either bug — the two negatives below are the point.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        // Matches both filters.
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({"tag": "match"}),
+            )
+            .await
+            .unwrap();
+        // Right room, wrong kind.
+        store
+            .append_event(
+                "room_paused",
+                Some("caas"),
+                Some("protocol"),
+                serde_json::json!({"tag": "same-room-different-kind"}),
+            )
+            .await
+            .unwrap();
+        // Right kind, wrong room.
+        store
+            .append_event(
+                "ack",
+                Some("caas"),
+                Some("other"),
+                serde_json::json!({"tag": "same-kind-different-room"}),
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/events?room=protocol&kind=ack&limit=50").await;
+
+    assert!(body.contains("\"match\""), "got: {body}");
+    assert!(
+        !body.contains("same-room-different-kind"),
+        "the room match alone must not be enough: {body}"
+    );
+    assert!(
+        !body.contains("same-kind-different-room"),
+        "the kind match alone must not be enough: {body}"
+    );
+}

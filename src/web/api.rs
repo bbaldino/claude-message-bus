@@ -10,7 +10,7 @@
 //! during `cargo test`, so the frontend's types cannot drift from the server's.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 
 use crate::bus::App;
@@ -234,4 +234,100 @@ pub(crate) async fn meta() -> Json<Meta> {
     Json(Meta {
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub room: String,
+    pub from: String,
+    pub body: String,
+    pub done: bool,
+    /// True when the sender carried human authority — a person, or a configured
+    /// relayer speaking for one.
+    pub human: bool,
+    #[ts(type = "number")]
+    pub created_at: i64,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "camelCase")]
+pub struct Event {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub kind: String,
+    pub agent: Option<String>,
+    pub room: Option<String>,
+    #[ts(type = "unknown")]
+    pub detail: serde_json::Value,
+    #[ts(type = "number")]
+    pub created_at: i64,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct TranscriptQuery {
+    limit: Option<i64>,
+    /// A message id to page backwards from — scrollback. Present: the `limit`
+    /// messages immediately before it. Absent: the most recent `limit`.
+    before: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct EventsQuery {
+    room: Option<String>,
+    kind: Option<String>,
+    limit: Option<i64>,
+}
+
+pub(crate) async fn room_messages(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Query(q): Query<TranscriptQuery>,
+) -> Result<Json<Vec<Message>>, StatusCode> {
+    let limit = q.limit.unwrap_or(100);
+    let rows = match q.before {
+        Some(before) => app.store.history_before(&name, before, limit).await,
+        None => app.store.history(&name, limit).await,
+    }
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|m| Message {
+                id: m.id,
+                room: m.room,
+                from: m.from_agent,
+                body: m.body,
+                done: m.done,
+                human: m.human,
+                created_at: m.created_at,
+            })
+            .collect(),
+    ))
+}
+
+pub(crate) async fn events(
+    State(app): State<App>,
+    Query(q): Query<EventsQuery>,
+) -> Result<Json<Vec<Event>>, StatusCode> {
+    let rows = app
+        .store
+        .events_filtered(q.room.as_deref(), q.kind.as_deref(), q.limit.unwrap_or(200))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|e| Event {
+                id: e.id,
+                kind: e.kind,
+                agent: e.agent,
+                room: e.room,
+                detail: e.detail,
+                created_at: e.created_at,
+            })
+            .collect(),
+    ))
 }

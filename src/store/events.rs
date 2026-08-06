@@ -97,4 +97,30 @@ impl Store {
             .await?;
         Ok(rows.iter().map(event_row).collect())
     }
+
+    /// Events narrowed by room and/or kind, newest first.
+    ///
+    /// The kind filter is applied here rather than in the browser because the
+    /// whole-bus scope has no natural bound — the table only grows. Live pushed
+    /// events are filtered client-side instead, so toggling a checkbox re-renders
+    /// rather than round-trips.
+    pub async fn events_filtered(
+        &self,
+        room: Option<&str>,
+        kind: Option<&str>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<EventRow>> {
+        let rows = sqlx::query(
+            "SELECT * FROM events
+             WHERE (?1 IS NULL OR room = ?1)
+               AND (?2 IS NULL OR kind = ?2)
+             ORDER BY id DESC LIMIT ?3",
+        )
+        .bind(room)
+        .bind(kind)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(event_row).collect())
+    }
 }
