@@ -2013,3 +2013,62 @@ async fn agent_detail_for_an_unknown_name_is_404() {
     let status = common::get_status(port, "/api/agents/nobody").await;
     assert_eq!(status, 404);
 }
+
+/// `agent_detail_reports_rooms_with_counts_and_a_true_event_total` sends the agent
+/// well under fifty events, so there `events.len()` and `COUNT(*)` are numerically
+/// identical — that test cannot tell a real total from `.len()` in disguise. This
+/// one pushes past `AGENT_EVENT_LIMIT` so the two diverge, which is the only way to
+/// prove the total isn't the slice's length.
+#[tokio::test]
+async fn agent_detail_reports_the_true_total_beyond_the_event_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w/caas", None, false, None)
+            .await
+            .unwrap();
+        for _ in 0..60 {
+            store
+                .append_event("ack", Some("caas"), None, serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+    }
+    let port = start(dir.path()).await;
+
+    let body = common::get_json(port, "/api/agents/caas").await;
+    assert_eq!(
+        body["events"].as_array().unwrap().len(),
+        50,
+        "the list must stay capped at fifty: {body}"
+    );
+    assert!(
+        body["eventTotal"].as_i64().unwrap() > 50,
+        "the total must reflect all sixty rows, not just the capped slice: {body}"
+    );
+}
+
+/// The SQL is driven by `room_members`, with messages only `LEFT JOIN`ed in — a room
+/// joined but never spoken in must still appear, with a zero count, rather than being
+/// dropped by an inner join.
+#[tokio::test]
+async fn agent_detail_reports_a_joined_room_with_zero_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w/caas", None, false, None)
+            .await
+            .unwrap();
+        store.join_room("protocol", "caas").await.unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = common::get_json(port, "/api/agents/caas").await;
+    assert_eq!(body["rooms"][0]["name"], "protocol");
+    assert_eq!(
+        body["rooms"][0]["messageCount"], 0,
+        "membership alone must produce a row, with a zero count: {body}"
+    );
+}

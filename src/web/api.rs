@@ -419,7 +419,10 @@ pub(crate) async fn agent_detail(
         cwd: row.cwd,
         session_id: row.session_id,
         version: row.version,
-        online: row.online,
+        // The persisted column is only reconciled at startup; the registry
+        // knows who is routable right now. Same reason `agents()` reads it
+        // this way instead of trusting the row.
+        online: app.registry.is_online(&name).await,
         is_human: row.is_human,
         last_seen: row.last_seen,
         buckets,
