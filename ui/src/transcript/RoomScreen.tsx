@@ -24,14 +24,24 @@ export function RoomScreen() {
   // load is pending still needs to be a no-op here, or a resolved-but-no-op
   // `store.loadOlder()` call would still schedule its own correction.
   const restoringOlder = useRef(false)
-  // Whether the reader was at the bottom the last time `scrollTop` actually
-  // moved. Pure content growth (new rows, a reflow) never fires a `scroll`
-  // event by itself, so this only changes on a real scroll — which is exactly
-  // what the resize-observer re-pin below needs: by the time a resize is
+  // Whether the reader was at the bottom the last time we knew for sure.
+  // Pure content growth (new rows, a reflow) never fires a `scroll` event by
+  // itself, so this only changes on a real scroll — which is exactly what
+  // the resize-observer re-pin below needs: by the time a resize is
   // observed, the growth has already opened a gap, so measuring live distance
   // from bottom at that point would always read "not at the bottom" and could
-  // never re-pin. Tracking the *last known* position sidesteps that.
+  // never re-pin.
   const atBottom = useRef(true)
+  // The scrollTop this component itself last set, so `onScroll` can tell a
+  // real scroll apart from the delayed echo of our own assignment. Assigning
+  // `scrollTop` dispatches its `scroll` event asynchronously; if content
+  // grows in the gap between the assignment and that event arriving (a
+  // webfont settling, say), the event lands reporting the *old* scrollTop
+  // against the *new*, taller scrollHeight — indistinguishable from the
+  // reader having scrolled away if judged by distance alone. Comparing the
+  // event's scrollTop against what we last set filters that out: only a
+  // scrollTop we did not set ourselves is a genuine scroll.
+  const lastScrollTop = useRef<number | null>(null)
 
   useEffect(() => {
     const el = scroller.current
@@ -42,6 +52,7 @@ export function RoomScreen() {
         // `scrollTop` directly, never `scrollIntoView` — the handoff is explicit,
         // and scrollIntoView also scrolls ancestor containers.
         el.scrollTop = el.scrollHeight
+        lastScrollTop.current = el.scrollTop
         atBottom.current = true
         setUnseen(0)
       } else if (arrival.kind === 'append') {
@@ -53,6 +64,7 @@ export function RoomScreen() {
         })
         if (action === 'pin') {
           el.scrollTop = el.scrollHeight
+          lastScrollTop.current = el.scrollTop
           atBottom.current = true
         }
         if (action === 'notify') setUnseen((n) => n + arrival.count)
@@ -65,21 +77,30 @@ export function RoomScreen() {
   }, [messages, room])
 
   // A pin can go stale a moment after it runs, for reasons that have nothing
-  // to do with new messages: webfonts finishing, a late stylesheet, the
-  // rail-driven header changing size — anything that grows the content fires
-  // no scroll event to hook. Watch the *content* for size changes rather than
-  // chasing a specific cause; the scrolling container's own box never changes
-  // when messages grow taller, so observing it would report nothing. Whenever
-  // the content resizes, if the reader was at the bottom (per `atBottom`,
-  // tracked from real scroll events — see above), follow it down; a reader
-  // who has deliberately scrolled away is never yanked back.
+  // to do with new messages: webfonts finishing, a late stylesheet, anything
+  // that changes layout fires no scroll event to hook. Two distinct boxes can
+  // move the true bottom, and both need watching: the *content* growing
+  // taller (rows reflowing) changes `scrollHeight`, and the *scroller itself*
+  // shrinking changes `clientHeight` — which happens when a sibling above it
+  // (the room header) grows from the same font-metric settling, squeezing how
+  // much vertical space the flex layout leaves the scroller. Content growth
+  // alone was the first cut here and missed the second case: `scrollHeight`
+  // can stay flat while `clientHeight` alone shrinks, which is exactly what a
+  // header reflow looks like, and observing only the content div reports
+  // nothing for it. Whenever either resizes, if the reader was at the bottom
+  // (per `atBottom`, tracked from real scroll events — see above), follow it
+  // down; a reader who has deliberately scrolled away is never yanked back.
   useEffect(() => {
     const el = scroller.current
     const contentEl = content.current
     if (!el || !contentEl || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
-      if (atBottom.current) el.scrollTop = el.scrollHeight
+      if (atBottom.current) {
+        el.scrollTop = el.scrollHeight
+        lastScrollTop.current = el.scrollTop
+      }
     })
+    observer.observe(el)
     observer.observe(contentEl)
     return () => observer.disconnect()
   }, [])
@@ -87,8 +108,14 @@ export function RoomScreen() {
   const onScroll = async () => {
     const el = scroller.current
     if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop
-    atBottom.current = distanceFromBottom <= BOTTOM_SLACK
+    if (el.scrollTop !== lastScrollTop.current) {
+      // Not an echo of something we set ourselves — a genuine scroll (the
+      // reader's, or the first event this component has ever seen). Judge
+      // it from the live position and adopt it as the new known baseline.
+      const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop
+      atBottom.current = distanceFromBottom <= BOTTOM_SLACK
+      lastScrollTop.current = el.scrollTop
+    }
     if (atBottom.current) setUnseen(0)
     // `onScroll` fires repeatedly while a load is in flight. The store's
     // `loadingOlder` flag only stops a duplicate fetch — a second call here
@@ -107,6 +134,7 @@ export function RoomScreen() {
         // zero — harmless.
         requestAnimationFrame(() => {
           el.scrollTop += el.scrollHeight - before
+          lastScrollTop.current = el.scrollTop
           restoringOlder.current = false
         })
       } catch {
@@ -151,6 +179,7 @@ export function RoomScreen() {
             const el = scroller.current
             if (el) {
               el.scrollTop = el.scrollHeight
+              lastScrollTop.current = el.scrollTop
               atBottom.current = true
             }
             setUnseen(0)
