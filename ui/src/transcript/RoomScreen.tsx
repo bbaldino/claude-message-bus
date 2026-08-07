@@ -17,6 +17,16 @@ export function RoomScreen() {
   const prevLastId = useRef<number | null>(null)
   const prevRoom = useRef<string | null>(null)
   const [unseen, setUnseen] = useState(0)
+  // Guards the load-older-and-restore sequence in `onScroll`: at most one
+  // restoration may be in flight at a time. The store's `loadingOlder` flag
+  // guards a different thing (the fetch) — a second `onScroll` firing while a
+  // load is pending still needs to be a no-op here, or a resolved-but-no-op
+  // `store.loadOlder()` call would still schedule its own correction.
+  const restoringOlder = useRef(false)
+  // The scrollTop the initial pin last set, so a later fonts-ready re-pin can
+  // tell "content grew under an untouched reader" apart from "the reader
+  // scrolled since" — only the former should be corrected.
+  const pinnedScrollTop = useRef<number | null>(null)
 
   useEffect(() => {
     const el = scroller.current
@@ -27,7 +37,23 @@ export function RoomScreen() {
         // `scrollTop` directly, never `scrollIntoView` — the handoff is explicit,
         // and scrollIntoView also scrolls ancestor containers.
         el.scrollTop = el.scrollHeight
+        pinnedScrollTop.current = el.scrollTop
         setUnseen(0)
+        // Webfonts finishing after this pin change text metrics and grow every
+        // row slightly, leaving the pin short of the true bottom. Re-pin once
+        // fonts settle, but only if this pin is still the right thing to do:
+        // `document.fonts` is undefined in jsdom, the room may have changed by
+        // the time the promise resolves, the component may have unmounted, or
+        // the reader may have scrolled away from where we left them.
+        const pinnedRoom = room
+        document.fonts?.ready.then(() => {
+          const current = scroller.current
+          if (!current) return
+          if (prevRoom.current !== pinnedRoom) return
+          if (current.scrollTop !== pinnedScrollTop.current) return
+          current.scrollTop = current.scrollHeight
+          pinnedScrollTop.current = current.scrollTop
+        })
       } else if (arrival.kind === 'append') {
         const action = scrollAction({
           scrollTop: el.scrollTop,
@@ -35,7 +61,10 @@ export function RoomScreen() {
           clientHeight: el.clientHeight,
           grew: true,
         })
-        if (action === 'pin') el.scrollTop = el.scrollHeight
+        if (action === 'pin') {
+          el.scrollTop = el.scrollHeight
+          pinnedScrollTop.current = el.scrollTop
+        }
         if (action === 'notify') setUnseen((n) => n + arrival.count)
       }
       // 'none' covers a prepend (or no change); scroll-position restoration for
@@ -49,14 +78,29 @@ export function RoomScreen() {
     const el = scroller.current
     if (!el) return
     if (el.scrollHeight - el.clientHeight - el.scrollTop <= BOTTOM_SLACK) setUnseen(0)
-    if (hasMoreHistory && shouldLoadOlder(el)) {
+    // `onScroll` fires repeatedly while a load is in flight. The store's
+    // `loadingOlder` flag only stops a duplicate fetch — a second call here
+    // still resolves (as a no-op) and must not schedule its own restoration,
+    // or an anchor message drifts by a whole prepend height. `restoringOlder`
+    // guards the entire load-and-restore sequence instead, so at most one
+    // restoration is ever in flight.
+    if (hasMoreHistory && shouldLoadOlder(el) && !restoringOlder.current) {
+      restoringOlder.current = true
       const before = el.scrollHeight
-      await store.loadOlder()
-      // Restore in the same frame the new rows land in, or the viewport jumps by
-      // the height of the page just prepended.
-      requestAnimationFrame(() => {
-        el.scrollTop += el.scrollHeight - before
-      })
+      try {
+        await store.loadOlder()
+        // Restore in the same frame the new rows land in, or the viewport jumps
+        // by the height of the page just prepended. If `loadOlder` no-oped
+        // (nothing more to load), `scrollHeight` is unchanged and this delta is
+        // zero — harmless.
+        requestAnimationFrame(() => {
+          el.scrollTop += el.scrollHeight - before
+          restoringOlder.current = false
+        })
+      } catch {
+        // Don't let a rejected fetch wedge paging shut permanently.
+        restoringOlder.current = false
+      }
     }
   }
 
@@ -91,7 +135,10 @@ export function RoomScreen() {
           className={styles.newBelow}
           onClick={() => {
             const el = scroller.current
-            if (el) el.scrollTop = el.scrollHeight
+            if (el) {
+              el.scrollTop = el.scrollHeight
+              pinnedScrollTop.current = el.scrollTop
+            }
             setUnseen(0)
           }}
         >

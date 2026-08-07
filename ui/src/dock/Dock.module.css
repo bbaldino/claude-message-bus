@@ -183,8 +183,16 @@
 .eventDetail {
   grid-column: 2;
   grid-row: 2;
+  /* A grid item shrinks only to its content's intrinsic width unless told
+     otherwise — `min-width: 0` is what lets it obey the track and wrap
+     instead of overflowing it. */
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-quaternary);
+  /* Compact JSON detail is one long unbroken token with no natural break
+     opportunities; break it within the panel rather than clipping it, same as
+     the handoff's "Long values" guidance for agent names. */
+  word-break: break-all;
 }
