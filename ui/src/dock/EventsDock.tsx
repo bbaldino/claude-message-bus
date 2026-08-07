@@ -68,7 +68,7 @@ export function EventsDock() {
     <aside className={styles.open} data-testid="dock-open">
       <header className={styles.header}>
         <span className={styles.label}>events</span>
-        <span className={styles.liveDot} />
+        <span className={styles.liveDotOpen} />
         <button className={styles.chordButton} onClick={() => setOpen(false)}>
           {mod.label}
         </button>

@@ -18,6 +18,17 @@
   flex-shrink: 0;
 }
 
+/* The open header's dot sits beside a 10px label rather than alone in the
+   40px closed rail, and the handoff pins it a size down from the closed
+   state's 7px: 6px there. */
+.liveDotOpen {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--presence);
+  flex-shrink: 0;
+}
+
 .unseen {
   font-family: var(--font-mono);
   font-weight: 500;
