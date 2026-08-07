@@ -167,13 +167,25 @@ export function createStore(deps: {
     // "watch nothing", which needs its own call so the console never stays
     // subscribed to a room the operator has navigated away from.
     async selectRoom(name: string | null) {
-      setState({ room: name, messages: [], roomEvents: [], hasMoreHistory: false })
+      setState({
+        room: name,
+        messages: [],
+        roomEvents: [],
+        hasMoreHistory: false,
+        loadingOlder: false,
+      })
+      // Bumped on every path, including `null`: the generation marks "a new
+      // selection has happened", and deselecting is a selection. Bumping it only
+      // on the named path let a room load in flight at the time of a `null`
+      // deselection sail through its own now-stale generation check once it
+      // resolved, repopulating `messages`/`roomEvents` for a room the console had
+      // just navigated away from.
+      const mine = ++roomGeneration
       if (!name) {
         deps.live.unwatchRoom()
         return
       }
       deps.live.watchRoom(name)
-      const mine = ++roomGeneration
       try {
         const [messages, roomEvents] = await Promise.all([
           deps.fetchMessages(name, PAGE),

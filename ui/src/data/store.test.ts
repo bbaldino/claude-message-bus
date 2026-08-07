@@ -249,6 +249,76 @@ function msg(id: number) {
   }
 }
 
+test('selecting null while a room load is in flight leaves state cleared, not repopulated', async () => {
+  // A promise resolved manually from the test, rather than fake timers, makes
+  // the race explicit: the `protocol` fetch is still pending when `null` is
+  // selected, and only resolves afterwards.
+  let resolveMessages: (messages: ReturnType<typeof msg>[]) => void = () => {}
+  const store = createStore({
+    live: fakeLive(),
+    fetchRail: async () => emptyRail,
+    fetchMessages: () =>
+      new Promise<ReturnType<typeof msg>[]>((resolve) => {
+        resolveMessages = resolve
+      }),
+    fetchEvents: async () => [],
+  })
+  const loading = store.selectRoom('protocol')
+  await store.selectRoom(null)
+  resolveMessages([msg(1)])
+  await loading
+  expect(store.getState().room).toBeNull()
+  expect(store.getState().messages).toEqual([])
+  expect(store.getState().roomEvents).toEqual([])
+})
+
+test('loadOlder in flight when the room changes clears loadingOlder and a later loadOlder for the new room still fetches', async () => {
+  let resolveProtocolOlder: (messages: ReturnType<typeof msg>[]) => void = () => {}
+  let otherOlderCalls = 0
+  const otherMsg = (id: number) => ({
+    id,
+    room: 'other',
+    from: 'caas',
+    body: `o${id}`,
+    done: false,
+    human: false,
+    createdAt: id,
+  })
+  const store = createStore({
+    live: fakeLive(),
+    fetchRail: async () => emptyRail,
+    fetchMessages: async (room, _limit, before) => {
+      if (room === 'protocol') {
+        if (before === undefined) {
+          return Array.from({ length: 100 }, (_, i) => msg(i + 100))
+        }
+        return new Promise<ReturnType<typeof msg>[]>((resolve) => {
+          resolveProtocolOlder = resolve
+        })
+      }
+      // room === 'other'
+      if (before === undefined) {
+        return Array.from({ length: 100 }, (_, i) => otherMsg(i + 1000))
+      }
+      otherOlderCalls++
+      return [otherMsg(1), otherMsg(2)]
+    },
+    fetchEvents: async () => [],
+  })
+
+  await store.selectRoom('protocol')
+  const olderLoad = store.loadOlder() // starts the slow protocol fetch; sets loadingOlder true
+  await store.selectRoom('other') // switches rooms while the protocol fetch is still pending
+  resolveProtocolOlder([msg(1), msg(2)]) // let the stale fetch resolve after the switch
+  await olderLoad
+
+  expect(store.getState().loadingOlder).toBe(false)
+  expect(store.getState().room).toBe('other')
+
+  await store.loadOlder()
+  expect(otherOlderCalls).toBe(1)
+})
+
 test('an interleaved start()/stop()/start() during the initial fetch leaves no leaked interval', async () => {
   // React StrictMode double-invokes the mount effect in dev: start(); stop();
   // start() — all three synchronous, before the first fetchRail() promise
