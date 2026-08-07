@@ -299,7 +299,14 @@ pub fn routes() -> Router<App> {
         )
         .route("/events", get(events_page))
         .route("/api/agents", get(api::agents))
-        .route("/api/agents/{name}", get(api::agent_detail))
+        .route(
+            "/api/agents/{name}",
+            get(api::agent_detail).delete(api::agent_delete),
+        )
+        .route(
+            "/api/agents/{name}/deletion",
+            get(api::agent_deletion_preview),
+        )
         .route("/api/rail", get(api::rail))
         .route("/api/meta", get(api::meta))
         .route("/api/rooms/{name}/messages", get(api::room_messages))
@@ -686,7 +693,7 @@ async fn delete_agent_confirm(State(app): State<App>, Path(name): Path<String>) 
 /// works behind a reverse proxy or under any name the operator reaches it by.
 /// Anything that is not an `http`/`https` origin — including the literal
 /// `null` a sandboxed frame sends — is not same-origin and is refused.
-fn origin_matches_host(origin: &str, host: &str) -> bool {
+pub(crate) fn origin_matches_host(origin: &str, host: &str) -> bool {
     let (scheme, authority) = match origin.split_once("://") {
         Some(("http", a)) => ("http", a),
         Some(("https", a)) => ("https", a),

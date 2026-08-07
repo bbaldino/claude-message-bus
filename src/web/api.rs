@@ -447,6 +447,135 @@ pub(crate) async fn agent_detail(
     }))
 }
 
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "camelCase")]
+pub struct DeletionPreview {
+    /// 1 when the agent row exists, 0 otherwise — the modal states it as a count
+    /// beside the others rather than as a special case.
+    #[ts(type = "number")]
+    pub registration: i64,
+    #[ts(type = "number")]
+    pub memberships: i64,
+    #[ts(type = "number")]
+    pub cursors: i64,
+    /// For the modal's "on buildbox" clause.
+    pub host: String,
+    /// Decides whether the dialog opens confirmable or refused. The server
+    /// re-checks this at delete time regardless; this is for rendering.
+    pub online: bool,
+}
+
+pub(crate) async fn agent_deletion_preview(
+    State(app): State<App>,
+    Path(name): Path<String>,
+) -> Result<Json<DeletionPreview>, StatusCode> {
+    let row = app
+        .store
+        .agents()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .find(|a| a.name == name)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // A failed read is a 500, never an empty listing. `unwrap_or_default` here
+    // would make a database error indistinguishable from "this agent belongs to
+    // nothing" while the UI still offers the button — the same reasoning the
+    // HTML confirm page documents.
+    let fp = app
+        .store
+        .agent_footprint(&name)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(DeletionPreview {
+        registration: 1,
+        memberships: fp.rooms.len() as i64,
+        cursors: fp.cursors,
+        host: row.host,
+        online: app.registry.is_online(&name).await,
+    }))
+}
+
+/// The delete. Refuses cross-origin callers, refuses an unknown name, and
+/// refuses an online agent with the registry lock held across the database
+/// transaction.
+///
+/// Guards run in the order that lets each one narrow what the next has to
+/// handle, mirroring `delete_agent_perform` next door:
+///
+/// 1. **Cross-origin.** Checked via `origin_matches_host` before anything else
+///    is read.
+/// 2. **Unknown name**, looked up here rather than trusted from the preview —
+///    it is what stops any name at all from forging an `agent_deleted` event,
+///    and the row it returns supplies the `host` this event carries, matching
+///    the HTML delete's shape so the audit log stays uniform across both
+///    paths.
+/// 3. **Liveness.** `Registry::if_offline` is the authority, not the `online`
+///    column: that column is written *after* the registry insert, so a live
+///    agent's row can still read offline for a moment. `forget_agent`'s own
+///    `online = 0` clause is defence in depth beneath this.
+pub(crate) async fn agent_delete(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> StatusCode {
+    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+    let host = headers.get("host").and_then(|v| v.to_str().ok());
+    match (origin, host) {
+        // A same-origin fetch from the console always sends Origin on DELETE.
+        (Some(o), Some(h)) if crate::web::origin_matches_host(o, h) => {}
+        _ => return StatusCode::FORBIDDEN,
+    }
+
+    let row = match app.store.agents().await {
+        Ok(rows) => rows.into_iter().find(|a| a.name == name),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let Some(row) = row else {
+        return StatusCode::NOT_FOUND;
+    };
+
+    // The store call inside must not touch the registry — the connection lock
+    // is held for its whole duration.
+    let outcome = app
+        .registry
+        .if_offline(&name, || async { app.store.forget_agent(&name).await })
+        .await;
+
+    match outcome {
+        None => StatusCode::CONFLICT,
+        Some(Err(_)) => StatusCode::CONFLICT,
+        Some(Ok(counts)) => {
+            // Matches `delete_agent_perform`'s event exactly — same kind, same
+            // agent (`Some(&name)`, so the deleted agent's own activity log
+            // still finds this event), same detail shape — so the audit trail
+            // reads the same regardless of which path performed the delete.
+            if let Err(e) = app
+                .store
+                .append_event(
+                    "agent_deleted",
+                    Some(&name),
+                    None,
+                    serde_json::json!({
+                        "name": name,
+                        "host": row.host,
+                        "last_seen": row.last_seen,
+                        "agents": counts.agents,
+                        "memberships": counts.memberships,
+                        "cursors": counts.cursors,
+                    }),
+                )
+                .await
+            {
+                eprintln!("agent_deleted event for {name} was not recorded: {e}");
+            }
+            StatusCode::NO_CONTENT
+        }
+    }
+}
+
 pub(crate) async fn events(
     State(app): State<App>,
     Query(q): Query<EventsQuery>,

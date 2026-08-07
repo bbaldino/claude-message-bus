@@ -2072,3 +2072,70 @@ async fn agent_detail_reports_a_joined_room_with_zero_messages() {
         "membership alone must produce a row, with a zero count: {body}"
     );
 }
+
+#[tokio::test]
+async fn deletion_preview_counts_real_rows() {
+    use claude_bus::proto::ToBus;
+
+    let (_d, port) = common::start_bus().await;
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await;
+    common::send(
+        &mut caas,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut caas).await;
+    drop(caas);
+    common::wait_until(|| async { !common::agent_is_online(port, "caas").await }).await;
+
+    let body = common::get_json(port, "/api/agents/caas/deletion").await;
+    assert_eq!(body["registration"], 1);
+    assert_eq!(body["memberships"], 1);
+    assert_eq!(body["online"], false);
+    assert!(body["host"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn deleting_an_offline_agent_removes_it() {
+    let (_d, port) = common::start_bus().await;
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await;
+    drop(caas);
+    common::wait_until(|| async { !common::agent_is_online(port, "caas").await }).await;
+
+    let status = common::delete_same_origin(port, "/api/agents/caas").await;
+    assert_eq!(status, 204);
+    assert_eq!(common::get_status(port, "/api/agents/caas").await, 404);
+}
+
+#[tokio::test]
+async fn deleting_an_online_agent_is_refused_and_changes_nothing() {
+    // The race this endpoint exists to lose safely: the client believed the
+    // agent was offline, and it is not.
+    let (_d, port) = common::start_bus().await;
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // still connected
+
+    let status = common::delete_same_origin(port, "/api/agents/caas").await;
+    assert_eq!(status, 409);
+    assert_eq!(common::get_status(port, "/api/agents/caas").await, 200);
+}
+
+#[tokio::test]
+async fn a_cross_origin_delete_is_refused() {
+    // The bus binds 0.0.0.0 with no authentication, so anything that can reach
+    // the port can send this.
+    let (_d, port) = common::start_bus().await;
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await;
+    drop(caas);
+    common::wait_until(|| async { !common::agent_is_online(port, "caas").await }).await;
+
+    let status = common::delete_with_origin(port, "/api/agents/caas", "http://evil.example").await;
+    assert_eq!(status, 403);
+    assert_eq!(common::get_status(port, "/api/agents/caas").await, 200);
+}
