@@ -299,6 +299,7 @@ pub fn routes() -> Router<App> {
         )
         .route("/events", get(events_page))
         .route("/api/agents", get(api::agents))
+        .route("/api/agents/{name}", get(api::agent_detail))
         .route("/api/rail", get(api::rail))
         .route("/api/meta", get(api::meta))
         .route("/api/rooms/{name}/messages", get(api::room_messages))

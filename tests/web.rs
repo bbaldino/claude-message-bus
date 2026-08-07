@@ -1950,3 +1950,66 @@ async fn the_events_endpoint_combines_room_and_kind_with_and_semantics() {
         "the kind match alone must not be enough: {body}"
     );
 }
+
+#[tokio::test]
+async fn agent_detail_reports_rooms_with_counts_and_a_true_event_total() {
+    use claude_bus::proto::{Target, ToBus};
+
+    let (_d, port) = common::start_bus().await;
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    common::send(
+        &mut caas,
+        &ToBus::Join {
+            req_id: 1,
+            room: "protocol".into(),
+        },
+    )
+    .await;
+    common::next_event(&mut caas).await;
+    for i in 0..3 {
+        common::send(
+            &mut caas,
+            &ToBus::Send {
+                req_id: 10 + i,
+                target: Target::Room {
+                    room: "protocol".into(),
+                },
+                text: format!("m{i}"),
+                done: false,
+            },
+        )
+        .await;
+        common::next_event(&mut caas).await;
+    }
+
+    let body = common::get_json(port, "/api/agents/caas").await;
+    assert_eq!(body["name"], "caas");
+    assert_eq!(body["rooms"][0]["name"], "protocol");
+    assert_eq!(body["rooms"][0]["messageCount"], 3);
+    // The list is capped but the total is not — the header states the truth.
+    assert!(body["eventTotal"].as_i64().unwrap() >= 1);
+    assert_eq!(body["buckets"].as_array().unwrap().len(), 20);
+}
+
+#[tokio::test]
+async fn agent_detail_for_a_tombstone_has_no_rooms_and_still_renders() {
+    // An agent that registered and never joined anything: the shape the screen's
+    // "never joined a room" state depends on.
+    let (_d, port) = common::start_bus().await;
+    let mut ghost = common::connect(port, "ghost").await;
+    common::next_event(&mut ghost).await;
+    drop(ghost);
+
+    let body = common::get_json(port, "/api/agents/ghost").await;
+    assert_eq!(body["name"], "ghost");
+    assert!(body["rooms"].as_array().unwrap().is_empty());
+    assert_eq!(body["buckets"].as_array().unwrap().len(), 20);
+}
+
+#[tokio::test]
+async fn agent_detail_for_an_unknown_name_is_404() {
+    let (_d, port) = common::start_bus().await;
+    let status = common::get_status(port, "/api/agents/nobody").await;
+    assert_eq!(status, 404);
+}

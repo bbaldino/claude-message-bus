@@ -47,6 +47,14 @@ pub struct AgentFootprint {
     pub cursors: i64,
 }
 
+/// One room an agent belongs to, with its own traffic in that room.
+#[derive(Debug, Clone)]
+pub struct AgentRoomRow {
+    pub room: String,
+    pub message_count: i64,
+    pub last_activity: i64,
+}
+
 /// Rows actually removed by `forget_agent`, for the audit event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForgetCounts {
@@ -334,6 +342,59 @@ impl Store {
             .await?
             .get("n");
         Ok(AgentFootprint { rooms, cursors })
+    }
+
+    /// One row per room this agent belongs to, with how many messages it sent there
+    /// and when it last did.
+    ///
+    /// Grouped in SQL rather than counted in Rust for the same reason as the volume
+    /// buckets: the alternative ships every message body to count them.
+    ///
+    /// `message_buckets` takes `now_ms` as a parameter rather than reading the clock
+    /// itself; this follows the same house style by taking none and letting the
+    /// caller decide what "recent" means, since it reports absolute timestamps.
+    pub async fn agent_rooms(&self, name: &str) -> anyhow::Result<Vec<AgentRoomRow>> {
+        let rows = sqlx::query(
+            "SELECT rm.room AS room, \
+                    COUNT(m.id) AS n, \
+                    COALESCE(MAX(m.created_at), 0) AS last_at \
+             FROM room_members rm \
+             LEFT JOIN messages m ON m.room = rm.room AND m.from_agent = rm.agent_name \
+             WHERE rm.agent_name = ?1 \
+             GROUP BY rm.room ORDER BY last_at DESC, rm.room",
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| AgentRoomRow {
+                room: r.get("room"),
+                message_count: r.get("n"),
+                last_activity: r.get("last_at"),
+            })
+            .collect())
+    }
+
+    /// The agent's most recent events, newest first, plus the true total.
+    ///
+    /// The total is a separate COUNT rather than the slice's length because the
+    /// screen's section header states "312 total" while showing far fewer.
+    pub async fn agent_events(
+        &self,
+        name: &str,
+        limit: i64,
+    ) -> anyhow::Result<(Vec<crate::store::events::EventRow>, i64)> {
+        let total: i64 = sqlx::query("SELECT COUNT(*) AS n FROM events WHERE agent = ?1")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await?
+            .get("n");
+        // `events_for_agent` already selects `WHERE agent = ?1 ORDER BY id DESC
+        // LIMIT ?2` through the shared `event_row` mapping — exactly what this
+        // needs, so it is reused rather than adding a second query beside it.
+        let rows = self.events_for_agent(name, limit).await?;
+        Ok((rows, total))
     }
 
     /// Delete an agent's own rows: its `agents` entry, its room memberships,

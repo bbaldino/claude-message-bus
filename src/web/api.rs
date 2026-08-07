@@ -323,6 +323,127 @@ pub(crate) async fn room_messages(
     ))
 }
 
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRoomSummary {
+    pub name: String,
+    #[ts(type = "number")]
+    pub message_count: i64,
+    /// Epoch milliseconds; 0 when the agent has sent nothing in this room.
+    #[ts(type = "number")]
+    pub last_activity: i64,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEventItem {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub kind: String,
+    #[ts(type = "unknown")]
+    pub detail: serde_json::Value,
+    #[ts(type = "number")]
+    pub created_at: i64,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDetail {
+    pub name: String,
+    pub host: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub version: Option<String>,
+    pub online: bool,
+    pub is_human: bool,
+    #[ts(type = "number")]
+    pub last_seen: i64,
+    /// Twenty five-minute slots, oldest first — the detail strip's width.
+    #[ts(type = "number[]")]
+    pub buckets: Vec<i64>,
+    pub rooms: Vec<AgentRoomSummary>,
+    pub events: Vec<AgentEventItem>,
+    /// The true count, not `events.len()`.
+    #[ts(type = "number")]
+    pub event_total: i64,
+}
+
+/// The event slice is capped; 50 is chosen, not derived — enough that a normal
+/// agent's whole history fits and the cap never shows, few enough that a chatty
+/// one does not ship thousands of rows to render a list.
+const AGENT_EVENT_LIMIT: i64 = 50;
+
+pub(crate) async fn agent_detail(
+    State(app): State<App>,
+    Path(name): Path<String>,
+) -> Result<Json<AgentDetail>, StatusCode> {
+    let row = app
+        .store
+        .agents()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .find(|a| a.name == name)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Twenty five-minute slots — the detail strip's width, against the rail's
+    // twelve. Signature is (scope, now_ms, bucket_ms, buckets); `now_ms` is
+    // passed in rather than read inside so the query is deterministic in tests.
+    let buckets = app
+        .store
+        .message_buckets(
+            crate::store::BucketScope::Agent(&name),
+            crate::store::now_ms(),
+            5 * 60_000,
+            20,
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let rooms = app
+        .store
+        .agent_rooms(&name)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (events, event_total) = app
+        .store
+        .agent_events(&name, AGENT_EVENT_LIMIT)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(AgentDetail {
+        name: row.name,
+        host: row.host,
+        cwd: row.cwd,
+        session_id: row.session_id,
+        version: row.version,
+        online: row.online,
+        is_human: row.is_human,
+        last_seen: row.last_seen,
+        buckets,
+        rooms: rooms
+            .into_iter()
+            .map(|r| AgentRoomSummary {
+                name: r.room,
+                message_count: r.message_count,
+                last_activity: r.last_activity,
+            })
+            .collect(),
+        events: events
+            .into_iter()
+            .map(|e| AgentEventItem {
+                id: e.id,
+                kind: e.kind,
+                detail: e.detail,
+                created_at: e.created_at,
+            })
+            .collect(),
+        event_total,
+    }))
+}
+
 pub(crate) async fn events(
     State(app): State<App>,
     Query(q): Query<EventsQuery>,

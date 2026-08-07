@@ -224,6 +224,39 @@ where
     wait_until_timeout(std::time::Duration::from_secs(5), f).await
 }
 
+/// Minimal HTTP/1.1 GET, matching `tests/web.rs`'s no-dependency style (this
+/// module cannot depend on that file, so the request-building logic is
+/// duplicated rather than shared). Returns the whole raw response so
+/// `get_json`/`get_status` can pull out the piece each one wants.
+async fn get_raw(port: u16, path: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = String::new();
+    s.read_to_string(&mut buf).await.unwrap();
+    buf
+}
+
+/// GET `path` and parse the response body as JSON.
+pub async fn get_json(port: u16, path: &str) -> serde_json::Value {
+    let raw = get_raw(port, path).await;
+    let body = raw.rsplit("\r\n\r\n").next().unwrap();
+    serde_json::from_str(body.trim()).unwrap_or_else(|e| panic!("bad json {body:?}: {e}"))
+}
+
+/// GET `path` and return just the numeric status code, for tests that only
+/// care whether the route answered 404/200/etc.
+pub async fn get_status(port: u16, path: &str) -> u16 {
+    let raw = get_raw(port, path).await;
+    raw.split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("could not parse a status code out of: {raw:?}"))
+}
+
 /// Same as `wait_until`, but with an explicit deadline instead of the 5s
 /// default — used by `wait_until_bus_ready`, which wants longer.
 pub async fn wait_until_timeout<F, Fut>(timeout: std::time::Duration, f: F) -> bool
