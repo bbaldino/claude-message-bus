@@ -2157,3 +2157,171 @@ async fn a_cross_origin_delete_is_refused() {
     assert_eq!(status, 403);
     assert_eq!(common::get_status(port, "/api/agents/caas").await, 200);
 }
+
+/// The HTML delete has two tests for this (`posting_the_delete_records_an_audit_event`
+/// and `posting_the_delete_for_an_unknown_agent_writes_no_audit_event`); the JSON
+/// delete had neither, even though its unknown-name guard is the same
+/// safety-critical line — what stops any name reaching this URL from forging the
+/// one record this feature promises will outlive the agent.
+#[tokio::test]
+async fn deleting_an_offline_agent_via_json_records_an_audit_event() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("network-debug#2", "hardac", "/w/nd", None, false, None)
+            .await
+            .unwrap();
+        // Deliberately non-empty, for the same reason `posting_the_delete_records_an_audit_event`
+        // is: with no membership every count renders as 0 whether the event carries
+        // it or not, so a test with an empty footprint cannot tell a real count from
+        // a dropped one.
+        store
+            .join_room("protocol", "network-debug#2")
+            .await
+            .unwrap();
+        store
+            .set_cursor("protocol", "network-debug#2", 4)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let status = common::delete_same_origin(port, "/api/agents/network-debug%232").await;
+    assert_eq!(status, 204);
+
+    let events = common::get_json(port, "/api/events").await;
+    let deleted = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "agent_deleted")
+        .unwrap_or_else(|| panic!("no agent_deleted event: {events}"));
+    assert_eq!(deleted["agent"], "network-debug#2");
+    assert_eq!(deleted["detail"]["name"], "network-debug#2");
+    assert_eq!(deleted["detail"]["host"], "hardac");
+    assert_eq!(deleted["detail"]["memberships"], 1);
+    assert_eq!(deleted["detail"]["cursors"], 1);
+}
+
+/// Without this guard, any name at all would pass the JSON delete's liveness
+/// check trivially (an unknown agent is, trivially, offline), delete nothing,
+/// and still write an `agent_deleted` event — forging the one record this
+/// feature promises will outlive the agent, and letting anyone who can reach
+/// the port grow `events` unboundedly through the URL path alone.
+#[tokio::test]
+async fn deleting_an_unknown_agent_via_json_writes_no_audit_event() {
+    let (_d, port) = common::start_bus().await;
+
+    let status = common::delete_same_origin(port, "/api/agents/nobody").await;
+    assert_eq!(status, 404);
+
+    let events = common::get_json(port, "/api/events").await;
+    assert!(
+        !events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "agent_deleted"),
+        "an unknown name must forge no audit event: {events}"
+    );
+}
+
+/// The property that makes the audit log mean one thing regardless of which
+/// UI performed the delete: the HTML `POST` and the JSON `DELETE` must write
+/// the same event shape. `posting_the_delete_records_an_audit_event`'s and
+/// `deleting_an_offline_agent_via_json_records_an_audit_event`'s "same handler
+/// logic, tested separately" is not the same guarantee as this — a rename in
+/// one path's `serde_json::json!` and not the other would pass both of those
+/// and only be caught here.
+#[tokio::test]
+async fn html_and_json_deletes_write_the_same_event_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("html-agent", "hardac", "/w/html", None, false, None)
+            .await
+            .unwrap();
+        store
+            .upsert_agent("json-agent", "hardac", "/w/json", None, false, None)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let res = post(port, "/agents/html-agent/delete").await;
+    assert!(
+        res.starts_with("HTTP/1.1 303"),
+        "html delete must succeed: {res}"
+    );
+    let status = common::delete_same_origin(port, "/api/agents/json-agent").await;
+    assert_eq!(status, 204, "json delete must succeed");
+
+    let events = common::get_json(port, "/api/events").await;
+    let arr = events.as_array().unwrap();
+    let html_event = arr
+        .iter()
+        .find(|e| e["kind"] == "agent_deleted" && e["agent"] == "html-agent")
+        .unwrap_or_else(|| panic!("no agent_deleted event for html-agent: {events}"));
+    let json_event = arr
+        .iter()
+        .find(|e| e["kind"] == "agent_deleted" && e["agent"] == "json-agent")
+        .unwrap_or_else(|| panic!("no agent_deleted event for json-agent: {events}"));
+
+    let mut html_keys: Vec<&str> = html_event["detail"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|s| s.as_str())
+        .collect();
+    let mut json_keys: Vec<&str> = json_event["detail"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|s| s.as_str())
+        .collect();
+    html_keys.sort_unstable();
+    json_keys.sort_unstable();
+    assert_eq!(
+        html_keys, json_keys,
+        "the two delete paths must write the same event shape"
+    );
+}
+
+/// `AgentIdentity` (the TS side) has to tell "cannot compare against this bus"
+/// apart from "this agent's own version is unknown" — the second is a real
+/// signal (a binary predating the version field) that must survive the column
+/// -> DTO hop faithfully. This is the only genuinely unverified link in that
+/// path.
+#[tokio::test]
+async fn agent_detail_returns_a_known_version_faithfully() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w/caas", None, false, Some("0.0.1"))
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = common::get_json(port, "/api/agents/caas").await;
+    assert_eq!(body["version"], "0.0.1");
+}
+
+#[tokio::test]
+async fn agent_detail_returns_a_null_version_faithfully() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .upsert_agent("caas", "hardac", "/w/caas", None, false, None)
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = common::get_json(port, "/api/agents/caas").await;
+    assert_eq!(body["version"], serde_json::Value::Null);
+}

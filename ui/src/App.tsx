@@ -14,6 +14,17 @@ function KeyedRoomScreen() {
   return <RoomScreen key={name} />
 }
 
+/// A fresh AgentScreen per agent, mirroring `KeyedRoomScreen` above — this
+/// route was missing its own key. Without it, following a rail link from one
+/// agent's page to another re-renders the same instance in place rather than
+/// mounting a new one, which is what let `AgentScreen`'s open `DeleteModal`
+/// silently re-target: the modal's `name` prop would change under it while it
+/// stayed mounted, open, and holding whatever the operator had already typed.
+function KeyedAgentScreen() {
+  const { name } = useParams()
+  return <AgentScreen key={name} />
+}
+
 export function App() {
   useEffect(() => {
     void store.start()
@@ -29,7 +40,7 @@ export function App() {
         <Route path="/" element={<Shell />}>
           <Route index element={<MainPlaceholder />} />
           <Route path="rooms/:name" element={<KeyedRoomScreen />} />
-          <Route path="agents/:name" element={<AgentScreen />} />
+          <Route path="agents/:name" element={<KeyedAgentScreen />} />
         </Route>
       </Routes>
     </BrowserRouter>

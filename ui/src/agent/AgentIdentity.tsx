@@ -15,7 +15,30 @@ export function AgentIdentity({
   busVersion: string | null
   now: number
 }) {
-  const differs = !!agent.version && !!busVersion && agent.version !== busVersion
+  // Two different unknowns, rendered two different ways. `busVersion === null`
+  // means "cannot compare" — this bus's own `/api/meta` hasn't answered yet —
+  // and rendering nothing is correct: there is genuinely no clause to add.
+  // `agent.version === null` means something specific: a binary predating the
+  // version field, which the old HTML UI's `version_cell` already flags with
+  // "unknown · differs" and documents why. That signal must survive here too,
+  // independent of whether `busVersion` happens to be known yet.
+  const versionClause = () => {
+    if (agent.version === null) {
+      return (
+        <span className={styles.secondary}>
+          {' · '}
+          <Chip tone="attention">differs</Chip>
+        </span>
+      )
+    }
+    if (!busVersion) return null
+    return (
+      <span className={styles.secondary}>
+        {' · '}
+        {agent.version !== busVersion ? <Chip tone="attention">differs</Chip> : 'matches bus'}
+      </span>
+    )
+  }
   const rows: [string, React.ReactNode][] = [
     ['host', agent.host],
     ['cwd', <span className={styles.breakAll}>{agent.cwd}</span>],
@@ -23,13 +46,8 @@ export function AgentIdentity({
     [
       'version',
       <>
-        {agent.version ?? '—'}
-        {agent.version && busVersion && (
-          <span className={styles.secondary}>
-            {' · '}
-            {differs ? <Chip tone="attention">differs</Chip> : 'matches bus'}
-          </span>
-        )}
+        {agent.version ?? 'unknown'}
+        {versionClause()}
       </>,
     ],
     [

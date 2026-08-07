@@ -36,7 +36,7 @@ test('the name is rendered in full, not truncated', async () => {
   // 36 characters. You cannot identify an agent from a truncated name, so this
   // wraps rather than ellipsising.
   renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
-  const el = await screen.findByTestId('agent-name')
+  const el = await screen.findByTestId('agent-detail-name')
   expect(el.textContent).toBe('release-artifact-verifier#2@buildbox')
   expect(getComputedStyle(el).textOverflow).not.toBe('ellipsis')
 })
@@ -49,7 +49,7 @@ test('an agent with no activity still shows a volume strip', async () => {
 
 test('identity lists host, cwd, session, version and last seen', async () => {
   renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
-  await screen.findByTestId('agent-name')
+  await screen.findByTestId('agent-detail-name')
   for (const label of ['host', 'cwd', 'session', 'version', 'last seen']) {
     expect(screen.getByText(label)).toBeDefined()
   }
@@ -76,6 +76,28 @@ test('a version that differs from the bus renders the differs badge, not matches
   })
   renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
   expect(await screen.findByText('differs')).toBeDefined()
+  expect(screen.queryByText(/matches bus/)).toBeNull()
+})
+
+test('a null agent version is flagged as unknown and differing, not rendered as nothing', async () => {
+  // `agent.version === null` is a real signal (a binary predating the version
+  // field, per `version_cell` on the old HTML UI) and must say so even though
+  // this bus's own version is known — unlike `busVersion === null`, where
+  // rendering nothing is correct because there is genuinely nothing to compare.
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    if (url.includes('/api/meta')) {
+      return new Response(JSON.stringify({ host: 'hardac', version: '0.3.3' }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ ...detail, version: null }), {
+      headers: { 'content-type': 'application/json' },
+    })
+  })
+  renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
+  expect(await screen.findByText('unknown')).toBeDefined()
+  expect(screen.getByText('differs')).toBeDefined()
   expect(screen.queryByText(/matches bus/)).toBeNull()
 })
 

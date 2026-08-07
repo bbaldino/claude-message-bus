@@ -61,6 +61,36 @@ test('Enter does nothing until the name matches', async () => {
   expect(onDeleted).not.toHaveBeenCalled()
 })
 
+test('Enter does not delete when the blast-radius preview failed to load', async () => {
+  // The bug this guards: the delete button carries `disabled={!matches ||
+  // !preview}`, but if `submit` only checked `matches`, a failed preview left
+  // the button disabled while Enter in the input still fired a real DELETE —
+  // against an unknown blast radius, no less. `submit` itself must refuse to
+  // run without a `preview`, not just the button.
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_i, init) =>
+    (init as RequestInit | undefined)?.method === 'DELETE'
+      ? new Response(null, { status: 204 })
+      : new Response('boom', { status: 500 }),
+  )
+  const onDeleted = vi.fn()
+  renderWithStore(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={onDeleted} />)
+  const input = await screen.findByTestId('confirm-input')
+  await screen.findByText(/could not read the blast radius/)
+  fireEvent.change(input, { target: { value: NAME } })
+
+  const button = screen.getByRole('button', { name: 'delete' }) as HTMLButtonElement
+  expect(button.disabled).toBe(true)
+
+  fireEvent.keyDown(input, { key: 'Enter' })
+  // Give any wrongly-issued fetch a turn to run.
+  await Promise.resolve()
+  expect(onDeleted).not.toHaveBeenCalled()
+  expect(globalThis.fetch).not.toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ method: 'DELETE' }),
+  )
+})
+
 test('Esc closes', async () => {
   const onClose = vi.fn()
   renderWithStore(<DeleteModal name={NAME} onClose={onClose} onDeleted={vi.fn()} />)
@@ -283,10 +313,105 @@ test('a failed delete does not ask for a rail refresh', async () => {
   const input = await screen.findByTestId('confirm-input')
   fireEvent.change(input, { target: { value: NAME } })
   fireEvent.click(screen.getByRole('button', { name: 'delete' }))
-  // Nothing in this component currently surfaces a submit-time failure other
-  // than through `failed` state (a pre-existing gap, not something this fix
-  // touches) — wait on the DELETE call itself having resolved instead of on
-  // rendered text.
   await waitFor(() => expect(deleteCalls).toBe(1))
   expect(storeActions.refreshRail).not.toHaveBeenCalled()
+})
+
+test('a failed delete renders a distinct message from a failed preview', async () => {
+  // Submitting requires `preview` to be non-null, so the pre-existing `failed`
+  // paragraph — which only renders while `preview` is null — can never show a
+  // submit-time failure. The dialog must say something when the console's
+  // only irreversible action fails, and it must not reuse the preview
+  // failure's wording, since the operator's next move differs (retry reading
+  // the blast radius vs. retry the delete, or go look at the bus for a 500).
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_i, init) =>
+    (init as RequestInit | undefined)?.method === 'DELETE'
+      ? new Response(null, { status: 500 })
+      : new Response(
+          JSON.stringify({ registration: 1, memberships: 0, cursors: 0, host: 'h', online: false }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+  )
+  renderWithStore(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)
+  const input = await screen.findByTestId('confirm-input')
+  fireEvent.change(input, { target: { value: NAME } })
+  fireEvent.click(screen.getByRole('button', { name: 'delete' }))
+
+  const message = await screen.findByText(/the delete failed/)
+  expect(message.textContent).toContain('500')
+  expect(screen.queryByText(/could not read the blast radius/)).toBeNull()
+})
+
+test('the delete button is disabled while a delete is already in flight', async () => {
+  // Two clicks must not issue two DELETEs — the registry lock on the server
+  // serialises them, and the second would find the row already gone.
+  let deleteCalls = 0
+  let resolveDelete: (() => void) | undefined
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_i, init) => {
+    if ((init as RequestInit | undefined)?.method === 'DELETE') {
+      deleteCalls++
+      await new Promise<void>((resolve) => {
+        resolveDelete = resolve
+      })
+      return new Response(null, { status: 204 })
+    }
+    return new Response(
+      JSON.stringify({ registration: 1, memberships: 0, cursors: 0, host: 'h', online: false }),
+      { headers: { 'content-type': 'application/json' } },
+    )
+  })
+  const onDeleted = vi.fn()
+  renderWithStore(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={onDeleted} />)
+  const input = await screen.findByTestId('confirm-input')
+  fireEvent.change(input, { target: { value: NAME } })
+  const button = screen.getByRole('button', { name: 'delete' }) as HTMLButtonElement
+
+  fireEvent.click(button)
+  await waitFor(() => expect(deleteCalls).toBe(1))
+  expect(button.disabled).toBe(true)
+  fireEvent.click(button)
+  expect(deleteCalls).toBe(1)
+
+  resolveDelete?.()
+  await waitFor(() => expect(onDeleted).toHaveBeenCalled())
+})
+
+test('the refused state names the real host, not a fabricated one', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        registration: 1,
+        memberships: 1,
+        cursors: 0,
+        host: 'buildbox',
+        online: true,
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    ),
+  )
+  renderWithStore(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)
+  await screen.findByText('Still connected')
+  expect(screen.getByText(/buildbox/)).toBeDefined()
+  expect(screen.queryByText(/hardac/)).toBeNull()
+  expect(screen.queryByText(/claude-bus/)).toBeNull()
+})
+
+test('mounting inerts the rest of the page, and unmounting restores it', async () => {
+  const behindLink = document.createElement('a')
+  behindLink.href = '#'
+  behindLink.textContent = 'a rail link behind the scrim'
+  document.body.appendChild(behindLink)
+
+  const { unmount } = renderWithStore(
+    <DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />,
+  )
+  await screen.findByTestId('confirm-input')
+  // jsdom does not implement the `inert` IDL property (as of the version this
+  // repo pins), so the attribute itself is what gets asserted — it is also
+  // what a real browser's focus and accessibility-tree handling keys off.
+  expect(behindLink.hasAttribute('inert')).toBe(true)
+
+  unmount()
+  expect(behindLink.hasAttribute('inert')).toBe(false)
+  behindLink.remove()
 })

@@ -23,8 +23,11 @@ export function AgentScreen({ name: nameProp }: { name?: string }) {
 
   useEffect(() => {
     let live = true
-    setAgent(null)
-    setError(null)
+    // No reset of `agent`/`error` here: `KeyedAgentScreen` (see `App.tsx`) gives
+    // every agent name its own instance via `key={name}`, so a name change
+    // unmounts this component rather than updating it in place — the initial
+    // `useState(null)` above is already the reset state by the time this runs.
+    //
     // A second deliberate exception to "components subscribe to the store;
     // nothing fetches on its own" (see useStore.ts and TopBar's `fetchMeta`
     // effect, the first exception). Safe here for the same reason: agent

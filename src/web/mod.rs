@@ -800,6 +800,15 @@ async fn delete_agent_perform(
     };
 
     match result {
+        Ok(counts) if counts.agents == 0 => {
+            // Two concurrent deletes serialise under the registry lock above;
+            // this one found the row at the top of this handler, but by the
+            // time its turn came a sibling call had already removed it. The
+            // agent is genuinely gone, so this is "no such agent" — not a
+            // second successful delete, and it must not append a second
+            // `agent_deleted` event for a delete that removed nothing.
+            no_such_agent(&name).into_response()
+        }
         Ok(counts) => {
             // The only surviving record that this agent ever existed, so a
             // failure to write it is worth saying out loud — `eprintln!` to

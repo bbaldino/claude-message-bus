@@ -526,6 +526,15 @@ pub(crate) async fn agent_deletion_preview(
 ///    column: that column is written *after* the registry insert, so a live
 ///    agent's row can still read offline for a moment. `forget_agent`'s own
 ///    `online = 0` clause is defence in depth beneath this.
+///
+/// The response status distinguishes a genuine conflict from a storage
+/// failure — both `if_offline` returning `None` and `forget_agent` bailing
+/// with `ForgetAgentError::StillOnline` are 409, but `ForgetAgentError::Storage`
+/// is a 500. Collapsing the two into one 409 (as this used to) told the client
+/// "the agent is still connected", which is not just imprecise but wrong: the
+/// client latches a 409 into a state that promises to update itself once the
+/// agent goes offline, and a database error will never do that — a permanent
+/// dead end dressed as a temporary one.
 pub(crate) async fn agent_delete(
     State(app): State<App>,
     Path(name): Path<String>,
@@ -557,8 +566,26 @@ pub(crate) async fn agent_delete(
         .await;
 
     match outcome {
+        // The registry's own liveness check disagreed — a genuine conflict.
         None => StatusCode::CONFLICT,
-        Some(Err(_)) => StatusCode::CONFLICT,
+        // `forget_agent`'s own `online = 0` clause caught the same conflict a
+        // moment later. Still a 409, not a 500: the agent really is the
+        // problem, not the database.
+        Some(Err(crate::store::ForgetAgentError::StillOnline)) => StatusCode::CONFLICT,
+        // An sqlx failure unrelated to liveness. Mapping this to 409 (as this
+        // used to) tells the client "the agent is still connected" — a
+        // fabricated, unfalsifiable explanation for what is actually a
+        // storage problem, and a 409 the client can never resolve by waiting.
+        Some(Err(crate::store::ForgetAgentError::Storage(e))) => {
+            eprintln!("DELETE /api/agents/{name} could not remove it: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        // Two concurrent deletes serialise under the registry lock; the
+        // second one to run finds the row already gone and removes nothing.
+        // That is "not found", not a successful delete of nothing — and must
+        // not append a second `agent_deleted` event for a delete that removed
+        // no agent row.
+        Some(Ok(counts)) if counts.agents == 0 => StatusCode::NOT_FOUND,
         Some(Ok(counts)) => {
             // Matches `delete_agent_perform`'s event exactly — same kind, same
             // agent (`Some(&name)`, so the deleted agent's own activity log

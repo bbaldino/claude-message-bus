@@ -11,7 +11,11 @@ export function AgentHeader({ agent, now }: { agent: AgentDetail; now: number })
         {/* break-all, not ellipsis: a 36-character name like
             release-artifact-verifier#2@buildbox cannot be identified from a
             truncated form. */}
-        <h1 className={styles.name} data-testid="agent-name">
+        {/* Deliberately not `agent-name` — the rail's `AgentRow` already uses that
+            testid for every row it renders, and a whole-app test would resolve
+            `getByTestId('agent-name')` to whichever rail row happened to render
+            first, never this header. */}
+        <h1 className={styles.name} data-testid="agent-detail-name">
           {agent.name}
         </h1>
         {agent.isHuman && <Chip tone="human">human</Chip>}

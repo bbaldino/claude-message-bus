@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { fetchDeletionPreview } from '../data/api'
 import type { DeletionPreview } from '../types/DeletionPreview'
 import { store, useStore } from '../useStore'
@@ -17,6 +18,19 @@ export function DeleteModal({
   const [preview, setPreview] = useState<DeletionPreview | null>(null)
   const [typed, setTyped] = useState('')
   const [failed, setFailed] = useState<string | null>(null)
+  // Distinct from `failed` above: that one is "the blast-radius read failed",
+  // which withholds the button entirely. This one is "the delete itself
+  // failed" — the button was live, the operator used it, and the request did
+  // not succeed. The two mean different things (retry the read vs. retry the
+  // delete, or in the 500 case, go look at the bus) so they get separate
+  // state and separate copy rather than being folded into one.
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  // Guards against a second click firing a second DELETE while the first is
+  // still in flight. The registry lock would serialise them anyway, but the
+  // second call would then find the row already gone and — absent the
+  // server-side fix alongside this — write a second `agent_deleted` event
+  // for a delete that removed nothing.
+  const [submitting, setSubmitting] = useState(false)
   // Latched by a 409 from the DELETE itself — the server's word overrides
   // whatever the client believed going in. Cleared only by the presence
   // transition below, never just by re-opening.
@@ -25,16 +39,25 @@ export function DeleteModal({
 
   // Presence, read off the rail the websocket already keeps current — not a
   // poll, not a second socket. This is what makes the live-watch strip's
-  // claim true.
-  const liveNow = rail?.agents.find((a) => a.name === name)?.online
+  // claim true. Also the source for the refused state's real host, below.
+  const railAgent = rail?.agents.find((a) => a.name === name)
+  const liveNow = railAgent?.online
   const showRefused = refused || (preview?.online ?? false)
+  // `preview` is the primary source (it is what the confirmable state's own
+  // counts render from), with the rail as a fallback for the one window where
+  // `preview` can still be null while `showRefused` is already true: an
+  // already-online agent whose dialog just opened, where the liveNow-driven
+  // effect below can flip `refused` before the preview fetch has resolved.
+  const host = preview?.host ?? railAgent?.host
 
   useEffect(() => {
     // Counted at dialog open, not at page load: the screen behind this may be
     // minutes old, and a stale count in a delete confirmation is worse than none.
-    setPreview(null)
-    setFailed(null)
-    setRefused(false)
+    // No reset of `preview`/`failed`/`refused` here: this component is only ever
+    // mounted fresh (see `AgentScreen`'s `{deleting && <DeleteModal .../>}` and,
+    // upstream of that, the agent route's `key={name}`, which guarantees `name`
+    // itself never changes under a mounted instance) so the initial state from
+    // `useState` above is already the reset state.
     fetchDeletionPreview(name)
       .then(setPreview)
       .catch((e: unknown) => setFailed(e instanceof Error ? e.message : String(e)))
@@ -67,8 +90,38 @@ export function DeleteModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // The node this dialog portals into, and — while mounted — the boundary
+  // `inert` is applied outside of. A real focus trap was deliberately declined
+  // for this modal (see the input's `autoFocus` comment, now removed along
+  // with the gap it documented); `inert` gets the same result — nothing behind
+  // the scrim is reachable by Tab, by a screen reader, or by a click — for far
+  // less machinery, and as a side effect it is also what stops a Shift-Tab
+  // journey from ending on a rail link and silently re-targeting this dialog
+  // at a different agent.
+  const portalNode = useRef<HTMLDivElement | null>(null)
+  if (!portalNode.current) {
+    portalNode.current = document.createElement('div')
+  }
+
+  useEffect(() => {
+    const node = portalNode.current!
+    document.body.appendChild(node)
+    const siblings = Array.from(document.body.children).filter((el) => el !== node)
+    for (const el of siblings) el.setAttribute('inert', '')
+    return () => {
+      for (const el of siblings) el.removeAttribute('inert')
+      document.body.removeChild(node)
+    }
+  }, [])
+
   const submit = async () => {
-    if (!matches) return
+    // Both halves of the guard live in the action, not on the control: a
+    // control-only guard (the button's `disabled`) does not stop the Enter
+    // key in the input from calling this directly, which is exactly how this
+    // modal used to let a failed preview read through to a real DELETE.
+    if (!matches || !preview || submitting) return
+    setSubmitting(true)
+    setDeleteError(null)
     try {
       const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, { method: 'DELETE' })
       if (res.status === 204) {
@@ -82,17 +135,29 @@ export function DeleteModal({
         // blank it, and the 25s poll remains the backstop either way.
         void store.refreshRail()
         onDeleted()
+        return
       }
       // The bus is the authority on whether the agent is still connected — a
       // 409 renders the refused state regardless of what the client believed.
-      else if (res.status === 409) setRefused(true)
-      else setFailed(`the bus refused: ${res.status}`)
+      if (res.status === 409) {
+        setRefused(true)
+        return
+      }
+      // Anything else — a 404 (a concurrent delete already won), a 500, some
+      // other status — is a delete that did not happen, and now says so:
+      // this used to fall into `failed`, which only ever rendered while
+      // `preview` was null, and submitting requires `preview` to be non-null.
+      // The dialog looked unchanged after the only irreversible action on the
+      // page failed.
+      setDeleteError(`the bus returned ${res.status}`)
     } catch (e: unknown) {
-      setFailed(e instanceof Error ? e.message : String(e))
+      setDeleteError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSubmitting(false)
     }
   }
 
-  return (
+  return createPortal(
     <div className={styles.scrim} onClick={onClose}>
       <div
         className={styles.modal}
@@ -133,7 +198,25 @@ export function DeleteModal({
               <div className={styles.steps}>
                 <span className={styles.stepNum}>1.</span>
                 <span className={styles.stepText}>
-                  Stop the Claude Code session in <code>~/src/claude-bus</code> on hardac.
+                  {/* The real host, not a fabricated one: agent names carry `@host`
+                      suffixes precisely because agents live on different machines,
+                      and this is the one state whose entire job is accurate
+                      remediation. `preview.host` (with the rail as a fallback — see
+                      `host` above) is what is in scope here; the working directory
+                      would need threading a new prop from `AgentScreen` down through
+                      to here for a value this component otherwise has no reason to
+                      know, which is more machinery than this clause is worth, so it
+                      is dropped rather than left fabricated. */}
+                  Stop the Claude Code session
+                  {host ? (
+                    <>
+                      {' '}
+                      on <code>{host}</code>
+                    </>
+                  ) : (
+                    ''
+                  )}
+                  .
                 </span>
                 <span className={styles.stepNum}>2.</span>
                 <span className={styles.stepText}>
@@ -183,13 +266,10 @@ export function DeleteModal({
                 value={typed}
                 onChange={(e) => setTyped(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && submit()}
-                // Puts the cursor where the operator needs it and, just as
-                // importantly, moves focus off the page behind the scrim and
-                // into the dialog. Not a full focus trap — deliberately: this
-                // modal has no established focus-trap convention in this
-                // codebase, and one is more machinery than a single-input dialog
-                // warrants. A keyboard user can still tab out to the page behind
-                // the scrim; recorded as a known gap, not an oversight.
+                // Puts the cursor where the operator needs it. A full focus trap
+                // is unnecessary here: `inert` on everything outside the portal
+                // node (see above) already keeps Tab, Shift-Tab, and assistive
+                // tech from ever reaching the page behind the scrim.
                 autoFocus
               />
               <p className={styles.progress}>
@@ -197,6 +277,7 @@ export function DeleteModal({
                   ? 'matches'
                   : `${Math.max(0, name.length - typed.length)} characters to go`}
               </p>
+              {deleteError && <p className={styles.failed}>the delete failed: {deleteError}</p>}
             </>
           )}
         </div>
@@ -213,13 +294,18 @@ export function DeleteModal({
               <button className={styles.cancel} onClick={onClose}>
                 cancel · esc
               </button>
-              <button className={styles.delete} disabled={!matches || !preview} onClick={submit}>
+              <button
+                className={styles.delete}
+                disabled={!matches || !preview || submitting}
+                onClick={submit}
+              >
                 delete
               </button>
             </>
           )}
         </footer>
       </div>
-    </div>
+    </div>,
+    portalNode.current,
   )
 }

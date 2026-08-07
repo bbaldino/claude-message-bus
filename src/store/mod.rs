@@ -63,6 +63,49 @@ pub struct ForgetCounts {
     pub cursors: u64,
 }
 
+/// Why `forget_agent` did not return `ForgetCounts`.
+///
+/// Kept distinct from a bare `anyhow::Error` because the two callers need to
+/// tell them apart: `StillOnline` is a genuine conflict (the caller's
+/// liveness check and this one's own `online = 0` clause disagreed, however
+/// briefly), while `Storage` is this call having failed for reasons that have
+/// nothing to do with liveness. Conflating them — as this used to, behind one
+/// `anyhow::bail!` — is what let the JSON API map a database error to the same
+/// 409 as a real refusal (see `api::agent_delete`).
+#[derive(Debug)]
+pub enum ForgetAgentError {
+    /// The agent is (still) online. Defence in depth beneath
+    /// `Registry::if_offline`, which is the real authority — see this
+    /// method's doc.
+    StillOnline,
+    /// An sqlx failure unrelated to liveness.
+    Storage(anyhow::Error),
+}
+
+impl std::fmt::Display for ForgetAgentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StillOnline => write!(f, "online; only offline agents can be deleted"),
+            Self::Storage(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ForgetAgentError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::StillOnline => None,
+            Self::Storage(e) => e.source(),
+        }
+    }
+}
+
+impl From<sqlx::Error> for ForgetAgentError {
+    fn from(e: sqlx::Error) -> Self {
+        Self::Storage(e.into())
+    }
+}
+
 pub struct Store {
     pool: SqlitePool,
     blobs_dir: std::path::PathBuf,
@@ -414,7 +457,7 @@ impl Store {
     /// What this does buy is that a caller added later — this is a public
     /// method whose only other protection lives in a different module —
     /// cannot silently drop a connected agent's memberships.
-    pub async fn forget_agent(&self, name: &str) -> anyhow::Result<ForgetCounts> {
+    pub async fn forget_agent(&self, name: &str) -> Result<ForgetCounts, ForgetAgentError> {
         let mut tx = self.pool.begin().await?;
         let memberships = sqlx::query("DELETE FROM room_members WHERE agent_name = ?1")
             .bind(name)
@@ -443,7 +486,7 @@ impl Store {
                 .is_some();
             if still_there {
                 tx.rollback().await?;
-                anyhow::bail!("{name} is online; only offline agents can be deleted");
+                return Err(ForgetAgentError::StillOnline);
             }
         }
         tx.commit().await?;
