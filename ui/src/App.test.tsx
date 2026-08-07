@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, test, vi } from 'vitest'
 import { App } from './App'
 import { store } from './useStore'
@@ -8,6 +8,14 @@ function mockEmptyRail() {
     const url = String(input)
     if (url.includes('/api/meta')) {
       return new Response(JSON.stringify({ host: 'hardac', version: '0.3.3' }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    // The room screen fetches messages and events on selection; these must stay
+    // arrays even in an otherwise-empty mock, or `deliveryFor` chokes on the
+    // rail's `{ rooms, agents }` shape landing in `roomEvents`.
+    if (url.includes('/messages') || url.includes('/api/events')) {
+      return new Response(JSON.stringify([]), {
         headers: { 'content-type': 'application/json' },
       })
     }
@@ -32,6 +40,11 @@ test('renders the three shell regions and routes to a room', async () => {
         headers: { 'content-type': 'application/json' },
       })
     }
+    if (url.includes('/messages') || url.includes('/api/events')) {
+      return new Response(JSON.stringify([]), {
+        headers: { 'content-type': 'application/json' },
+      })
+    }
     return new Response(
       JSON.stringify({
         rooms: [
@@ -47,9 +60,9 @@ test('renders the three shell regions and routes to a room', async () => {
   render(<App />)
 
   // The rail is outside the outlet, so it is present on a room route.
-  expect(await screen.findByText('protocol')).toBeDefined()
-  // The main pane is a labelled placeholder in this phase.
-  expect(await screen.findByTestId('main-placeholder')).toBeDefined()
+  expect((await screen.findByTestId('room-name')).textContent).toBe('protocol')
+  // The main pane now renders the real room screen, not the placeholder.
+  expect(await screen.findByRole('heading', { name: 'protocol' })).toBeDefined()
 })
 
 test('typing in the top bar search field filters the rail, and clearing it restores everything', async () => {
@@ -130,8 +143,9 @@ test('rendering at a room route tells the store to select that room', async () =
   window.history.pushState({}, '', '/app/rooms/protocol')
   render(<App />)
 
-  await screen.findByTestId('main-placeholder')
-  expect(selectRoom).toHaveBeenCalledWith('protocol')
+  // The room screen replaced the placeholder, so wait on the wiring itself
+  // rather than on a testid that no longer exists for a room route.
+  await waitFor(() => expect(selectRoom).toHaveBeenCalledWith('protocol'))
 })
 
 test('a room name that needs URL encoding reaches the store decoded', async () => {
@@ -142,8 +156,7 @@ test('a room name that needs URL encoding reaches the store decoded', async () =
   window.history.pushState({}, '', `/app/rooms/${encodeURIComponent(roomName)}`)
   render(<App />)
 
-  await screen.findByTestId('main-placeholder')
   // The route param comes through useMatch already decoded — selectRoom must
   // see the real room name, not the percent-encoded form that was in the URL.
-  expect(selectRoom).toHaveBeenCalledWith(roomName)
+  await waitFor(() => expect(selectRoom).toHaveBeenCalledWith(roomName))
 })

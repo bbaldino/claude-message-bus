@@ -5,8 +5,9 @@ import { TopBar } from './TopBar'
 import { store } from './useStore'
 import styles from './Shell.module.css'
 
-/// The main pane in this phase. Not a screen — a labelled hole that the room
-/// screen fills next. It should not be polished.
+/// The main pane for routes with no screen of their own yet — the index route
+/// and the agent route (2d). The room route no longer lands here; it has its
+/// own screen now.
 export function MainPlaceholder() {
   const { name } = useParams()
   return (
