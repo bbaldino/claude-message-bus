@@ -270,6 +270,38 @@ test('selecting null while a room load is in flight leaves state cleared, not re
   expect(store.getState().room).toBeNull()
   expect(store.getState().messages).toEqual([])
   expect(store.getState().roomEvents).toEqual([])
+  // The stale 'protocol' load resolving after the `null` deselection must not
+  // stamp 'ready' over it — `null` has no room to have loaded, so this stays
+  // at the 'loading' the synchronous part of the `null` selection set.
+  expect(store.getState().roomLoad).toBe('loading')
+})
+
+test('a room load that rejects after a newer selection has landed does not stamp failed over it', async () => {
+  // Mirrors the race above, but for the failure path: `protocol`'s fetch is
+  // still pending — and will reject — when `other` is selected and finishes
+  // first. The stale rejection landing afterwards must not overwrite `other`'s
+  // now-settled 'ready' state with 'failed'.
+  let rejectProtocol: (err: unknown) => void = () => {}
+  const store = createStore({
+    live: fakeLive(),
+    fetchRail: async () => emptyRail,
+    fetchMessages: async (room) => {
+      if (room === 'protocol') {
+        return new Promise<ReturnType<typeof msg>[]>((_resolve, reject) => {
+          rejectProtocol = reject
+        })
+      }
+      return [msg(1)]
+    },
+    fetchEvents: async () => [],
+  })
+  const failing = store.selectRoom('protocol')
+  await store.selectRoom('other')
+  rejectProtocol(new Error('boom'))
+  await failing
+  expect(store.getState().room).toBe('other')
+  expect(store.getState().roomLoad).toBe('ready')
+  expect(store.getState().messages).toEqual([msg(1)])
 })
 
 test('loadOlder in flight when the room changes clears loadingOlder and a later loadOlder for the new room still fetches', async () => {
