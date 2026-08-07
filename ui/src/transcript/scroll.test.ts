@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { scrollAction, shouldLoadOlder } from './scroll'
+import { classifyArrival, scrollAction, shouldLoadOlder } from './scroll'
 
 const at = (scrollTop: number) => ({ scrollTop, scrollHeight: 1000, clientHeight: 400 })
 
@@ -26,4 +26,36 @@ test('loads older only when near the top', () => {
   expect(shouldLoadOlder(at(0))).toBe(true)
   expect(shouldLoadOlder(at(50))).toBe(true)
   expect(shouldLoadOlder(at(500))).toBe(false)
+})
+
+const msg = (id: number) => ({ id })
+
+test('classifies the first population of a room as initial, not an arrival', () => {
+  expect(
+    classifyArrival({ prevLastId: null, messages: [msg(1), msg(2)], roomChanged: false }),
+  ).toEqual({ kind: 'initial' })
+})
+
+test('classifies a room switch as initial even if a previous last id existed', () => {
+  expect(
+    classifyArrival({ prevLastId: 2, messages: [msg(10), msg(11)], roomChanged: true }),
+  ).toEqual({ kind: 'initial' })
+})
+
+test('classifies new messages appended at the tail as an append, counting only the new ones', () => {
+  expect(
+    classifyArrival({
+      prevLastId: 2,
+      messages: [msg(1), msg(2), msg(3), msg(4)],
+      roomChanged: false,
+    }),
+  ).toEqual({ kind: 'append', count: 2 })
+})
+
+test('classifies a page of older messages prepended at the head as none, since the last id is unchanged', () => {
+  const older = Array.from({ length: 100 }, (_, i) => msg(-100 + i))
+  const messages = [...older, msg(1), msg(2)]
+  expect(classifyArrival({ prevLastId: 2, messages, roomChanged: false })).toEqual({
+    kind: 'none',
+  })
 })
