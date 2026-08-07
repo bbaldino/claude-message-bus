@@ -26,6 +26,22 @@ type Live = {
 
 const DOCK_OPEN_KEY = 'claude-bus.dockOpen'
 
+/// Private browsing and blocked storage both make `localStorage` throw rather
+/// than return null — Safari's private mode is the well-known case, but any
+/// policy that blocks storage does the same. The read runs at module
+/// evaluation (see `dockOpen` below, set while constructing the initial
+/// `state`), so an unguarded throw here fails the whole module import: a
+/// white screen with no React and no error boundary, before either has had a
+/// chance to render. Default to closed on a read failure — the dock simply
+/// starts closed, same as a first visit.
+function readDockOpen(): boolean {
+  try {
+    return localStorage.getItem(DOCK_OPEN_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
 /// One store rather than per-screen hooks: presence and events feed the rail, the
 /// dock, the unseen badge and the transcript at once, and separate subscriptions
 /// to one stream would let them disagree about what is current.
@@ -45,7 +61,7 @@ export function createStore(deps: {
     hasMoreHistory: false,
     loadingOlder: false,
     // Defaults to false, per the design: the dock is closed until asked for.
-    dockOpen: localStorage.getItem(DOCK_OPEN_KEY) === 'true',
+    dockOpen: readDockOpen(),
   }
   const subs = new Set<() => void>()
   const notify = () => subs.forEach((f) => f())
@@ -217,7 +233,12 @@ export function createStore(deps: {
       }
     },
     setDockOpen(open: boolean) {
-      localStorage.setItem(DOCK_OPEN_KEY, String(open))
+      try {
+        localStorage.setItem(DOCK_OPEN_KEY, String(open))
+      } catch {
+        // Storage is blocked or full; the in-memory state below still updates,
+        // it just won't survive a reload.
+      }
       setState({ dockOpen: open })
     },
     async start() {
