@@ -1,5 +1,7 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { createStore } from './store'
+import type { SendOutcome } from './participant'
+import { writeSendAs } from '../composer/identity'
 import type { RailSummary } from '../types/RailSummary'
 
 const emptyRail: RailSummary = { rooms: [], agents: [] }
@@ -22,11 +24,52 @@ function fakeLive() {
   }
 }
 
+// Mirrors `fakeLive` above: `register` defaults to resolving with whatever
+// name it was asked for (as the real bus does absent a collision), and
+// `send` resolves with `sendResult`, which individual tests mutate before
+// calling `store.send`/`store.retry` — the same "shared fake, per-test
+// override" shape `live.emit` gives the tests for push frames.
+function fakeParticipant() {
+  const p = {
+    sendResult: { ok: true, msgId: 1, deliveredTo: [], queuedFor: [] } as SendOutcome,
+    register: vi.fn(async (name: string) => name),
+    send: vi.fn(async () => p.sendResult),
+    close: vi.fn(),
+  }
+  return p
+}
+
 let live: ReturnType<typeof fakeLive>
+let participant: ReturnType<typeof fakeParticipant>
 
 beforeEach(() => {
   live = fakeLive()
+  participant = fakeParticipant()
+  // `ensureRegistered` reads the operator's chosen name from localStorage
+  // (see `composer/identity.ts`); a send with no name set fails with 'no
+  // name set' rather than reaching `participant.register` at all, so the
+  // send/retry tests need a name on record the same way a real tab would
+  // after the operator set one.
+  localStorage.clear()
+  writeSendAs('bbaldino')
 })
+
+// Shared deps for the send/retry/dedup tests below: the same `live` and
+// `participant` fakes `beforeEach` resets per test, plus the same no-op
+// rail/messages/events fetches every other test in this file already uses.
+// Individual tests override what they need to (a local `live`, a custom
+// `fetchMessages`, ...) the same way the pre-existing tests below do by
+// passing their own object to `createStore` directly.
+function makeStore(overrides: Partial<Parameters<typeof createStore>[0]> = {}) {
+  return createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+    participant,
+    ...overrides,
+  })
+}
 
 // Flushes a macrotask, not just a microtask — the repair path chains a
 // `Promise.all` through a `.then`-equivalent `await`, which outlasts one or
@@ -37,6 +80,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 test('a pushed event lands in the log', () => {
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: noMessages,
     fetchEvents: noEvents,
@@ -57,6 +101,7 @@ test('a pushed event lands in the log', () => {
 test('a presence push flips an agent online', () => {
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: noMessages,
     fetchEvents: noEvents,
@@ -87,6 +132,7 @@ test('a presence push flips an agent online', () => {
 test('a dropped socket surfaces as disconnected', () => {
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: noMessages,
     fetchEvents: noEvents,
@@ -98,6 +144,7 @@ test('a dropped socket surfaces as disconnected', () => {
 test('a pushed message is normalised into the stored message shape', () => {
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: noMessages,
     fetchEvents: noEvents,
@@ -124,6 +171,7 @@ test('a pushed message for another room never enters the transcript', () => {
   // a different room — they would read as current traffic in the wrong place.
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: noMessages,
     fetchEvents: noEvents,
@@ -144,6 +192,7 @@ test('a pushed message for another room never enters the transcript', () => {
 test('selecting null clears the room and unwatches, without watching anything new', () => {
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: noMessages,
     fetchEvents: noEvents,
@@ -160,6 +209,7 @@ test('selecting null clears the room and unwatches, without watching anything ne
 test('subscribers are notified when state changes', () => {
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: noMessages,
     fetchEvents: noEvents,
@@ -179,6 +229,7 @@ test('selecting a room loads its history and its events', async () => {
   ]
   const store = createStore({
     live: fakeLive(),
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async () => messages,
     fetchEvents: async () => events,
@@ -192,6 +243,7 @@ test('a live event for the open room lands in roomEvents, one for another room d
   const live = fakeLive()
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async () => [],
     fetchEvents: async () => [],
@@ -225,6 +277,7 @@ test('loadOlder prepends a page and stops when a short page comes back', async (
   let call = 0
   const store = createStore({
     live: fakeLive(),
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async (_room, _limit, before) => {
       call++
@@ -262,6 +315,7 @@ test('selecting null while a room load is in flight leaves state cleared, not re
   let resolveMessages: (messages: ReturnType<typeof msg>[]) => void = () => {}
   const store = createStore({
     live: fakeLive(),
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: () =>
       new Promise<ReturnType<typeof msg>[]>((resolve) => {
@@ -290,6 +344,7 @@ test('a room load that rejects after a newer selection has landed does not stamp
   let rejectProtocol: (err: unknown) => void = () => {}
   const store = createStore({
     live: fakeLive(),
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async (room) => {
       if (room === 'protocol') {
@@ -324,6 +379,7 @@ test('loadOlder in flight when the room changes clears loadingOlder and a later 
   })
   const store = createStore({
     live: fakeLive(),
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async (room, _limit, before) => {
       if (room === 'protocol') {
@@ -372,7 +428,13 @@ test('an interleaved start()/stop()/start() during the initial fetch leaves no l
         calls++
         queueMicrotask(() => resolve(emptyRail))
       })
-    const store = createStore({ live, fetchRail, fetchMessages: noMessages, fetchEvents: noEvents })
+    const store = createStore({
+      live,
+      fetchRail,
+      fetchMessages: noMessages,
+      fetchEvents: noEvents,
+      participant,
+    })
 
     const first = store.start()
     store.stop()
@@ -402,6 +464,7 @@ test('a reconnect after a failed room load repairs the transcript', async () => 
   ]
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async () => {
       call++
@@ -428,6 +491,7 @@ test('a healthy reconnect does not refetch a transcript that already loaded', as
   let call = 0
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async () => {
       call++
@@ -452,6 +516,7 @@ test('a reconnect repair is a no-op when no room is selected', async () => {
   let call = 0
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async () => {
       call++
@@ -470,6 +535,7 @@ test('re-rendering at live (no transition) does not repair anything', async () =
   let call = 0
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async () => {
       call++
@@ -504,6 +570,7 @@ test('a reconnect repair racing a newer room switch does not overwrite it', asyn
   let protocolCalls = 0
   const store = createStore({
     live,
+    participant,
     fetchRail: async () => emptyRail,
     fetchMessages: async (room) => {
       if (room === 'protocol') {
@@ -531,4 +598,103 @@ test('a reconnect repair racing a newer room switch does not overwrite it', asyn
   expect(store.getState().room).toBe('other')
   expect(store.getState().messages).toEqual([msg(2)])
   expect(store.getState().roomLoad).toBe('ready')
+})
+
+test('a message already in the transcript is not appended twice', () => {
+  // Two sockets now receive the same message: the observer because it watches the
+  // room, and the participant because sending joined it. Without this the
+  // operator's own message renders twice.
+  const store = makeStore()
+  store.selectRoom('protocol')
+  const frame = {
+    type: 'message',
+    id: 7,
+    room: 'protocol',
+    from: 'caas',
+    text: 'hi',
+    done: false,
+    human: false,
+  }
+  live.emit('message', frame)
+  live.emit('message', frame)
+  expect(store.getState().messages.filter((m) => m.id === 7)).toHaveLength(1)
+})
+
+test('a draft survives leaving the room and coming back', () => {
+  const store = makeStore()
+  store.setDraft('protocol', 'half a thought')
+  store.selectRoom('other')
+  store.selectRoom('protocol')
+  expect(store.getState().drafts.protocol).toBe('half a thought')
+})
+
+test('a successful send promotes its pending row into the transcript', async () => {
+  const store = makeStore()
+  store.selectRoom('protocol')
+  participant.sendResult = { ok: true, msgId: 42, deliveredTo: [], queuedFor: [] }
+  await store.send('protocol', 'hello', false)
+  expect(store.getState().pending).toHaveLength(0)
+  expect(store.getState().messages.at(-1)).toMatchObject({ id: 42, body: 'hello' })
+})
+
+test('the observer copy of a just-sent message does not duplicate it', async () => {
+  const store = makeStore()
+  store.selectRoom('protocol')
+  participant.sendResult = { ok: true, msgId: 42, deliveredTo: [], queuedFor: [] }
+  await store.send('protocol', 'hello', false)
+  live.emit('message', {
+    type: 'message',
+    id: 42,
+    room: 'protocol',
+    from: 'bbaldino',
+    text: 'hello',
+    done: false,
+    human: true,
+  })
+  expect(store.getState().messages.filter((m) => m.id === 42)).toHaveLength(1)
+})
+
+test('a failed send keeps the text and leaves a failed row, not a phantom message', async () => {
+  const store = makeStore()
+  store.selectRoom('protocol')
+  participant.sendResult = { ok: false, error: 'storage failed' }
+  await store.send('protocol', 'hello', false)
+  // The message must NOT be in the transcript — it does not exist on the bus.
+  expect(store.getState().messages.some((m) => m.body === 'hello')).toBe(false)
+  const failed = store.getState().pending.at(-1)
+  expect(failed).toMatchObject({ status: 'failed', text: 'hello', error: 'storage failed' })
+})
+
+test('discarding a failed send removes it', async () => {
+  const store = makeStore()
+  store.selectRoom('protocol')
+  participant.sendResult = { ok: false, error: 'nope' }
+  await store.send('protocol', 'hello', false)
+  const id = store.getState().pending[0].clientId
+  store.discard(id)
+  expect(store.getState().pending).toHaveLength(0)
+})
+
+// Correction to the brief: `register()` (see `data/participant.ts`) rejects
+// rather than hanging when the socket closes before the bus answers
+// `registered`. Without a guard in `settle` around that await, this
+// rejection propagates out of `send()` entirely, and the pending row it
+// left behind is never updated — stuck 'sending' forever, with the
+// operator's text trapped in a row that offers no retry and no discard.
+// That is the exact failure `register()`'s rejection was introduced to
+// prevent, reintroduced one layer up. This test fails without the guard:
+// confirmed by temporarily removing the `try`/`catch` around
+// `ensureRegistered()` in `settle` and re-running — the unhandled rejection
+// surfaces as a failed `await store.send(...)`, and the row is left behind
+// with `status: 'sending'` instead of `'failed'`.
+test('a failed registration marks the pending row failed, keeping the text, not stuck sending', async () => {
+  const store = makeStore()
+  store.selectRoom('protocol')
+  participant.register = vi.fn(async () => {
+    throw new Error('connection lost')
+  })
+  await store.send('protocol', 'hello', false)
+  expect(store.getState().messages.some((m) => m.body === 'hello')).toBe(false)
+  const row = store.getState().pending.at(-1)
+  expect(row).toMatchObject({ status: 'failed', text: 'hello', error: 'connection lost' })
 })

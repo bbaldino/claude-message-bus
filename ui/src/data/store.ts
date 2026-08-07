@@ -3,6 +3,17 @@ import type { Event } from '../types/Event'
 import type { Message } from '../types/Message'
 import type { FromBus } from '../types/FromBus'
 import type { Connection } from './live'
+import type { SendOutcome } from './participant'
+import { readSendAs } from '../composer/identity'
+
+export type PendingSend = {
+  clientId: number
+  room: string
+  text: string
+  done: boolean
+  status: 'sending' | 'failed'
+  error: string | null
+}
 
 export type State = {
   rail: RailSummary | null
@@ -21,6 +32,17 @@ export type State = {
   hasMoreHistory: boolean
   loadingOlder: boolean
   dockOpen: boolean
+  // Room -> unsent text. In the store rather than in `Composer` because
+  // `key={name}` on the room route unmounts `RoomScreen` per room, so
+  // component-local text would be discarded the moment another room is clicked.
+  drafts: Record<string, string>
+  // Sends in flight or failed, across all rooms. Not `Message[]`: a pending send
+  // has no server id, and faking one would put a row in the transcript claiming
+  // to be a message that does not exist.
+  pending: PendingSend[]
+  // The name the BUS assigned, which may differ from the one typed — attach
+  // qualifies on collision. Null until the first registration completes.
+  sendAs: string | null
 }
 
 type Live = {
@@ -57,6 +79,11 @@ export function createStore(deps: {
   fetchRail: () => Promise<RailSummary>
   fetchMessages: (room: string, limit?: number, before?: number) => Promise<Message[]>
   fetchEvents: (opts: { room?: string; kind?: string; limit?: number }) => Promise<Event[]>
+  participant: {
+    register(name: string): Promise<string>
+    send(room: string, text: string, done: boolean): Promise<SendOutcome>
+    close(): void
+  }
 }) {
   let state: State = {
     rail: null,
@@ -70,6 +97,9 @@ export function createStore(deps: {
     loadingOlder: false,
     // Defaults to false, per the design: the dock is closed until asked for.
     dockOpen: readDockOpen(),
+    drafts: {},
+    pending: [],
+    sendAs: null,
   }
   const subs = new Set<() => void>()
   const notify = () => subs.forEach((f) => f())
@@ -134,6 +164,10 @@ export function createStore(deps: {
     // has no `Unwatch`, so without this filter room A's messages land under room
     // B — in a list `selectRoom` has just cleared, which makes them look current.
     if (frame.room !== state.room) return
+    // Two sockets can deliver the same message: the observer watches the room,
+    // and the participant is a member of it once the operator has sent there.
+    // Reconnects make it reachable by a third route.
+    if (state.messages.some((m) => m.id === frame.id)) return
     // FromBus::Message and the REST Message DTO are deliberately different
     // shapes: the push is the wire event (`text`), the DTO is the stored row
     // (`body`, `createdAt`). Normalise here so `state.messages` is homogeneous
@@ -255,6 +289,98 @@ export function createStore(deps: {
     }
   }
 
+  let clientIdSeq = 0
+
+  /// Register on first use and remember the assigned name. The participant
+  /// socket opens here — on the first send — rather than when the operator sets
+  /// their name, so a tab that is only ever read from never registers and never
+  /// appears online.
+  ///
+  /// Can reject: `deps.participant.register` rejects (rather than hanging) when
+  /// the socket closes before the bus answers `registered`. Callers — only
+  /// `settle`, below — must catch it themselves; this function does not turn
+  /// the rejection into a value.
+  const ensureRegistered = async (): Promise<string | null> => {
+    if (state.sendAs) return state.sendAs
+    const wanted = readSendAs()
+    if (!wanted) return null
+    const assigned = await deps.participant.register(wanted)
+    setState({ sendAs: assigned })
+    return assigned
+  }
+
+  /// Shared by `send` and `retry`. A success promotes the pending row into the
+  /// transcript using the id the bus assigned; the observer's own copy of the
+  /// same message is then dropped by the dedup guard. A failure — whether from
+  /// registration or from the send itself — leaves the row as `failed` with
+  /// the text intact, never a message, because the message does not exist on
+  /// the bus.
+  const settle = async (clientId: number, room: string, text: string, done: boolean) => {
+    let name: string | null
+    try {
+      name = await ensureRegistered()
+    } catch (err) {
+      // `ensureRegistered` -> `deps.participant.register` rejects when the
+      // socket closes before the bus answers (see participant.ts). Without
+      // this catch, that rejection would propagate straight out of `settle`,
+      // leaving this row stuck 'sending' forever with the operator's text
+      // trapped — no retry, no discard. That is one layer up the exact hang
+      // register() was changed to prevent, so it gets the same treatment as
+      // a failed send: mark the row failed, keep the text, let the operator
+      // retry or discard it. `state.pending` is read here, at call time —
+      // not snapshotted before the `await` above — so a row added while this
+      // was in flight is not silently dropped by this update.
+      setState({
+        pending: state.pending.map((p) =>
+          p.clientId === clientId
+            ? {
+                ...p,
+                status: 'failed' as const,
+                error: err instanceof Error ? err.message : 'registration failed',
+              }
+            : p,
+        ),
+      })
+      return
+    }
+    if (!name) {
+      setState({
+        pending: state.pending.map((p) =>
+          p.clientId === clientId ? { ...p, status: 'failed' as const, error: 'no name set' } : p,
+        ),
+      })
+      return
+    }
+    const outcome = await deps.participant.send(room, text, done)
+    if (!outcome.ok) {
+      setState({
+        pending: state.pending.map((p) =>
+          p.clientId === clientId ? { ...p, status: 'failed' as const, error: outcome.error } : p,
+        ),
+      })
+      return
+    }
+    const message: Message = {
+      id: outcome.msgId,
+      room,
+      from: name,
+      body: text,
+      done,
+      human: true,
+      // The client's own clock, like the live-push path above and for the same
+      // reason: the ack carries no timestamp. A refetch replaces it with the
+      // authoritative value.
+      createdAt: Date.now(),
+    }
+    setState({
+      pending: state.pending.filter((p) => p.clientId !== clientId),
+      messages:
+        room === state.room && !state.messages.some((m) => m.id === message.id)
+          ? [...state.messages, message]
+          : state.messages,
+    })
+  }
+
   return {
     getState: () => state,
     setState,
@@ -317,6 +443,30 @@ export function createStore(deps: {
         // it just won't survive a reload.
       }
       setState({ dockOpen: open })
+    },
+    setDraft(room: string, text: string) {
+      setState({ drafts: { ...state.drafts, [room]: text } })
+    },
+    async send(room: string, text: string, done: boolean) {
+      const clientId = ++clientIdSeq
+      setState({
+        pending: [...state.pending, { clientId, room, text, done, status: 'sending', error: null }],
+        drafts: { ...state.drafts, [room]: '' },
+      })
+      await settle(clientId, room, text, done)
+    },
+    async retry(clientId: number) {
+      const row = state.pending.find((p) => p.clientId === clientId)
+      if (!row) return
+      setState({
+        pending: state.pending.map((p) =>
+          p.clientId === clientId ? { ...p, status: 'sending' as const, error: null } : p,
+        ),
+      })
+      await settle(clientId, row.room, row.text, row.done)
+    },
+    discard(clientId: number) {
+      setState({ pending: state.pending.filter((p) => p.clientId !== clientId) })
     },
     async start() {
       const myGeneration = ++generation

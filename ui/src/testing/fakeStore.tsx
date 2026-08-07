@@ -18,6 +18,9 @@ export const emptyState: State = {
   dockOpen: false,
   hasMoreHistory: false,
   loadingOlder: false,
+  drafts: {},
+  pending: [],
+  sendAs: null,
 }
 
 export const storeActions = {
