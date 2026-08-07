@@ -1,22 +1,22 @@
-.volume-strip {
+.volumeStrip {
   display: flex;
   align-items: flex-end;
   flex: none;
 }
 
-.volume-strip.rail {
+.volumeStrip.rail {
   width: 78px;
   height: 14px;
   gap: 1.5px;
 }
 
-.volume-strip.detail {
+.volumeStrip.detail {
   width: 100%;
   height: 44px;
   gap: 2px;
 }
 
-.volume-bar {
+.volumeBar {
   flex: 1;
   border-radius: 1px;
   /* No default background here: every bar always gets `.never` or `.active`
@@ -26,10 +26,10 @@
      one, but nothing here should reference them until they do. */
 }
 
-.volume-bar.never {
+.volumeBar.never {
   background: var(--volume-never);
 }
 
-.volume-bar.active {
+.volumeBar.active {
   background: var(--accent);
 }

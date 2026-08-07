@@ -1,16 +1,9 @@
 import { Link, useMatch } from 'react-router-dom'
 import type { RailAgent } from '../types/RailAgent'
+import { Chip } from '../ui/Chip'
+import { age } from '../ui/time'
+import styles from './Rail.module.css'
 import { VolumeStrip } from './VolumeStrip'
-
-/// Relative age, deliberately coarse: this is a scan target in a 26px column, not
-/// a timestamp. Re-derived on render rather than stored, so it stays true.
-function age(lastSeen: number, now: number): string {
-  const s = Math.max(0, Math.floor((now - lastSeen) / 1000))
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m`
-  if (s < 86_400) return `${Math.floor(s / 3600)}h`
-  return `${Math.floor(s / 86_400)}d`
-}
 
 export function AgentRow({ agent, now }: { agent: RailAgent; now: number }) {
   // See RoomRow: `useMatch` against the agent route family, so a room and an
@@ -21,20 +14,20 @@ export function AgentRow({ agent, now }: { agent: RailAgent; now: number }) {
   return (
     <Link
       to={`/agents/${encodeURIComponent(agent.name)}`}
-      className={`row agent-row ${selected ? 'selected' : ''}`}
+      className={`${styles.row} ${styles.agentRow} ${selected ? styles.selected : ''}`}
     >
-      <div className="row-line">
-        <span className={`dot ${agent.online ? 'online' : ''}`} />
+      <div className={styles.rowLine}>
+        <span className={`${styles.dot} ${agent.online ? styles.online : ''}`} />
         <span
-          className={`agent-name ${agent.online ? 'online' : 'offline'}`}
+          className={`${styles.agentName} ${agent.online ? styles.online : styles.offline}`}
           data-testid="agent-name"
         >
           {agent.name}
         </span>
-        {agent.isHuman && <span className="badge-human">human</span>}
-        <div className="spacer" />
+        {agent.isHuman && <Chip tone="human">human</Chip>}
+        <div className={styles.spacer} />
         <VolumeStrip buckets={agent.buckets} variant="rail" />
-        <span className="agent-age" data-testid="agent-age">
+        <span className={styles.agentAge} data-testid="agent-age">
           {age(agent.lastSeen, now)}
         </span>
       </div>

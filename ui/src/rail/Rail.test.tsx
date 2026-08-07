@@ -4,6 +4,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { Rail } from './Rail'
 import { RoomRow } from './RoomRow'
 import { AgentRow } from './AgentRow'
+import styles from './Rail.module.css'
 import type { RailSummary } from '../types/RailSummary'
 import type { RailRoom } from '../types/RailRoom'
 import type { RailAgent } from '../types/RailAgent'
@@ -144,8 +145,8 @@ test('an online agent name is styled distinguishably from an offline one', () =>
     buckets: [0],
   })
   const el = screen.getByTestId('agent-name')
-  expect(el.classList.contains('online')).toBe(true)
-  expect(el.classList.contains('offline')).toBe(false)
+  expect(el.classList.contains(styles.online)).toBe(true)
+  expect(el.classList.contains(styles.offline)).toBe(false)
 })
 
 test('an offline agent name carries the offline class instead', () => {
@@ -159,8 +160,8 @@ test('an offline agent name carries the offline class instead', () => {
     buckets: [0],
   })
   const el = screen.getByTestId('agent-name')
-  expect(el.classList.contains('offline')).toBe(true)
-  expect(el.classList.contains('online')).toBe(false)
+  expect(el.classList.contains(styles.offline)).toBe(true)
+  expect(el.classList.contains(styles.online)).toBe(false)
 })
 
 test('an agent flagged as human renders the human badge', () => {
@@ -211,7 +212,7 @@ test('a shared ticker re-derives relative age on an interval, with no store upda
 
 test('a room with no last activity renders its name as silent', () => {
   renderRoomRow({ name: 'ghost', members: ['a'], lastActivity: null, buckets: [0], flag: null })
-  expect(screen.getByTestId('room-name').classList.contains('empty')).toBe(true)
+  expect(screen.getByTestId('room-name').classList.contains(styles.empty)).toBe(true)
 })
 
 test('a room name with special characters is percent-encoded in its link', () => {
@@ -260,19 +261,19 @@ test('a room and an agent sharing a name are each selected only on their own rou
   }
 
   const room1 = renderRoomRow(room, '/rooms/shared')
-  expect(room1.container.querySelector('a')?.classList.contains('selected')).toBe(true)
+  expect(room1.container.querySelector('a')?.classList.contains(styles.selected)).toBe(true)
   room1.unmount()
 
   const agent1 = renderAgentRow(agent, Date.now(), '/rooms/shared')
-  expect(agent1.container.querySelector('a')?.classList.contains('selected')).toBe(false)
+  expect(agent1.container.querySelector('a')?.classList.contains(styles.selected)).toBe(false)
   agent1.unmount()
 
   const agent2 = renderAgentRow(agent, Date.now(), '/agents/shared')
-  expect(agent2.container.querySelector('a')?.classList.contains('selected')).toBe(true)
+  expect(agent2.container.querySelector('a')?.classList.contains(styles.selected)).toBe(true)
   agent2.unmount()
 
   const room2 = renderRoomRow(room, '/agents/shared')
-  expect(room2.container.querySelector('a')?.classList.contains('selected')).toBe(false)
+  expect(room2.container.querySelector('a')?.classList.contains(styles.selected)).toBe(false)
   room2.unmount()
 })
 

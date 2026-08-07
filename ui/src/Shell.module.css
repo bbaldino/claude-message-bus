@@ -4,19 +4,19 @@
   height: 100vh;
 }
 
-.shell-body {
+.shellBody {
   display: grid;
   grid-template-columns: var(--rail-width) 1fr;
   min-height: 0;
 }
 
-.shell-main {
+.shellMain {
   min-width: 0;
   overflow-y: auto;
   background: var(--surface-page);
 }
 
-.shell-placeholder {
+.shellPlaceholder {
   color: var(--text-quaternary);
   font-family: var(--font-mono);
   font-size: 12px;

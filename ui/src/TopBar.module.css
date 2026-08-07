@@ -15,7 +15,7 @@
   color: var(--text-primary);
 }
 
-.host-pill {
+.hostPill {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-quaternary-dim);
@@ -37,7 +37,7 @@
   padding: 5px 10px;
 }
 
-.search-icon {
+.searchIcon {
   flex: none;
   width: 9px;
   height: 9px;
@@ -45,7 +45,7 @@
   border-radius: 50%;
 }
 
-.search-input {
+.searchInput {
   flex: 1;
   min-width: 0;
   background: none;
@@ -57,11 +57,11 @@
   font-size: 12px;
 }
 
-.search-input::placeholder {
+.searchInput::placeholder {
   color: var(--text-placeholder);
 }
 
-.search-key {
+.searchKey {
   flex: none;
   margin-left: auto;
   font-family: var(--font-mono);
@@ -72,7 +72,7 @@
   padding: 1px 5px;
 }
 
-.live-pill {
+.livePill {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
@@ -84,32 +84,32 @@
   font-size: 11px;
 }
 
-.live-pill.live {
+.livePill.live {
   color: var(--presence);
   background: var(--presence-bg);
   border: 1px solid var(--presence-border);
 }
 
-.live-pill.reconnecting {
+.livePill.reconnecting {
   color: var(--attention);
   background: var(--attention-bg);
   border: 1px solid var(--attention-border);
 }
 
-.live-pill.disconnected {
+.livePill.disconnected {
   color: var(--destructive);
   background: var(--destructive-bg);
   border: 1px solid var(--destructive-border);
 }
 
-.live-dot {
+.liveDot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: currentColor;
 }
 
-.theme-toggle {
+.themeToggle {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-tertiary-dim);

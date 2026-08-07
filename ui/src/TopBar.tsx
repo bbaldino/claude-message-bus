@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { fetchMeta } from './data/api'
 import type { Meta } from './types/Meta'
 import { useStore } from './useStore'
-import './TopBar.css'
+import styles from './TopBar.module.css'
 
 type Props = {
   // Optional and uncontrolled by default so a bare `<TopBar />` (as the
@@ -56,30 +56,30 @@ export function TopBar({ value = '', onChange = () => {} }: Props) {
   }, [])
 
   return (
-    <header className="topbar">
-      <span className="wordmark">claude-bus</span>
-      {meta && <span className="host-pill">{`${meta.host} · ${meta.version}`}</span>}
-      <div className="search">
-        <span className="search-icon" />
+    <header className={styles.topbar}>
+      <span className={styles.wordmark}>claude-bus</span>
+      {meta && <span className={styles.hostPill}>{`${meta.host} · ${meta.version}`}</span>}
+      <div className={styles.search}>
+        <span className={styles.searchIcon} />
         <input
           ref={searchRef}
-          className="search-input"
+          className={styles.searchInput}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           // Rooms and agents filter client-side from the rail summary. Message
           // text has no endpoint, so the placeholder must not promise it.
           placeholder="search agents and rooms"
         />
-        <span className="search-key">/</span>
+        <span className={styles.searchKey}>/</span>
       </div>
       {/* The websocket state, not a decoration — the handoff is emphatic. */}
-      <span className={`live-pill ${connection}`} data-testid="live-pill">
-        <span className="live-dot" />
+      <span className={`${styles.livePill} ${styles[connection]}`} data-testid="live-pill">
+        <span className={styles.liveDot} />
         {connection}
       </span>
       {/* Inert until light mode lands. It occupies space in the bar's specified
           geometry, so omitting it would change the layout. */}
-      <button className="theme-toggle" disabled>
+      <button className={styles.themeToggle} disabled>
         dark
       </button>
     </header>

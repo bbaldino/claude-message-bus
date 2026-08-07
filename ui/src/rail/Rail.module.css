@@ -5,18 +5,18 @@
   min-width: 0;
 }
 
-.rail-header {
+.railHeader {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   padding: 16px 16px 9px;
 }
 
-.rail-header.agents {
+.railHeader.agents {
   padding-top: 22px;
 }
 
-.rail-label {
+.railLabel {
   font-family: var(--font-mono);
   font-weight: 600;
   font-size: 10px;
@@ -25,20 +25,20 @@
   color: var(--text-label);
 }
 
-.rail-count {
+.railCount {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-dimmest);
 }
 
-.rail-rows {
+.railRows {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 0 8px;
 }
 
-.rail-empty {
+.railEmpty {
   padding: 16px;
   color: var(--text-quaternary);
   font-family: var(--font-sans);
@@ -62,13 +62,13 @@
   border-left-color: var(--accent);
 }
 
-.row-line {
+.rowLine {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.row-name {
+.rowName {
   font-family: var(--font-mono);
   font-weight: 500;
   font-size: 12px;
@@ -79,15 +79,15 @@
   min-width: 0;
 }
 
-.row.selected .row-name {
+.row.selected .rowName {
   color: var(--text-primary);
 }
 
-.row-name.empty {
+.rowName.empty {
   color: var(--text-quaternary);
 }
 
-.row-subtitle {
+.rowSubtitle {
   margin-top: 3px;
   font-size: 11px;
   color: var(--text-quaternary-dim);
@@ -96,42 +96,19 @@
   white-space: nowrap;
 }
 
-.flag {
-  font-family: var(--font-mono);
-  font-weight: 500;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  border-radius: 3px;
-  padding: 1px 5px;
-  flex: none;
-}
-
-.flag.needs-you {
-  color: var(--attention);
-  background: var(--attention-bg);
-  border: 1px solid var(--attention-border);
-}
-
-.flag.blocked {
-  color: var(--destructive);
-  background: var(--destructive-bg);
-  border: 1px solid var(--destructive-border);
-}
-
-.row.flag-needs-you {
+.row.flagNeedsYou {
   border-left-color: var(--attention);
 }
 
-.agent-row {
+.agentRow {
   padding: 7px 9px;
 }
 
-/* Distinct from .row-name: the agent row's name is mono 400 (identity, not the
+/* Distinct from .rowName: the agent row's name is mono 400 (identity, not the
  * emphasis a room name carries) and its colour tracks presence rather than
  * selection — online #dfe3e8 (--text-body-strong), offline #79818d
  * (--text-quaternary), per the handoff's agent row spec. */
-.agent-name {
+.agentName {
   font-family: var(--font-mono);
   font-weight: 400;
   font-size: 12px;
@@ -141,29 +118,12 @@
   min-width: 0;
 }
 
-.agent-name.online {
+.agentName.online {
   color: var(--text-body-strong);
 }
 
-.agent-name.offline {
+.agentName.offline {
   color: var(--text-quaternary);
-}
-
-/* Same chip geometry as the flag/message-byline `human` badge, violet hue,
- * no fill — the handoff's byline spec (mono 500 9px, .08em, uppercase, colour +
- * border only) is the only place this badge's exact styling is pinned, and it is
- * referenced by name elsewhere as the same badge. */
-.badge-human {
-  font-family: var(--font-mono);
-  font-weight: 500;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--human);
-  border: 1px solid var(--human-border);
-  border-radius: 3px;
-  padding: 1px 5px;
-  flex: none;
 }
 
 .dot {
@@ -178,7 +138,7 @@
   background: var(--presence);
 }
 
-.agent-age {
+.agentAge {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-dimmer);

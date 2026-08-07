@@ -3,14 +3,14 @@ import { Outlet, useMatch, useParams } from 'react-router-dom'
 import { Rail } from './rail/Rail'
 import { TopBar } from './TopBar'
 import { store } from './useStore'
-import './Shell.css'
+import styles from './Shell.module.css'
 
 /// The main pane in this phase. Not a screen — a labelled hole that the room
 /// screen fills next. It should not be polished.
 export function MainPlaceholder() {
   const { name } = useParams()
   return (
-    <p className="shell-placeholder" data-testid="main-placeholder">
+    <p className={styles.shellPlaceholder} data-testid="main-placeholder">
       {name ? `selected: ${name}` : 'select a room or agent'}
     </p>
   )
@@ -41,11 +41,11 @@ export function Shell() {
   }, [roomMatch?.params.name])
 
   return (
-    <div className="shell">
+    <div className={styles.shell}>
       <TopBar value={query} onChange={setQuery} />
-      <div className="shell-body">
+      <div className={styles.shellBody}>
         <Rail query={query} />
-        <main className="shell-main">
+        <main className={styles.shellMain}>
           <Outlet />
         </main>
       </div>

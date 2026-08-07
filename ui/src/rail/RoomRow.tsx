@@ -1,5 +1,7 @@
 import { Link, useMatch } from 'react-router-dom'
 import type { RailRoom } from '../types/RailRoom'
+import { Chip } from '../ui/Chip'
+import styles from './Rail.module.css'
 import { VolumeStrip } from './VolumeStrip'
 
 /// Subtitles are composed here rather than on the server. `/api/rail` ships data
@@ -24,27 +26,27 @@ export function RoomRow({ room }: { room: RailRoom }) {
   // route.
   const match = useMatch('/rooms/:name')
   const selected = match?.params.name === room.name
-  const flagClass = room.flag?.kind === 'needsYou' ? 'flag-needs-you' : ''
+  const flagClass = room.flag?.kind === 'needsYou' ? styles.flagNeedsYou : ''
   const silent = room.lastActivity === null
 
   return (
     <Link
       to={`/rooms/${encodeURIComponent(room.name)}`}
-      className={`row ${selected ? 'selected' : ''} ${flagClass}`}
+      className={`${styles.row} ${selected ? styles.selected : ''} ${flagClass}`}
     >
-      <div className="row-line">
-        <span className={`row-name ${silent ? 'empty' : ''}`} data-testid="room-name">
+      <div className={styles.rowLine}>
+        <span className={`${styles.rowName} ${silent ? styles.empty : ''}`} data-testid="room-name">
           {room.name}
         </span>
         {room.flag && (
-          <span className={`flag ${room.flag.kind === 'needsYou' ? 'needs-you' : 'blocked'}`}>
+          <Chip tone={room.flag.kind === 'needsYou' ? 'attention' : 'destructive'}>
             {room.flag.kind === 'needsYou' ? 'needs you' : 'blocked'}
-          </span>
+          </Chip>
         )}
-        <div className="spacer" />
+        <div className={styles.spacer} />
         <VolumeStrip buckets={room.buckets} variant="rail" />
       </div>
-      <div className="row-subtitle">{subtitle(room)}</div>
+      <div className={styles.rowSubtitle}>{subtitle(room)}</div>
     </Link>
   )
 }

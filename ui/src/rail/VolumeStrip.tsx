@@ -1,4 +1,4 @@
-import './VolumeStrip.css'
+import styles from './VolumeStrip.module.css'
 
 /// Bars scale against the strip's own tallest bucket, with an 8% floor so an
 /// empty bucket is a visible tick rather than a gap — a flat strip must read as
@@ -22,11 +22,11 @@ export function VolumeStrip({
       : `messages per 5 min · last ${minutes} min`
 
   return (
-    <div className={`volume-strip ${variant}`} role="img" aria-label={label}>
+    <div className={`${styles.volumeStrip} ${styles[variant]}`} role="img" aria-label={label}>
       {buckets.map((n, i) => (
         <div
           key={i}
-          className={`volume-bar ${n === 0 ? 'never' : 'active'}`}
+          className={`${styles.volumeBar} ${n === 0 ? styles.never : styles.active}`}
           style={{ height: peak === 0 ? '8%' : `${Math.max(8, (n / peak) * 100)}%` }}
         />
       ))}
