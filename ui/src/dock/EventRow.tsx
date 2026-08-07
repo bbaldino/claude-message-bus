@@ -1,8 +1,6 @@
 import type { Event } from '../types/Event'
+import { time } from '../ui/time'
 import styles from './Dock.module.css'
-
-const time = (ms: number) =>
-  new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
 
 /// `detail` is `unknown`; render it as compact JSON rather than guessing at a
 /// shape per kind. The dock is the machine record — it should show what the bus

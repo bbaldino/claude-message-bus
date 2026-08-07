@@ -1,13 +1,42 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { deliveryFor } from '../data/delivery'
+import { day } from '../ui/time'
 import { store, useStore } from '../useStore'
 import { MessageRow } from './MessageRow'
 import { RoomHeader } from './RoomHeader'
-import { BOTTOM_SLACK, classifyArrival, scrollAction, shouldLoadOlder } from './scroll'
+import { classifyArrival, isAtBottom, scrollAction, shouldLoadOlder } from './scroll'
 import styles from './Transcript.module.css'
 
-const day = (ms: number) => new Date(ms).toLocaleDateString([], { day: 'numeric', month: 'long' })
-
+// Invariant this file maintains: `scrollTop` on the scroller has exactly four
+// writers — the messages effect (initial jump, and pin-on-append), the
+// ResizeObserver (re-pin after a late reflow), `onScroll` (prepend
+// restoration), and the "N new below" button. Every one of them, after
+// writing `scrollTop`, also updates `lastScrollTop` and (where relevant)
+// `atBottom` — so the next `onScroll` can tell its own echo apart from a real
+// scroll, and the next writer can trust `atBottom` without re-measuring.
+//
+// "Is the reader at the bottom" has two answers on purpose. `scrollAction` /
+// `isAtBottom` (scroll.ts) is a live measurement — correct at the instant it
+// runs, but only cheap to call from a `scroll` event, since it reads layout.
+// `atBottom.current` is a cache of that measurement, updated only on a
+// genuine `scroll` event (see `lastScrollTop` below), and it is what the
+// ResizeObserver and the messages effect consult. It has to be a cache: pure
+// content growth fires no `scroll` event, so by the time a resize is
+// observed the growth has already opened a gap, and a live measurement at
+// that point would always read "not at the bottom" — the resize handler
+// would never be able to re-pin. The cache remembers what was true a moment
+// ago, before the growth happened, which is the question that actually
+// needs answering.
+//
+// One load-bearing subtlety: on an append, the new row commits to the DOM
+// before the messages effect runs, so `scrollAction` there measures a
+// non-zero distance from the bottom and returns 'notify', even when the
+// reader was at the bottom a moment ago. It is the ResizeObserver — which
+// fires before paint, off the DOM mutation itself — that actually delivers
+// the pin. The effect's `if (atBottom.current) setUnseen(0)` sits outside
+// the 'notify' branch specifically so this self-heals: `atBottom.current` is
+// still true (nothing has scrolled), so the unseen count clears even though
+// `scrollAction` itself never saw a 'pin'.
 export function RoomScreen() {
   const { rail, messages, roomEvents, room, hasMoreHistory, dockOpen } = useStore()
   const delivery = useMemo(() => deliveryFor(roomEvents), [roomEvents])
@@ -112,8 +141,11 @@ export function RoomScreen() {
       // Not an echo of something we set ourselves — a genuine scroll (the
       // reader's, or the first event this component has ever seen). Judge
       // it from the live position and adopt it as the new known baseline.
-      const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop
-      atBottom.current = distanceFromBottom <= BOTTOM_SLACK
+      atBottom.current = isAtBottom({
+        scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      })
       lastScrollTop.current = el.scrollTop
     }
     if (atBottom.current) setUnseen(0)
@@ -126,6 +158,10 @@ export function RoomScreen() {
     if (hasMoreHistory && shouldLoadOlder(el) && !restoringOlder.current) {
       restoringOlder.current = true
       const before = el.scrollHeight
+      // Captured now, not read later: if the room changes while the fetch
+      // below is in flight, this closure still names the room the fetch was
+      // for.
+      const forRoom = room
       try {
         await store.loadOlder()
         // Restore in the same frame the new rows land in, or the viewport jumps
@@ -133,6 +169,18 @@ export function RoomScreen() {
         // (nothing more to load), `scrollHeight` is unchanged and this delta is
         // zero — harmless.
         requestAnimationFrame(() => {
+          // The route has no `key`, so navigating room -> room reuses this
+          // component and this same scroller node. `loadOlder()` is
+          // generation-guarded and resolves as a no-op for a superseded
+          // room, but this rAF was already queued against `el` before that
+          // happened — without this check it would apply `before` (A's
+          // height) to B's `scrollHeight`, landing B at an arbitrary offset.
+          // The mutex still has to be released here on the bail path, or
+          // paging wedges shut for the new room permanently.
+          if (store.getState().room !== forRoom) {
+            restoringOlder.current = false
+            return
+          }
           el.scrollTop += el.scrollHeight - before
           lastScrollTop.current = el.scrollTop
           restoringOlder.current = false

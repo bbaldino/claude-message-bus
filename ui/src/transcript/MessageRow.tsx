@@ -1,11 +1,9 @@
 import type { Message } from '../types/Message'
 import type { Delivery } from '../data/delivery'
 import { Chip } from '../ui/Chip'
+import { time } from '../ui/time'
 import { MessageBody } from './MessageBody'
 import styles from './Transcript.module.css'
-
-const time = (ms: number) =>
-  new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
 
 export function MessageRow({
   message,

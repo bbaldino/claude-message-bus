@@ -22,3 +22,15 @@ export function age(lastSeen: number, now: number): string {
   if (s < 86_400) return `${Math.floor(s / 3600)}h`
   return `${Math.floor(s / 86_400)}d`
 }
+
+/// The transcript's row gutter and the dock's event rows both want a bare
+/// 24-hour clock time, not a relative age. One consumer used to be enough to
+/// leave this inline; now there are two, which is what a shared helper is for.
+export function time(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+/// The transcript's date dividers group messages by calendar day.
+export function day(ms: number): string {
+  return new Date(ms).toLocaleDateString([], { day: 'numeric', month: 'long' })
+}

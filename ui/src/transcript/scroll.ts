@@ -7,10 +7,17 @@ export type Measurements = { scrollTop: number; scrollHeight: number; clientHeig
 export const BOTTOM_SLACK = 4
 const TOP_SLACK = 80
 
+/// The one place "at the bottom" is decided. `onScroll` in `RoomScreen` needs
+/// the same test on every genuine scroll event, not just on growth — reuse
+/// this rather than re-deriving the expression.
+export function isAtBottom(m: Measurements): boolean {
+  const distanceFromBottom = m.scrollHeight - m.clientHeight - m.scrollTop
+  return distanceFromBottom <= BOTTOM_SLACK
+}
+
 export function scrollAction(m: Measurements & { grew: boolean }): 'pin' | 'notify' | 'none' {
   if (!m.grew) return 'none'
-  const distanceFromBottom = m.scrollHeight - m.clientHeight - m.scrollTop
-  return distanceFromBottom <= BOTTOM_SLACK ? 'pin' : 'notify'
+  return isAtBottom(m) ? 'pin' : 'notify'
 }
 
 export function shouldLoadOlder(m: Measurements): boolean {
