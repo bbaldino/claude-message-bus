@@ -33,10 +33,20 @@ import styles from './Transcript.module.css'
 // non-zero distance from the bottom and returns 'notify', even when the
 // reader was at the bottom a moment ago. It is the ResizeObserver — which
 // fires before paint, off the DOM mutation itself — that actually delivers
-// the pin. The effect's `if (atBottom.current) setUnseen(0)` sits outside
-// the 'notify' branch specifically so this self-heals: `atBottom.current` is
-// still true (nothing has scrolled), so the unseen count clears even though
-// `scrollAction` itself never saw a 'pin'.
+// the pin. The self-heal for `unseen` is not part of that same pass: it is
+// `onScroll`'s `if (atBottom.current) setUnseen(0)`, in a different handler
+// that only runs once a `scroll` event actually reaches it — dispatched
+// asynchronously, either by the ResizeObserver's own programmatic `scrollTop`
+// write above or by the reader's next real scroll. `atBottom.current` is
+// still true at that point (nothing has scrolled away), so the unseen count
+// clears a tick later even though `scrollAction` itself never saw a 'pin'.
+//
+// Test coverage gap: the room-switch bail in `onScroll` (skip the prepend
+// restoration, but still release `restoringOlder`, when `store.getState().room`
+// no longer matches the room the fetch was made for) has no regression test —
+// there is no room-switch-during-load-older test for this component in the
+// suite. That path is protected by code inspection only; a refactor here
+// will not be caught by `npm test`.
 export function RoomScreen() {
   const { rail, messages, roomEvents, room, hasMoreHistory, dockOpen } = useStore()
   const delivery = useMemo(() => deliveryFor(roomEvents), [roomEvents])
