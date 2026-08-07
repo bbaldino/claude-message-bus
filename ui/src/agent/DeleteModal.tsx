@@ -41,14 +41,21 @@ export function DeleteModal({
   }, [name])
 
   useEffect(() => {
-    // The strip says "this dialog updates itself". Make that true: when presence
-    // reports the agent has gone offline, re-read the counts — it may have joined
-    // or left rooms on its way out — and drop the server-refused latch.
+    // The strip says "this dialog updates itself" — in both directions, not just
+    // going offline. Presence reporting offline drops the refused latch and
+    // re-reads the counts (the agent may have joined or left rooms on its way
+    // out). Presence reporting back online re-latches refused, driven by the
+    // live value rather than the (possibly stale) preview snapshot — otherwise
+    // an operator could sit looking at a live delete button for an agent that
+    // reconnected after the dialog opened. The 409 path is untouched by this:
+    // it is still the authority, this just reduces how often it has to be.
     if (liveNow === false && showRefused) {
       setRefused(false)
       fetchDeletionPreview(name)
         .then(setPreview)
         .catch(() => {})
+    } else if (liveNow === true && !showRefused) {
+      setRefused(true)
     }
   }, [liveNow, showRefused, name])
 

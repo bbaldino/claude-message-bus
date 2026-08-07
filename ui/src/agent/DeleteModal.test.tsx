@@ -159,3 +159,72 @@ test('a server refusal renders refused even when the client believed otherwise',
   fireEvent.click(screen.getByRole('button', { name: 'delete' }))
   await waitFor(() => expect(screen.getByText('Still connected')).toBeDefined())
 })
+
+test('reconnecting while confirmable re-latches to refused, driven by presence not the stale preview', async () => {
+  // The preview read at open said offline and never changes in this test — if
+  // the re-latch used `preview.online` instead of live presence, this would
+  // stay confirmable forever. It must be `liveNow` that drives it.
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(
+      JSON.stringify({ registration: 1, memberships: 1, cursors: 0, host: 'h', online: false }),
+      { headers: { 'content-type': 'application/json' } },
+    ),
+  )
+
+  const { rerender } = renderWithStore(
+    <DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />,
+    {
+      rail: {
+        rooms: [],
+        agents: [
+          {
+            name: NAME,
+            host: 'h',
+            version: '1',
+            online: false,
+            isHuman: false,
+            lastSeen: 1,
+            buckets: [0],
+          },
+        ],
+      },
+    },
+  )
+  await screen.findByTestId('confirm-input')
+
+  // Presence says it came back.
+  setStoreState({
+    rail: {
+      rooms: [],
+      agents: [
+        {
+          name: NAME,
+          host: 'h',
+          version: '1',
+          online: true,
+          isHuman: false,
+          lastSeen: 1,
+          buckets: [0],
+        },
+      ],
+    },
+  })
+  rerender(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)
+
+  await waitFor(() => expect(screen.getByText('Still connected')).toBeDefined())
+  expect(screen.queryByTestId('confirm-input')).toBeNull()
+})
+
+test('Esc closes in the refused state too', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(
+      JSON.stringify({ registration: 1, memberships: 1, cursors: 0, host: 'h', online: true }),
+      { headers: { 'content-type': 'application/json' } },
+    ),
+  )
+  const onClose = vi.fn()
+  renderWithStore(<DeleteModal name={NAME} onClose={onClose} onDeleted={vi.fn()} />)
+  await screen.findByText('Still connected')
+  fireEvent.keyDown(window, { key: 'Escape' })
+  expect(onClose).toHaveBeenCalled()
+})
