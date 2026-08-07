@@ -85,11 +85,20 @@ export function RoomScreen() {
 
   // Fetched when the room opens, not when the tab is clicked: the count lives
   // in the tab label, and a lazy fetch could not fill it.
+  //
+  // The reset runs unconditionally, but the fetch itself bails when `room`
+  // is not yet known: child effects run before the parent effect that drives
+  // `store.selectRoom` off the route param (see Shell.tsx), so this can mount
+  // with `room` still `null` — a cold load at a room URL, or briefly on every
+  // room switch. `room ?? ''` used to paper over that with a request to
+  // `/api/rooms//files`, a guaranteed 404 the `live` latch discarded, not a
+  // fetch worth making.
   useEffect(() => {
-    let live = true
     setFiles(null)
     setFilesFailed(false)
-    fetchRoomFiles(room ?? '')
+    if (!room) return
+    let live = true
+    fetchRoomFiles(room)
       .then((f) => live && setFiles(f))
       .catch(() => live && setFilesFailed(true))
     return () => {

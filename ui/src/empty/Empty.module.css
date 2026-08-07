@@ -39,6 +39,7 @@
   border-radius: 5px;
   padding: 11px 13px;
   white-space: pre-wrap;
+  max-width: 52ch;
 }
 
 .status {

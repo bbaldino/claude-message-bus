@@ -1,5 +1,5 @@
 import { screen } from '@testing-library/react'
-import { beforeEach, expect, test } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 import { renderWithStore } from '../testing/fakeStore'
 import type { State } from '../data/store'
 import { RoomScreen } from './RoomScreen'
@@ -9,6 +9,18 @@ import styles from './Transcript.module.css'
 // decision in both RoomScreen and EventsDock, and this pins that RoomScreen
 // reads it from the store rather than tracking its own copy.
 let dockOpen = false
+
+// None of these tests are about the files list — they exercise the
+// transcript. Without this, `RoomScreen`'s files effect (see RoomScreen.tsx)
+// still fires a real `fetch` on every render here, which this suite has no
+// server to answer; it fails, and renders "could not read the file list",
+// a line no test below intends. Stubbed to succeed with an empty list, the
+// same value Files.test.tsx uses for its own "no files" case.
+beforeEach(() => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response('[]', { headers: { 'content-type': 'application/json' } }),
+  )
+})
 
 const base: Partial<State> = {
   rail: {
@@ -180,4 +192,16 @@ test('a failed load says so, and is not mistaken for an empty room', () => {
   expect(screen.getByText(/could not load the transcript/)).toBeDefined()
   expect(screen.queryByText('Nothing said here yet.')).toBeNull()
   expect(screen.queryAllByTestId('message-row').length).toBe(0)
+})
+
+test('a normal room render shows no files-list failure line', async () => {
+  // This suite stubs `fetch` (see the top-level `beforeEach`) precisely so
+  // this is a meaningful assertion: unstubbed, every render here attempted a
+  // real files request, which always failed in this environment (jsdom has
+  // no server to answer `/api/...`) and rendered this same line, once the
+  // rejection had a tick to settle — an accident of the test environment,
+  // not something any of these tests intended to cover.
+  renderScreen()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(screen.queryByText(/could not read the file list/)).toBeNull()
 })

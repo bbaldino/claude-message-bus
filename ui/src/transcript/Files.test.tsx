@@ -278,3 +278,15 @@ test('a repair is a no-op when no room is selected', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(screen.queryByText(/could not read the file list/)).toBeNull()
 })
+
+test('no files request is made when the room is not yet known', async () => {
+  // Child effects run before the parent effect that drives `store.selectRoom`
+  // off the route param, so on a cold load at a room URL this component can
+  // mount with `room` still `null`. `room ?? ''` used to paper over that with
+  // a request to `/api/rooms//files`, a guaranteed 404 the `live` latch just
+  // discarded — wasteful, not merely silent.
+  const fetchSpy = mockFiles([])
+  renderWithStore(<RoomScreen />, { rail, room: null, messages: [] })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(fetchSpy).not.toHaveBeenCalled()
+})

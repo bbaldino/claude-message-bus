@@ -275,8 +275,15 @@ pub struct Event {
     pub created_at: i64,
 }
 
-/// The most rows any client-supplied `limit` can ask for. Both list endpoints
-/// clamp to it — they are the only HTTP endpoints that take a limit at all.
+/// The most rows any client-supplied `limit` can ask for. The transcript and
+/// events endpoints clamp to it — they are the only two HTTP endpoints that
+/// take a limit at all. `/api/rooms/{name}/files` (`room_files`, below) takes
+/// no limit and does not clamp: `Store::list_files` has no LIMIT clause, but
+/// unlike a transcript or event log a room's file list is bounded by how many
+/// distinct keys have ever been uploaded to it, each row is small (metadata
+/// only — key, size, content type, uploader, timestamp; no bytes), and the
+/// bytes behind each key are already capped at `store::files::MAX_BLOB_BYTES`
+/// independently. Not a new exposure, just not "both".
 const MAX_LIMIT: i64 = 1000;
 
 #[derive(serde::Deserialize)]
