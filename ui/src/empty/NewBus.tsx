@@ -11,6 +11,22 @@ import styles from './Empty.module.css'
 /// The address comes from `location.host` rather than `/api/meta`'s hostname,
 /// because the reader is demonstrably looking at a page served from it. The
 /// server's own hostname may not resolve from wherever they are.
+///
+/// `--project` is not decoration. `src/main.rs` leaves the scope `None` when
+/// neither `--user` nor `--project` is passed, so `init` has to ask — and
+/// `prompt_scope`'s blank-input branch returns `Scope::User` while the prompt
+/// text marks no option as the default. Pressing Enter therefore configures
+/// EVERY project on the machine, which is the opposite of what the sentence
+/// above this block promises. Naming the scope makes the screen's instruction
+/// and its command agree.
+///
+/// It does not make the command scriptable, and this comment should not be read
+/// as claiming that: `init`'s apply gate still needs a terminal or `--yes`, by
+/// design. `--yes` is deliberately not rendered here — a pasted one-liner should
+/// not silently apply a config change the reader never saw a plan for.
+///
+/// All of this came from running the rendered command rather than reading it,
+/// which is the check this screen exists to pass.
 export function NewBus() {
   const address = location.host
   return (
@@ -22,7 +38,7 @@ export function NewBus() {
         registers itself on launch and appears here within a heartbeat.
       </p>
       <pre className={styles.command} data-testid="command">
-        claude-bus init --bus ws://{address}/ws
+        claude-bus init --project --bus ws://{address}/ws
       </pre>
       <p className={styles.status}>
         <span className={styles.dot} />

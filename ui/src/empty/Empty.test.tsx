@@ -11,6 +11,10 @@ test('states what is true and what to run', () => {
   const cmd = screen.getByTestId('command').textContent ?? ''
   expect(cmd).toMatch(/^claude-bus init /)
   expect(cmd).not.toMatch(/register/)
+  // The scope must be named. Without it `init` asks, and a blank answer selects
+  // USER scope — configuring every project on the machine, the opposite of the
+  // "any project directory" this screen tells the reader to run it in.
+  expect(cmd).toContain('--project')
 })
 
 test('the command carries the address the page was actually served from', () => {
