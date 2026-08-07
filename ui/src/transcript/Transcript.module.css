@@ -140,12 +140,6 @@
   color: var(--text-primary);
 }
 
-.host {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-dim);
-}
-
 .body {
   font-size: 13.5px;
   line-height: 1.62;

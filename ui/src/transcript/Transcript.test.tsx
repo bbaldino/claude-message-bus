@@ -205,3 +205,113 @@ test('a normal room render shows no files-list failure line', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(screen.queryByText(/could not read the file list/)).toBeNull()
 })
+
+test('a byline names the host a message came from, humans included', async () => {
+  renderWithStore(<RoomScreen />, {
+    room: 'protocol',
+    roomLoad: 'ready',
+    rail: {
+      rooms: [],
+      agents: [
+        {
+          name: 'bbaldino',
+          host: 'web',
+          version: null,
+          online: true,
+          isHuman: true,
+          lastSeen: 0,
+          buckets: [],
+        },
+        {
+          name: 'ci-runner',
+          host: 'scratch',
+          version: null,
+          online: true,
+          isHuman: false,
+          lastSeen: 0,
+          buckets: [],
+        },
+      ],
+    },
+    messages: [
+      {
+        id: 1,
+        room: 'protocol',
+        from: 'bbaldino',
+        body: 'hi',
+        done: false,
+        human: true,
+        createdAt: 0,
+      },
+      {
+        id: 2,
+        room: 'protocol',
+        from: 'ci-runner',
+        body: 'yo',
+        done: false,
+        human: false,
+        createdAt: 0,
+      },
+    ],
+  })
+  // The human keeps its chip AND gains its host — the two are not alternatives.
+  expect(await screen.findByText('bbaldino@web')).toBeDefined()
+  expect(screen.getByText('human')).toBeDefined()
+  expect(screen.getByText('ci-runner@scratch')).toBeDefined()
+})
+
+test('an already-qualified name is not qualified twice', async () => {
+  // When the registry disambiguated, `from` is ALREADY `bbaldino@web`. Appending
+  // the host again would render `bbaldino@web@web`.
+  renderWithStore(<RoomScreen />, {
+    room: 'protocol',
+    roomLoad: 'ready',
+    rail: {
+      rooms: [],
+      agents: [
+        {
+          name: 'bbaldino@web',
+          host: 'web',
+          version: null,
+          online: true,
+          isHuman: true,
+          lastSeen: 0,
+          buckets: [],
+        },
+      ],
+    },
+    messages: [
+      {
+        id: 1,
+        room: 'protocol',
+        from: 'bbaldino@web',
+        body: 'hi',
+        done: false,
+        human: true,
+        createdAt: 0,
+      },
+    ],
+  })
+  expect(await screen.findByText('bbaldino@web')).toBeDefined()
+  expect(screen.queryByText('bbaldino@web@web')).toBeNull()
+})
+
+test('a message from an agent no longer in the rail shows its bare name', async () => {
+  renderWithStore(<RoomScreen />, {
+    room: 'protocol',
+    roomLoad: 'ready',
+    rail: { rooms: [], agents: [] },
+    messages: [
+      {
+        id: 1,
+        room: 'protocol',
+        from: 'departed',
+        body: 'bye',
+        done: false,
+        human: false,
+        createdAt: 0,
+      },
+    ],
+  })
+  expect(await screen.findByText('departed')).toBeDefined()
+})
