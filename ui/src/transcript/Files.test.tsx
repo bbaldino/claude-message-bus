@@ -1,6 +1,7 @@
 import { fireEvent, screen, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, test, vi } from 'vitest'
-import { renderWithStore } from '../testing/fakeStore'
+import { renderWithStore, setStoreState } from '../testing/fakeStore'
 import { RoomScreen } from './RoomScreen'
 
 const rail = {
@@ -86,4 +87,57 @@ test('a failed fetch shows no count rather than zero', async () => {
   renderWithStore(<RoomScreen />, { rail, room: 'protocol', messages: [] })
   expect(await screen.findByText('files')).toBeDefined()
   expect(screen.queryByText('files · 0')).toBeNull()
+})
+
+test('an appended message still counts toward unseen when the transcript measures zero', async () => {
+  // `classifyArrival`'s 'append' branch is otherwise never exercised in this
+  // suite — every other test sets `messages` once per render, which only ever
+  // classifies as 'initial'. It also regression-guards the hidden-transcript
+  // fix: jsdom reports 0 for scrollTop/scrollHeight/clientHeight
+  // unconditionally (see scroll.ts's own comment on this), so every append
+  // here runs the exact `el.clientHeight === 0` branch a real hidden files
+  // tab would drive. Before that branch counted `unseen` explicitly, an
+  // all-zero measurement always resolved 'pin' and never 'notify', so this
+  // assertion fails against the pre-fix logic (confirmed by hand before
+  // adding this test) even though nothing here is actually hidden.
+  mockFiles([])
+  const first = {
+    id: 1,
+    room: 'protocol',
+    from: 'caas',
+    body: 'first',
+    done: true,
+    human: false,
+    createdAt: 1,
+  }
+  const { rerender } = renderWithStore(<RoomScreen />, {
+    rail,
+    room: 'protocol',
+    messages: [first],
+  })
+  await screen.findByText('files · 0')
+
+  setStoreState({
+    rail,
+    room: 'protocol',
+    messages: [
+      first,
+      {
+        id: 2,
+        room: 'protocol',
+        from: 'caas',
+        body: 'second',
+        done: true,
+        human: false,
+        createdAt: 2,
+      },
+    ],
+  })
+  rerender(
+    <MemoryRouter>
+      <RoomScreen />
+    </MemoryRouter>,
+  )
+
+  expect(await screen.findByText('1 new below')).toBeDefined()
 })

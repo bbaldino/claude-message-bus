@@ -53,19 +53,26 @@ import styles from './Transcript.module.css'
 // suite. That path is protected by code inspection only; a refactor here
 // will not be caught by `npm test`.
 //
-// A second, more load-bearing coverage gap: the files tab hides this scroller
-// with `display: none` rather than unmounting it (see the note by the
-// scroller below), and a hidden element reports 0 for `scrollTop`,
-// `scrollHeight` and `clientHeight`. Both the messages effect and the
-// ResizeObserver guard against measuring a collapsed box (`el.clientHeight ===
-// 0`), because an unguarded read there always classifies as "already at the
-// bottom" and forces `atBottom.current = true` regardless of where the reader
-// actually was — exactly the yank this file's whole invariant exists to
-// prevent. jsdom reports zero layout dimensions unconditionally, hidden or
-// not, so it cannot distinguish a genuinely-collapsed box from this guard
-// doing nothing at all: a test suite built on jsdom cannot exercise this path
-// either way, in the visible or the hidden case. It is protected by code
-// inspection only.
+// A second, more load-bearing coverage gap — narrower than it first looks:
+// the files tab hides this scroller with `display: none` rather than
+// unmounting it (see the note by the scroller below), and a hidden element
+// reports 0 for `scrollTop`, `scrollHeight` and `clientHeight`. Both the
+// messages effect and the ResizeObserver guard against measuring a collapsed
+// box (`el.clientHeight === 0`), because an unguarded read there always
+// classifies as "already at the bottom" and forces `atBottom.current = true`
+// regardless of where the reader actually was — exactly the yank this file's
+// whole invariant exists to prevent. Only the *pin-preservation* half of that
+// is actually beyond the suite's reach: jsdom reports zero layout dimensions
+// unconditionally, hidden or not, so `isAtBottom` can never be driven false
+// by a real scroll without stubbing DOM getters, and no test here can tell a
+// genuinely-collapsed box apart from this guard doing nothing at all. The
+// *unseen-accounting* half of the same guard is plain arithmetic, not
+// measurement, and jsdom's unconditional zero makes every append in the
+// suite already run this branch — that half is covered (Files.test.tsx:
+// "an appended message still counts toward unseen when the transcript
+// measures zero"), and failed against the pre-fix logic before this comment
+// was written. Only the pin/scrollTop half is protected by code inspection
+// alone.
 export function RoomScreen() {
   const { rail, messages, roomEvents, room, hasMoreHistory, dockOpen } = useStore()
   const delivery = useMemo(() => deliveryFor(roomEvents), [roomEvents])
