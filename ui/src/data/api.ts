@@ -2,6 +2,8 @@ import type { RailSummary } from '../types/RailSummary'
 import type { Meta } from '../types/Meta'
 import type { Message } from '../types/Message'
 import type { Event } from '../types/Event'
+import type { AgentDetail } from '../types/AgentDetail'
+import type { DeletionPreview } from '../types/DeletionPreview'
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -29,3 +31,9 @@ export const fetchEvents = (opts: { room?: string; kind?: string; limit?: number
   p.set('limit', String(opts.limit ?? 200))
   return getJson<Event[]>(`/api/events?${p}`)
 }
+
+export const fetchAgent = (name: string) =>
+  getJson<AgentDetail>(`/api/agents/${encodeURIComponent(name)}`)
+
+export const fetchDeletionPreview = (name: string) =>
+  getJson<DeletionPreview>(`/api/agents/${encodeURIComponent(name)}/deletion`)
