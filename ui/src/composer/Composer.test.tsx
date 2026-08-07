@@ -107,3 +107,37 @@ test('the delivery preview counts the room members, not every agent', () => {
   })
   expect(screen.getByText('delivers to 1, queues for 1')).toBeDefined()
 })
+
+// Review finding (Important): `src/bus/commands.rs` auto-joins the sender on
+// every send (`commands.rs:202`) and excludes the sender from its own
+// fan-out (`commands.rs:225`, `members.iter().filter(|m| m.as_str() != me)`).
+// The preview here used to count every rail member, including the operator
+// once the 25s rail poll picked up that auto-join — over-stating delivery by
+// one. The degenerate case is a room where the operator is the only member:
+// the preview read "delivers to 1, queues for 0", promising delivery to
+// someone when the bus delivers to nobody. `sendAs` (not the typed `name`)
+// is the identity the bus fan-out actually excludes, so that is what must be
+// filtered out of the member list before counting.
+test('alone in the room, the preview does not count the operator as a recipient', () => {
+  localStorage.setItem('claude-bus.sendAs', 'bbaldino')
+  renderWithStore(<Composer room="protocol" />, {
+    sendAs: 'bbaldino',
+    rail: {
+      rooms: [
+        { name: 'protocol', members: ['bbaldino'], lastActivity: null, buckets: [], flag: null },
+      ],
+      agents: [
+        {
+          name: 'bbaldino',
+          host: 'web',
+          version: null,
+          online: true,
+          isHuman: true,
+          lastSeen: 0,
+          buckets: [],
+        },
+      ],
+    },
+  })
+  expect(screen.getByText('delivers to 0, queues for 0')).toBeDefined()
+})

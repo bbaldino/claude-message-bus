@@ -10,7 +10,16 @@
 /// regression if a future refactor keeps the message control mounted (hidden
 /// rather than absent) or animates the name -> message transition, either of
 /// which would make the `!name` path reachable again.
-export function canSubmit(name: string | null, text: string): boolean {
+///
+/// `sending` is the third precondition the spec names — "no send already in
+/// flight" — alongside the name and the text. It is not reachable today
+/// either: `store.send` clears the draft synchronously before its first
+/// `await`, so a second `Enter` before the first send settles sees an empty
+/// draft and fails the text check regardless. `canSubmit` is nonetheless the
+/// named home of every precondition, not just the two that happen to be load-
+/// bearing under the current implementation of `store.send`.
+export function canSubmit(name: string | null, text: string, sending: boolean): boolean {
   if (!name) return false
+  if (sending) return false
   return text.trim().length > 0
 }

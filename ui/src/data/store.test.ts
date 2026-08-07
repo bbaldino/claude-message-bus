@@ -1,5 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { createStore } from './store'
+import { createParticipant } from './participant'
 import type { SendOutcome } from './participant'
 import { writeSendAs } from '../composer/identity'
 import type { RailSummary } from '../types/RailSummary'
@@ -35,6 +36,10 @@ function fakeParticipant() {
     register: vi.fn(async (name: string) => name),
     send: vi.fn(async () => p.sendResult),
     close: vi.fn(),
+    // Defaults to connected, same as a fresh registration in the real module —
+    // individual tests (see the Critical-1 regression test below) override this
+    // to simulate the socket having closed underneath an already-assigned name.
+    isConnected: vi.fn(() => true),
   }
   return p
 }
@@ -675,6 +680,35 @@ test('discarding a failed send removes it', async () => {
   expect(store.getState().pending).toHaveLength(0)
 })
 
+// Review finding (Important): `discard` had no status guard, and
+// `participant.send` has no cancellation on the wire — so discarding a row
+// that is still `sending` used to remove it regardless, and if the ack for
+// that send arrived afterwards, `settle`'s success path would still append
+// it to `messages`, resurrecting a message the operator believed they had
+// thrown away. `PendingRow` only wires the discard button to the `failed`
+// branch, which is why this was never reachable through the UI — but nothing
+// in `store.ts` itself stopped it, so the invariant must live here, not be
+// delegated to a component's render structure.
+test('discarding a still-sending row is a no-op; a late ack can still land it', async () => {
+  let resolveSend: (o: SendOutcome) => void = () => {}
+  participant.send = vi.fn(() => new Promise<SendOutcome>((resolve) => (resolveSend = resolve)))
+  const store = makeStore()
+  store.selectRoom('protocol')
+  const sending = store.send('protocol', 'hello', false)
+  await flush()
+  const id = store.getState().pending[0].clientId
+  expect(store.getState().pending[0].status).toBe('sending')
+
+  store.discard(id)
+  // Still there — discard must ignore a row that hasn't failed yet.
+  expect(store.getState().pending).toHaveLength(1)
+
+  resolveSend({ ok: true, msgId: 5, deliveredTo: [], queuedFor: [] })
+  await sending
+  expect(store.getState().pending).toHaveLength(0)
+  expect(store.getState().messages.at(-1)).toMatchObject({ id: 5, body: 'hello' })
+})
+
 // Correction to the brief: `register()` (see `data/participant.ts`) rejects
 // rather than hanging when the socket closes before the bus answers
 // `registered`. Without a guard in `settle` around that await, this
@@ -754,4 +788,102 @@ test('retry after a failed registration succeeds once registration works again',
   await store.retry(id)
   expect(store.getState().pending).toHaveLength(0)
   expect(store.getState().messages.at(-1)).toMatchObject({ id: 7, body: 'hello' })
+})
+
+// Review finding (Critical): the participant socket never re-registers, so a
+// bus restart after a successful send kills the composer permanently.
+// `ensureRegistered` used to short-circuit on `if (state.sendAs) return
+// state.sendAs` alone — nothing ever cleared `sendAs`, so once it was set, a
+// closed socket underneath it was invisible to the store. Every later send
+// (and every retry) reached `sendFrame`'s `readyState !== OPEN` check and
+// resolved `{ ok: false, error: 'not connected' }` forever; only a page
+// reload could recover, because the name field (the only in-app path back to
+// `register()`) never returns once `name` is set.
+//
+// Deliberately drives the REAL `createParticipant` against a fake
+// `WebSocket`, not the `fakeParticipant` mock used elsewhere in this file:
+// the bug spans both modules — `participant.ts` closing its socket and
+// `store.ts` trusting a name that no longer has a live connection behind it
+// — and a mock that always resolves `send()` would paper over exactly that
+// seam. This is also the sequence the manual review pass missed: it killed
+// the bus mid-compose, while `sendAs` was still null, so retry took the
+// fresh-registration path. This test registers successfully, sends
+// successfully, closes the socket, and only then sends again.
+class FakeSocket {
+  static last: FakeSocket
+  onopen: (() => void) | null = null
+  onmessage: ((e: { data: string }) => void) | null = null
+  onclose: (() => void) | null = null
+  readyState = 0
+  sent: string[] = []
+  constructor(public url: string) {
+    FakeSocket.last = this
+  }
+  send(s: string) {
+    this.sent.push(s)
+  }
+  close() {
+    this.readyState = 3
+    this.onclose?.()
+  }
+  openIt() {
+    this.readyState = 1
+    this.onopen?.()
+  }
+  push(frame: unknown) {
+    this.onmessage?.({ data: JSON.stringify(frame) })
+  }
+  frames() {
+    return this.sent.map((s) => JSON.parse(s))
+  }
+}
+
+test('a send after the participant socket closes re-registers on a new socket instead of failing forever', async () => {
+  vi.stubGlobal('WebSocket', FakeSocket as unknown as typeof WebSocket)
+  Object.assign(FakeSocket as unknown as Record<string, number>, { OPEN: 1 })
+
+  const realParticipant = createParticipant('ws://x/ws')
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+    participant: realParticipant,
+  })
+
+  const firstSend = store.send('protocol', 'hello', false)
+  const socket1 = FakeSocket.last
+  socket1.openIt()
+  socket1.push({ type: 'registered', name: 'bbaldino' })
+  await flush()
+  const sendFrame1 = socket1.frames().find((f) => f.type === 'send')
+  socket1.push({
+    type: 'reply',
+    req_id: sendFrame1.req_id,
+    result: { kind: 'sent', room: 'protocol', msg_id: 1, delivered_to: [], queued_for: [] },
+  })
+  await firstSend
+  expect(store.getState().pending).toHaveLength(0)
+
+  // The bus restarts. Nothing here reconnects eagerly in the background —
+  // the composer stays invisible until the operator sends again — but the
+  // store must stop trusting the now-stale `sendAs`.
+  socket1.close()
+
+  const secondSend = store.send('protocol', 'again', false)
+  await flush()
+  const socket2 = FakeSocket.last
+  expect(socket2).not.toBe(socket1)
+  socket2.openIt()
+  socket2.push({ type: 'registered', name: 'bbaldino' })
+  await flush()
+  const sendFrame2 = socket2.frames().find((f) => f.type === 'send')
+  expect(sendFrame2).toBeDefined()
+  socket2.push({
+    type: 'reply',
+    req_id: sendFrame2.req_id,
+    result: { kind: 'sent', room: 'protocol', msg_id: 2, delivered_to: [], queued_for: [] },
+  })
+  await secondSend
+  expect(store.getState().pending).toHaveLength(0)
 })

@@ -83,6 +83,7 @@ export function createStore(deps: {
     register(name: string): Promise<string>
     send(room: string, text: string, done: boolean): Promise<SendOutcome>
     close(): void
+    isConnected(): boolean
   }
 }) {
   let state: State = {
@@ -313,8 +314,18 @@ export function createStore(deps: {
   /// the socket closes before the bus answers `registered`. Callers — only
   /// `settle`, below — must catch it themselves; this function does not turn
   /// the rejection into a value.
+  ///
+  /// `state.sendAs` alone is not trusted as "still registered": `participant.ts`
+  /// never reconnects on its own (deliberately — see its file comment), so a
+  /// closed socket underneath an already-assigned name would otherwise look
+  /// permanently valid, and every later send would silently fail forever with
+  /// no in-app way back (the name field never returns once `name` is set).
+  /// `isConnected()` is what actually reflects the live socket; `sendAs` short-
+  /// circuits registration only while it does. A re-registration after a drop
+  /// legitimately re-reads `readSendAs()` and may come back differently
+  /// qualified than before — that's correct, the same as any other `register()`.
   const ensureRegistered = async (): Promise<string | null> => {
-    if (state.sendAs) return state.sendAs
+    if (state.sendAs && deps.participant.isConnected()) return state.sendAs
     // A second call landing before the first's `register()` round trip has
     // settled joins that attempt rather than starting a competing one — see
     // `registerAttempt` above.
@@ -489,7 +500,17 @@ export function createStore(deps: {
       })
       await settle(clientId, row.room, row.text, row.done)
     },
+    // Guarded on `status === 'failed'`, not just "found": `participant.send`
+    // has no cancellation on the wire, so discarding a row that is still
+    // `sending` would not stop its ack from arriving. If it did, `settle`'s
+    // success path would append it to `messages` regardless, resurrecting a
+    // message the operator believed they'd thrown away. `PendingRow` already
+    // only wires this to the `failed` branch, but that is a component's
+    // render structure, not an enforced invariant — this makes the guard hold
+    // even if a future caller (or a hoisted button) reaches this directly.
     discard(clientId: number) {
+      const row = state.pending.find((p) => p.clientId === clientId)
+      if (!row || row.status !== 'failed') return
       setState({ pending: state.pending.filter((p) => p.clientId !== clientId) })
     },
     async start() {

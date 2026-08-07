@@ -172,5 +172,18 @@ export function createParticipant(url: string) {
     close() {
       abandon('closed')
     },
+
+    /// Whether the current socket, if any, is actually open — as opposed to
+    /// merely having registered at some point in the past. `store.ts`'s
+    /// `ensureRegistered` consults this rather than trusting its cached
+    /// `sendAs` alone: a close (a bus restart, say) leaves `ws` pointing at a
+    /// dead socket with nothing to reopen it (this module is deliberately
+    /// lazy — see the file comment), and without this check a name assigned
+    /// before the close would look permanently valid, sending every later
+    /// send and retry straight into `sendFrame`'s `readyState !== OPEN`
+    /// branch forever.
+    isConnected(): boolean {
+      return ws !== null && ws.readyState === WebSocket.OPEN
+    },
   }
 }
