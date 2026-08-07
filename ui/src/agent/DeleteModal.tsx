@@ -72,13 +72,13 @@ export function DeleteModal({
           {preview && (
             <div className={styles.counts}>
               <span className={styles.count}>{preview.registration}</span>
-              <span>
+              <span className={styles.label}>
                 agent registration <span className={styles.secondary}>on {preview.host}</span>
               </span>
               <span className={styles.count}>{preview.memberships}</span>
-              <span>room memberships</span>
+              <span className={styles.label}>room memberships</span>
               <span className={styles.count}>{preview.cursors}</span>
-              <span>read cursors</span>
+              <span className={styles.label}>read cursors</span>
               <span className={styles.kept}>—</span>
               <span className={styles.kept}>
                 messages and files are kept; they belong to the room
@@ -92,6 +92,14 @@ export function DeleteModal({
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}
+            // Puts the cursor where the operator needs it and, just as
+            // importantly, moves focus off the page behind the scrim and
+            // into the dialog. Not a full focus trap — deliberately: this
+            // modal has no established focus-trap convention in this
+            // codebase, and one is more machinery than a single-input dialog
+            // warrants. A keyboard user can still tab out to the page behind
+            // the scrim; recorded as a known gap, not an oversight.
+            autoFocus
           />
           <p className={styles.progress}>
             {matches ? 'matches' : `${Math.max(0, name.length - typed.length)} characters to go`}
