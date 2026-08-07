@@ -4,8 +4,10 @@ import { fetchAgent, fetchMeta } from '../data/api'
 import type { AgentDetail } from '../types/AgentDetail'
 import { VolumeStrip } from '../rail/VolumeStrip'
 import { useTicker } from '../ui/time'
+import { AgentEvents } from './AgentEvents'
 import { AgentHeader } from './AgentHeader'
 import { AgentIdentity } from './AgentIdentity'
+import { AgentRooms } from './AgentRooms'
 import styles from './Agent.module.css'
 
 export function AgentScreen({ name: nameProp }: { name?: string }) {
@@ -61,6 +63,8 @@ export function AgentScreen({ name: nameProp }: { name?: string }) {
           {quiet ? 'no messages in the last 100 min' : 'messages per 5 min · last 100 min'}
         </p>
         <AgentIdentity agent={agent} busVersion={busVersion} now={now} />
+        <AgentRooms rooms={agent.rooms} now={now} />
+        <AgentEvents events={agent.events} total={agent.eventTotal} />
       </div>
     </div>
   )

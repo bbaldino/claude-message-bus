@@ -78,3 +78,29 @@ test('a version that differs from the bus renders the differs badge, not matches
   expect(await screen.findByText('differs')).toBeDefined()
   expect(screen.queryByText(/matches bus/)).toBeNull()
 })
+
+test('an agent with no rooms gets a stated explanation, not blank space', async () => {
+  renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
+  expect(await screen.findByText(/Never joined a room/)).toBeDefined()
+})
+
+test('the event section header states the true total, not the slice length', async () => {
+  // The endpoint caps the list at 50; the header must not report 50 for an
+  // agent with 312 events.
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) =>
+    String(input).includes('/api/meta')
+      ? new Response(JSON.stringify({ host: 'h', version: '0.3.3' }), {
+          headers: { 'content-type': 'application/json' },
+        })
+      : new Response(
+          JSON.stringify({
+            ...detail,
+            events: [{ id: 1, kind: 'agent_registered', detail: {}, createdAt: 1 }],
+            eventTotal: 312,
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+  )
+  renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
+  expect(await screen.findByText('312 total')).toBeDefined()
+})
