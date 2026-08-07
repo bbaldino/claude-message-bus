@@ -142,3 +142,44 @@ test('sending on a closed socket fails loudly instead of vanishing', async () =>
   const outcome = await p.send('protocol', 'hello', false)
   expect(outcome.ok).toBe(false)
 })
+
+test('register rejects instead of hanging when the socket closes before registered arrives', async () => {
+  // Critical 1: failAll() only ever drained the `pending` map that send() uses.
+  // A close before the bus replies to Register left `registering` untouched, so
+  // this promise never settled — the same failure class send() was built to
+  // avoid, just not extended to register().
+  withFakeSocket()
+  const p = createParticipant('ws://x/ws')
+  const registerPromise = p.register('bbaldino')
+  FakeSocket.last.openIt()
+  FakeSocket.last.close()
+  await expect(registerPromise).rejects.toThrow()
+})
+
+test('a second register() call rejects the first and closes its socket, rather than orphaning both', async () => {
+  // Critical 2: `onRegistered`/`registering` is a single shared variable. A
+  // second register() before the first settles used to overwrite it outright,
+  // leaving the first promise pending forever and the first socket open and
+  // unreferenced.
+  withFakeSocket()
+  const p = createParticipant('ws://x/ws')
+  const first = p.register('bbaldino')
+  const firstSocket = FakeSocket.last
+  firstSocket.openIt()
+
+  const second = p.register('bbaldino2')
+  const secondSocket = FakeSocket.last
+  expect(secondSocket).not.toBe(firstSocket)
+
+  // The first socket must be closed by the module itself, not merely dropped.
+  expect(firstSocket.readyState).toBe(3)
+
+  // A late `registered` on the abandoned first socket must not resolve
+  // anything — it was superseded, not merely raced.
+  firstSocket.push({ type: 'registered', name: 'bbaldino' })
+  await expect(first).rejects.toThrow()
+
+  secondSocket.openIt()
+  secondSocket.push({ type: 'registered', name: 'bbaldino2' })
+  expect(await second).toBe('bbaldino2')
+})

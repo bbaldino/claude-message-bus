@@ -1,3 +1,5 @@
+import type { FromBus } from '../types/FromBus'
+
 /// The participant socket. Separate from the observer socket in `live.ts`
 /// because the bus models two different roles: `handle_observer` rejects `Send`
 /// outright ("a viewer is not a participant"), while sending auto-joins the
@@ -13,11 +15,18 @@ export type SendOutcome =
 
 type Pending = (outcome: SendOutcome) => void
 
+type RegistrationOutcome = { ok: true; name: string } | { ok: false; error: string }
+type RegistrationSettle = (outcome: RegistrationOutcome) => void
+
 export function createParticipant(url: string) {
   let ws: WebSocket | null = null
   let nextReqId = 1
   const pending = new Map<number, Pending>()
-  let onRegistered: ((name: string) => void) | null = null
+  // The settler for a `register()` call still waiting on `registered` (or on
+  // the connection failing first). Cleared the moment it's used, exactly like
+  // `pending`'s entries — a second `register()` before the first settles must
+  // not leave this pointing at an already-resolved promise's resolver.
+  let registering: RegistrationSettle | null = null
 
   /// Deliberately NOT `live.ts`'s fire-and-forget send. A subscription frame that
   /// misses is re-sent by `onopen`; a message that misses is lost with no error
@@ -33,10 +42,41 @@ export function createParticipant(url: string) {
     pending.clear()
   }
 
+  /// Detach and close whatever socket currently exists, and settle everything
+  /// it owed an answer to: sends in flight, and a registration still waiting
+  /// on `registered`. Used both by a second `register()` call — the earlier
+  /// caller must not be orphaned and the earlier socket must not be leaked —
+  /// and by `close()`.
+  ///
+  /// Handlers are detached before `.close()` so a socket already mid-abandonment
+  /// can't turn around and fire a late `onmessage`/`onclose` against state that
+  /// has moved on to a newer connection.
+  const abandon = (reason: string) => {
+    failAll(reason)
+    registering?.({ ok: false, error: reason })
+    registering = null
+    if (ws) {
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onclose = null
+      ws.close()
+    }
+    ws = null
+  }
+
   return {
     register(name: string): Promise<string> {
-      return new Promise((resolve) => {
-        onRegistered = resolve
+      // A registration (or a bare socket) already in flight is abandoned
+      // rather than silently overwritten by `ws = new WebSocket(url)`: without
+      // this, `registering` — a single shared variable — is overwritten too,
+      // so the earlier caller's promise never settles, and the earlier `ws` is
+      // discarded without being closed.
+      abandon('superseded by a new register() call')
+      return new Promise((resolve, reject) => {
+        registering = (outcome) => {
+          if (outcome.ok) resolve(outcome.name)
+          else reject(new Error(outcome.error))
+        }
         ws = new WebSocket(url)
         ws.onopen = () => {
           // `host: 'web'` is what makes `Registry::attach` produce `name@web`
@@ -59,40 +99,51 @@ export function createParticipant(url: string) {
           })
         }
         ws.onmessage = (ev) => {
-          const msg = JSON.parse(ev.data as string) as { type: string } & Record<string, unknown>
-          if (msg.type === 'registered') {
-            onRegistered?.(msg.name as string)
-            onRegistered = null
+          // Narrowed against `FromBus`, the union ts-rs generates from
+          // `src/proto.rs`, the same way `store.ts` does it: the single `as
+          // FromBus` sits at the `unknown` boundary where the JSON arrives, and
+          // every field access after the `type`/`kind` check is compiler-verified
+          // against the server's own definition. A hand-written literal (this
+          // file's previous shape) agrees with whatever you wrote, which is
+          // exactly how the `kind`-vs-`type` `ReplyResult` bug shipped and was
+          // caught only by manually cross-referencing the Rust — narrowed against
+          // the generated type, it would have been a `tsc` failure instead.
+          const frame = JSON.parse(ev.data as string) as FromBus
+          if (frame.type === 'registered') {
+            registering?.({ ok: true, name: frame.name })
+            registering = null
             return
           }
-          if (msg.type === 'reply') {
-            const result = msg.result as Record<string, unknown>
-            // `ReplyResult` is tagged `kind`, not `type` — see `src/proto.rs`'s
-            // `#[serde(tag = "kind", ...)]` on `ReplyResult`, distinct from the
-            // outer `FromBus` envelope, which is tagged `type`. Confirmed against
-            // the generated `ui/src/types/ReplyResult.ts`.
-            if (result?.kind !== 'sent') return
-            pending.get(msg.req_id as number)?.({
+          if (frame.type === 'reply') {
+            if (frame.result.kind !== 'sent') return
+            pending.get(frame.req_id)?.({
               ok: true,
-              msgId: result.msg_id as number,
-              deliveredTo: (result.delivered_to as string[]) ?? [],
-              queuedFor: (result.queued_for as string[]) ?? [],
+              msgId: frame.result.msg_id,
+              deliveredTo: frame.result.delivered_to,
+              queuedFor: frame.result.queued_for,
             })
-            pending.delete(msg.req_id as number)
+            pending.delete(frame.req_id)
             return
           }
-          if (msg.type === 'error' && typeof msg.req_id === 'number') {
-            pending.get(msg.req_id)?.({
-              ok: false,
-              error: (msg.message as string) ?? 'send failed',
-            })
-            pending.delete(msg.req_id)
+          if (frame.type === 'error' && frame.req_id !== null) {
+            pending.get(frame.req_id)?.({ ok: false, error: frame.message })
+            pending.delete(frame.req_id)
           }
         }
-        // A close with sends in flight must settle them. Leaving them pending
-        // would hang the composer in `sending` forever with the operator's text
-        // held hostage inside it.
-        ws.onclose = () => failAll('connection lost')
+        // A close must settle everything the closed socket owed an answer to:
+        // sends in flight (see `sendFrame`'s comment above) — and, just as much,
+        // a registration that hasn't heard back yet. That second half used to be
+        // missing: `register()`, then a close before `registered` arrived, hung
+        // the returned promise forever. `register()` rejects on failure (with
+        // `Promise<string>` kept as the resolved shape, per the module's public
+        // interface) so a caller can tell success from failure with a plain
+        // `try`/`catch` around `await`, the same way any other failable async
+        // call in this codebase reads.
+        ws.onclose = () => {
+          failAll('connection lost')
+          registering?.({ ok: false, error: 'connection lost' })
+          registering = null
+        }
       })
     },
 
@@ -119,9 +170,7 @@ export function createParticipant(url: string) {
     },
 
     close() {
-      failAll('closed')
-      ws?.close()
-      ws = null
+      abandon('closed')
     },
   }
 }
