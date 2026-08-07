@@ -68,6 +68,15 @@
   min-height: 0;
   overflow-y: auto;
   padding: 6px 24px 0;
+  /* Do not remove: Chromium's native scroll anchoring is on by default, and it
+     already shifts `scrollTop` when content is inserted above the viewport —
+     exactly what RoomScreen's own `onScroll` load-older handler also corrects
+     for. With both active, a page of older messages gets corrected twice and
+     the reader lands a full page away from the anchor row. Disabling the
+     browser's anchoring here makes our explicit correction the only one, and
+     keeps behaviour identical on Safari, where scroll anchoring doesn't
+     exist to begin with. */
+  overflow-anchor: none;
 }
 
 .dateDivider {

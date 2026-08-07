@@ -14,6 +14,7 @@ export function RoomScreen() {
   const railRoom = rail?.rooms.find((r) => r.name === room)
 
   const scroller = useRef<HTMLDivElement>(null)
+  const content = useRef<HTMLDivElement>(null)
   const prevLastId = useRef<number | null>(null)
   const prevRoom = useRef<string | null>(null)
   const [unseen, setUnseen] = useState(0)
@@ -23,10 +24,14 @@ export function RoomScreen() {
   // load is pending still needs to be a no-op here, or a resolved-but-no-op
   // `store.loadOlder()` call would still schedule its own correction.
   const restoringOlder = useRef(false)
-  // The scrollTop the initial pin last set, so a later fonts-ready re-pin can
-  // tell "content grew under an untouched reader" apart from "the reader
-  // scrolled since" — only the former should be corrected.
-  const pinnedScrollTop = useRef<number | null>(null)
+  // Whether the reader was at the bottom the last time `scrollTop` actually
+  // moved. Pure content growth (new rows, a reflow) never fires a `scroll`
+  // event by itself, so this only changes on a real scroll — which is exactly
+  // what the resize-observer re-pin below needs: by the time a resize is
+  // observed, the growth has already opened a gap, so measuring live distance
+  // from bottom at that point would always read "not at the bottom" and could
+  // never re-pin. Tracking the *last known* position sidesteps that.
+  const atBottom = useRef(true)
 
   useEffect(() => {
     const el = scroller.current
@@ -37,23 +42,8 @@ export function RoomScreen() {
         // `scrollTop` directly, never `scrollIntoView` — the handoff is explicit,
         // and scrollIntoView also scrolls ancestor containers.
         el.scrollTop = el.scrollHeight
-        pinnedScrollTop.current = el.scrollTop
+        atBottom.current = true
         setUnseen(0)
-        // Webfonts finishing after this pin change text metrics and grow every
-        // row slightly, leaving the pin short of the true bottom. Re-pin once
-        // fonts settle, but only if this pin is still the right thing to do:
-        // `document.fonts` is undefined in jsdom, the room may have changed by
-        // the time the promise resolves, the component may have unmounted, or
-        // the reader may have scrolled away from where we left them.
-        const pinnedRoom = room
-        document.fonts?.ready.then(() => {
-          const current = scroller.current
-          if (!current) return
-          if (prevRoom.current !== pinnedRoom) return
-          if (current.scrollTop !== pinnedScrollTop.current) return
-          current.scrollTop = current.scrollHeight
-          pinnedScrollTop.current = current.scrollTop
-        })
       } else if (arrival.kind === 'append') {
         const action = scrollAction({
           scrollTop: el.scrollTop,
@@ -63,7 +53,7 @@ export function RoomScreen() {
         })
         if (action === 'pin') {
           el.scrollTop = el.scrollHeight
-          pinnedScrollTop.current = el.scrollTop
+          atBottom.current = true
         }
         if (action === 'notify') setUnseen((n) => n + arrival.count)
       }
@@ -74,10 +64,32 @@ export function RoomScreen() {
     prevRoom.current = room
   }, [messages, room])
 
+  // A pin can go stale a moment after it runs, for reasons that have nothing
+  // to do with new messages: webfonts finishing, a late stylesheet, the
+  // rail-driven header changing size — anything that grows the content fires
+  // no scroll event to hook. Watch the *content* for size changes rather than
+  // chasing a specific cause; the scrolling container's own box never changes
+  // when messages grow taller, so observing it would report nothing. Whenever
+  // the content resizes, if the reader was at the bottom (per `atBottom`,
+  // tracked from real scroll events — see above), follow it down; a reader
+  // who has deliberately scrolled away is never yanked back.
+  useEffect(() => {
+    const el = scroller.current
+    const contentEl = content.current
+    if (!el || !contentEl || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (atBottom.current) el.scrollTop = el.scrollHeight
+    })
+    observer.observe(contentEl)
+    return () => observer.disconnect()
+  }, [])
+
   const onScroll = async () => {
     const el = scroller.current
     if (!el) return
-    if (el.scrollHeight - el.clientHeight - el.scrollTop <= BOTTOM_SLACK) setUnseen(0)
+    const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop
+    atBottom.current = distanceFromBottom <= BOTTOM_SLACK
+    if (atBottom.current) setUnseen(0)
     // `onScroll` fires repeatedly while a load is in flight. The store's
     // `loadingOlder` flag only stops a duplicate fetch — a second call here
     // still resolves (as a no-op) and must not schedule its own restoration,
@@ -108,27 +120,29 @@ export function RoomScreen() {
     <div className={styles.screen}>
       {railRoom && <RoomHeader room={railRoom} agents={rail?.agents ?? []} />}
       <div className={styles.transcript} ref={scroller} onScroll={onScroll}>
-        {messages.map((m, i) => {
-          const prev = messages[i - 1]
-          const newDay = !prev || day(prev.createdAt) !== day(m.createdAt)
-          return (
-            <div key={m.id}>
-              {newDay && (
-                <div className={styles.dateDivider} data-testid="date-divider">
-                  <span className={styles.rule} />
-                  <span className={styles.dateLabel}>{day(m.createdAt)}</span>
-                  <span className={styles.rule} />
-                </div>
-              )}
-              <MessageRow
-                message={m}
-                host={rail?.agents.find((a) => a.name === m.from)?.host ?? null}
-                delivery={delivery.get(m.id)}
-                narrow={dockOpen}
-              />
-            </div>
-          )
-        })}
+        <div ref={content}>
+          {messages.map((m, i) => {
+            const prev = messages[i - 1]
+            const newDay = !prev || day(prev.createdAt) !== day(m.createdAt)
+            return (
+              <div key={m.id}>
+                {newDay && (
+                  <div className={styles.dateDivider} data-testid="date-divider">
+                    <span className={styles.rule} />
+                    <span className={styles.dateLabel}>{day(m.createdAt)}</span>
+                    <span className={styles.rule} />
+                  </div>
+                )}
+                <MessageRow
+                  message={m}
+                  host={rail?.agents.find((a) => a.name === m.from)?.host ?? null}
+                  delivery={delivery.get(m.id)}
+                  narrow={dockOpen}
+                />
+              </div>
+            )
+          })}
+        </div>
       </div>
       {unseen > 0 && (
         <button
@@ -137,7 +151,7 @@ export function RoomScreen() {
             const el = scroller.current
             if (el) {
               el.scrollTop = el.scrollHeight
-              pinnedScrollTop.current = el.scrollTop
+              atBottom.current = true
             }
             setUnseen(0)
           }}
