@@ -698,3 +698,60 @@ test('a failed registration marks the pending row failed, keeping the text, not 
   const row = store.getState().pending.at(-1)
   expect(row).toMatchObject({ status: 'failed', text: 'hello', error: 'connection lost' })
 })
+
+// Review finding (Important 1): `ensureRegistered` used to cache only the
+// *settled* name, never the in-flight attempt, so two sends firing before
+// registration resolved each called `participant.register()` independently.
+// The real `register()` (participant.ts) abandons — and rejects — whichever
+// attempt was already in flight the moment a second one starts, so the
+// second send would spuriously fail the first send's row with a message
+// about registration that has nothing to do with what the operator did.
+// Confirmed this fails against the pre-fix code: with `ensureRegistered`
+// reverted to call `deps.participant.register` unconditionally (no shared
+// `registerAttempt`), `participant.register` — the same default fixture
+// used here — was called twice instead of once.
+test('two sends fired before registration resolves share one registration attempt', async () => {
+  const store = makeStore()
+  store.selectRoom('protocol')
+  const first = store.send('protocol', 'a', false)
+  const second = store.send('protocol', 'b', false)
+  await Promise.all([first, second])
+  expect(participant.register).toHaveBeenCalledTimes(1)
+  expect(store.getState().pending.filter((p) => p.status === 'failed')).toHaveLength(0)
+})
+
+// Review finding (Important 2): retry() had no test coverage at all.
+test('retry resends a failed row, and a success promotes it into the transcript', async () => {
+  const store = makeStore()
+  store.selectRoom('protocol')
+  participant.sendResult = { ok: false, error: 'storage failed' }
+  await store.send('protocol', 'hello', false)
+  const id = store.getState().pending[0].clientId
+  participant.sendResult = { ok: true, msgId: 99, deliveredTo: [], queuedFor: [] }
+  await store.retry(id)
+  expect(store.getState().pending).toHaveLength(0)
+  expect(store.getState().messages.at(-1)).toMatchObject({ id: 99, body: 'hello' })
+})
+
+// The registration-specific half of the same coverage gap: proves
+// `ensureRegistered` isn't left wedged after a registration failure —
+// `registerAttempt` clears in `finally` regardless of outcome, so a retry
+// after a failed registration gets a fresh attempt rather than replaying
+// the same failure forever.
+test('retry after a failed registration succeeds once registration works again', async () => {
+  const store = makeStore()
+  store.selectRoom('protocol')
+  participant.register = vi.fn(async () => {
+    throw new Error('connection lost')
+  })
+  await store.send('protocol', 'hello', false)
+  const failed = store.getState().pending.at(-1)
+  expect(failed).toMatchObject({ status: 'failed', text: 'hello', error: 'connection lost' })
+  const id = failed!.clientId
+
+  participant.register = vi.fn(async (name: string) => name)
+  participant.sendResult = { ok: true, msgId: 7, deliveredTo: [], queuedFor: [] }
+  await store.retry(id)
+  expect(store.getState().pending).toHaveLength(0)
+  expect(store.getState().messages.at(-1)).toMatchObject({ id: 7, body: 'hello' })
+})

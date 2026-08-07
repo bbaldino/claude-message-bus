@@ -291,6 +291,19 @@ export function createStore(deps: {
 
   let clientIdSeq = 0
 
+  // The one in-flight `register()` attempt, shared across concurrent callers
+  // of `ensureRegistered`. See the comment inside `ensureRegistered` for why
+  // this exists — without it, two sends racing on a cold tab each start their
+  // own `register()` call, and `participant.ts`'s `register()` abandons (and
+  // rejects) whichever attempt was already in flight the moment a second one
+  // starts, spuriously failing the first send with a message about
+  // registration having nothing to do with what the operator did wrong.
+  //
+  // Cleared in the `finally` below on every outcome, success or failure: a
+  // failed attempt must not permanently poison later sends, which need to be
+  // free to try registering again.
+  let registerAttempt: Promise<string> | null = null
+
   /// Register on first use and remember the assigned name. The participant
   /// socket opens here — on the first send — rather than when the operator sets
   /// their name, so a tab that is only ever read from never registers and never
@@ -302,11 +315,22 @@ export function createStore(deps: {
   /// the rejection into a value.
   const ensureRegistered = async (): Promise<string | null> => {
     if (state.sendAs) return state.sendAs
+    // A second call landing before the first's `register()` round trip has
+    // settled joins that attempt rather than starting a competing one — see
+    // `registerAttempt` above.
+    if (registerAttempt) return registerAttempt
     const wanted = readSendAs()
     if (!wanted) return null
-    const assigned = await deps.participant.register(wanted)
-    setState({ sendAs: assigned })
-    return assigned
+    registerAttempt = (async () => {
+      try {
+        const assigned = await deps.participant.register(wanted)
+        setState({ sendAs: assigned })
+        return assigned
+      } finally {
+        registerAttempt = null
+      }
+    })()
+    return registerAttempt
   }
 
   /// Shared by `send` and `retry`. A success promotes the pending row into the
