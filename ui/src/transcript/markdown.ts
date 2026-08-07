@@ -14,7 +14,9 @@ export type Inline = { kind: 'text' | 'code' | 'bold'; text: string }
 /// typed. That is what makes shipping an incomplete parser safe: it can look
 /// plain, but it can never lose a message.
 export function parseBlocks(text: string): Block[] {
-  const lines = text.split('\n')
+  // Agents run on any platform; normalize CRLF to LF so that trailing \r does not
+  // defeat the list regexes or the exact-match fence comparison.
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
   const blocks: Block[] = []
   let para: string[] = []
 

@@ -51,3 +51,19 @@ test('constructs we deliberately do not support pass through as text', () => {
   expect(parseInline('_a_')).toEqual([{ kind: 'text', text: '_a_' }])
   expect(parseInline('<b>hi</b>')).toEqual([{ kind: 'text', text: '<b>hi</b>' }])
 })
+
+test('CRLF bullet lists parse as ul with clean item text', () => {
+  expect(parseBlocks('- a\r\n- b')).toEqual([{ kind: 'ul', items: ['a', 'b'] }])
+})
+
+test('CRLF fenced code block followed by text parses as code plus paragraph', () => {
+  const src = '```\r\ncode\r\n```\r\nmore'
+  expect(parseBlocks(src)).toEqual([
+    { kind: 'code', text: 'code', lang: '' },
+    { kind: 'p', text: 'more' },
+  ])
+})
+
+test('CRLF paragraph has no embedded carriage returns', () => {
+  expect(parseBlocks('line 1\r\nline 2')).toEqual([{ kind: 'p', text: 'line 1\nline 2' }])
+})
