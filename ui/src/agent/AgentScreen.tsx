@@ -1,21 +1,24 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { fetchAgent, fetchMeta } from '../data/api'
 import type { AgentDetail } from '../types/AgentDetail'
 import { VolumeStrip } from '../rail/VolumeStrip'
-import { useTicker } from '../ui/time'
+import { age, useTicker } from '../ui/time'
 import { AgentEvents } from './AgentEvents'
 import { AgentHeader } from './AgentHeader'
 import { AgentIdentity } from './AgentIdentity'
 import { AgentRooms } from './AgentRooms'
+import { DeleteModal } from './DeleteModal'
 import styles from './Agent.module.css'
 
 export function AgentScreen({ name: nameProp }: { name?: string }) {
   const params = useParams()
+  const navigate = useNavigate()
   const name = nameProp ?? params.name ?? ''
   const [agent, setAgent] = useState<AgentDetail | null>(null)
   const [busVersion, setBusVersion] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const now = useTicker(1000)
 
   useEffect(() => {
@@ -66,6 +69,36 @@ export function AgentScreen({ name: nameProp }: { name?: string }) {
         <AgentRooms rooms={agent.rooms} now={now} />
         <AgentEvents events={agent.events} total={agent.eventTotal} />
       </div>
+      <footer className={styles.deleteFooter}>
+        {agent.online ? (
+          <>
+            <button className={styles.deleteButtonDisabled} disabled>
+              delete
+            </button>
+            {/* Stated inline, always visible — a control you cannot use should
+                say why before you try it, not on click or hover. */}
+            <span className={styles.deleteReason}>
+              online agents cannot be deleted — stop the session first
+            </span>
+          </>
+        ) : (
+          <>
+            <button className={styles.deleteButton} onClick={() => setDeleting(true)}>
+              delete
+            </button>
+            <span className={styles.deleteReason}>
+              offline {age(agent.lastSeen, now)} · safe to remove
+            </span>
+          </>
+        )}
+      </footer>
+      {deleting && (
+        <DeleteModal
+          name={name}
+          onClose={() => setDeleting(false)}
+          onDeleted={() => navigate('/')}
+        />
+      )}
     </div>
   )
 }

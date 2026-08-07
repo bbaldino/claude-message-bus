@@ -279,3 +279,46 @@
 .presence {
   color: var(--presence);
 }
+
+/* Delete footer. */
+
+.deleteFooter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 22px;
+  border-top: 1px solid var(--border-rule);
+  background: var(--surface-recessed);
+}
+
+.deleteButton {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--destructive);
+  background: var(--destructive-bg);
+  border: 1px solid var(--destructive-border);
+  border-radius: 4px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+
+.deleteButtonDisabled {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--text-faintest);
+  background: none;
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  padding: 5px 11px;
+  cursor: not-allowed;
+}
+
+.deleteReason {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-dim);
+}
