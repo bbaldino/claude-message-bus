@@ -615,6 +615,51 @@ pub(crate) async fn agent_delete(
     }
 }
 
+/// One stored file in a room.
+///
+/// Deliberately not `proto::FileInfo`, which is the websocket protocol's shape
+/// and therefore snake_case on the wire. Every `/api` response is camelCase, and
+/// reusing the protocol type would put one snake_case object into an otherwise
+/// camelCase surface — the drift this module's header exists to prevent.
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "camelCase")]
+pub struct RoomFile {
+    pub key: String,
+    #[ts(type = "number")]
+    pub size: i64,
+    pub content_type: Option<String>,
+    pub updated_by: String,
+    /// Epoch milliseconds.
+    #[ts(type = "number")]
+    pub updated_at: i64,
+}
+
+/// A room with no files returns an empty list, not a 404. The client renders
+/// "no files" and "could not read the file list" differently, and collapsing
+/// them here would make that distinction impossible to draw.
+pub(crate) async fn room_files(
+    State(app): State<App>,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<RoomFile>>, StatusCode> {
+    let rows = app
+        .store
+        .list_files(&name)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|f| RoomFile {
+                key: f.key,
+                size: f.size,
+                content_type: f.content_type,
+                updated_by: f.updated_by,
+                updated_at: f.updated_at,
+            })
+            .collect(),
+    ))
+}
+
 pub(crate) async fn events(
     State(app): State<App>,
     Query(q): Query<EventsQuery>,

@@ -310,6 +310,7 @@ pub fn routes() -> Router<App> {
         .route("/api/rail", get(api::rail))
         .route("/api/meta", get(api::meta))
         .route("/api/rooms/{name}/messages", get(api::room_messages))
+        .route("/api/rooms/{name}/files", get(api::room_files))
         .route("/api/events", get(api::events))
         .route("/app", get(assets::app_root))
         // `/app/` is registered separately and deliberately: matchit requires a

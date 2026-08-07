@@ -2325,3 +2325,64 @@ async fn agent_detail_returns_a_null_version_faithfully() {
     let body = common::get_json(port, "/api/agents/caas").await;
     assert_eq!(body["version"], serde_json::Value::Null);
 }
+
+#[tokio::test]
+async fn room_files_lists_what_was_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .put_file(
+                "protocol",
+                "digest-report.json",
+                b"{}",
+                Some("application/json"),
+                "caas",
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = common::get_json(port, "/api/rooms/protocol/files").await;
+    let files = body.as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["key"], "digest-report.json");
+    assert_eq!(files[0]["size"], 2);
+    assert_eq!(files[0]["contentType"], "application/json");
+    assert_eq!(files[0]["updatedBy"], "caas");
+    assert!(files[0]["updatedAt"].as_i64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn a_room_with_no_files_returns_an_empty_list_not_an_error() {
+    // "No files" and "could not find out" must be different answers, and the
+    // client renders them differently — so the empty case must be a 200.
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+
+    assert_eq!(
+        common::get_status(port, "/api/rooms/anything/files").await,
+        200
+    );
+    let body = common::get_json(port, "/api/rooms/anything/files").await;
+    assert!(body.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn room_files_survives_a_key_with_awkward_characters() {
+    // Keys are agent-supplied; a slash or a space in one must round-trip.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .put_file("protocol", "reports/q3 summary.txt", b"hi", None, "caas")
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = common::get_json(port, "/api/rooms/protocol/files").await;
+    assert_eq!(body[0]["key"], "reports/q3 summary.txt");
+    assert!(body[0]["contentType"].is_null());
+}
