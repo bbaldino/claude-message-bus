@@ -1,19 +1,24 @@
 import { useEffect, useState } from 'react'
-import { Outlet, useMatch, useParams } from 'react-router-dom'
+import { Outlet, useMatch } from 'react-router-dom'
 import { EventsDock } from './dock/EventsDock'
+import { NewBus } from './empty/NewBus'
 import { Rail } from './rail/Rail'
 import { TopBar } from './TopBar'
-import { store } from './useStore'
+import { store, useStore } from './useStore'
 import styles from './Shell.module.css'
 
-/// The main pane for routes with no screen of their own yet — currently just
-/// the index route. The room and agent routes no longer land here; both have
-/// their own screens now.
+/// The main pane for the index route — the only route with no screen of its
+/// own. The room and agent routes no longer land here; both have their own
+/// screens now, so `useParams().name` would never be set here.
 export function MainPlaceholder() {
-  const { name } = useParams()
+  const { rail } = useStore()
+  // Before the rail loads we know nothing; showing the new-bus state then
+  // would tell a populated bus's owner that nothing has joined it.
+  if (!rail) return null
+  if (rail.agents.length === 0) return <NewBus />
   return (
     <p className={styles.shellPlaceholder} data-testid="main-placeholder">
-      {name ? `agent: ${name} — screen arrives with the detail phase` : 'select a room or agent'}
+      select a room or agent
     </p>
   )
 }

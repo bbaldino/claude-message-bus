@@ -13,6 +13,7 @@ export const emptyState: State = {
   roomEvents: [],
   messages: [],
   room: null,
+  roomLoad: 'loading',
   connection: 'live',
   dockOpen: false,
   hasMoreHistory: false,

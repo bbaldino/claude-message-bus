@@ -129,3 +129,55 @@ test('the transcript body stays wide when the dock is closed', () => {
   expect(bodies.length).toBeGreaterThan(0)
   bodies.forEach((el) => expect(el.classList.contains(styles.bodyNarrow)).toBe(false))
 })
+
+const emptyRoomRail = {
+  rooms: [{ name: 'protocol', members: ['caas'], lastActivity: 5, buckets: [1], flag: null }],
+  agents: [
+    {
+      name: 'caas',
+      host: 'h',
+      version: '1',
+      online: true,
+      isHuman: false,
+      lastSeen: 5,
+      buckets: [1],
+    },
+  ],
+}
+
+test('an empty room says so in one line, with no call to action', async () => {
+  renderWithStore(<RoomScreen />, {
+    rail: emptyRoomRail,
+    room: 'protocol',
+    messages: [],
+    roomLoad: 'ready',
+  })
+  expect(await screen.findByText('Nothing said here yet.')).toBeDefined()
+  // Normal, not an error: no dashed box, no button, no instruction.
+  expect(screen.queryByRole('button', { name: /send|invite|start/i })).toBeNull()
+})
+
+test('a room still loading shows neither the empty line nor a failure', () => {
+  renderWithStore(<RoomScreen />, {
+    rail: emptyRoomRail,
+    room: 'protocol',
+    messages: [],
+    roomLoad: 'loading',
+  })
+  expect(screen.queryByText('Nothing said here yet.')).toBeNull()
+  expect(screen.queryByText(/could not load the transcript/)).toBeNull()
+})
+
+test('a failed load says so, and is not mistaken for an empty room', () => {
+  // "Nothing was said" and "we could not find out" are different facts —
+  // neither the empty-room line nor a transcript may render for a failed load.
+  renderWithStore(<RoomScreen />, {
+    rail: emptyRoomRail,
+    room: 'protocol',
+    messages: [],
+    roomLoad: 'failed',
+  })
+  expect(screen.getByText(/could not load the transcript/)).toBeDefined()
+  expect(screen.queryByText('Nothing said here yet.')).toBeNull()
+  expect(screen.queryAllByTestId('message-row').length).toBe(0)
+})

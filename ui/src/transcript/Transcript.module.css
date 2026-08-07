@@ -225,6 +225,17 @@
   background: var(--attention);
 }
 
+/* An empty room is a normal state, not an error: one line stating what is
+   true, then stop. */
+.emptyRoom {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
 .newBelow {
   position: absolute;
   bottom: 16px;

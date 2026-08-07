@@ -74,7 +74,7 @@ import styles from './Transcript.module.css'
 // was written. Only the pin/scrollTop half is protected by code inspection
 // alone.
 export function RoomScreen() {
-  const { rail, messages, roomEvents, room, hasMoreHistory, dockOpen } = useStore()
+  const { rail, messages, roomEvents, room, roomLoad, hasMoreHistory, dockOpen } = useStore()
   const delivery = useMemo(() => deliveryFor(roomEvents), [roomEvents])
   const railRoom = rail?.rooms.find((r) => r.name === room)
 
@@ -285,6 +285,24 @@ export function RoomScreen() {
         style={view === 'files' ? { display: 'none' } : undefined}
       >
         <div ref={content}>
+          {/* `messages.length === 0` alone is true whether the room is still
+              loading, the load failed, or the room is genuinely empty —
+              `roomLoad` disambiguates. A loading room renders nothing here (no
+              spinner in scope; an empty region for a moment beats a claim that
+              turns out false), a failed load says so with the files tab's own
+              failure styling, and only a `ready` room with no messages gets the
+              one-line empty state. */}
+          {roomLoad === 'failed' && (
+            <p className={filesStyles.failed}>could not load the transcript</p>
+          )}
+          {roomLoad === 'ready' && messages.length === 0 && (
+            // Normal, not an error: one line stating what is true, then stop.
+            // The handoff's example adds "two messages are queued for members
+            // who are offline", which cannot co-occur with an empty transcript
+            // — a queued message is a stored message in this room, so an empty
+            // room has none.
+            <p className={styles.emptyRoom}>Nothing said here yet.</p>
+          )}
           {messages.map((m, i) => {
             const prev = messages[i - 1]
             const newDay = !prev || day(prev.createdAt) !== day(m.createdAt)

@@ -10,6 +10,13 @@ export type State = {
   roomEvents: Event[]
   messages: Message[]
   room: string | null
+  // Distinguishes "no messages" from "haven't found out yet" and "couldn't
+  // find out" — `messages.length === 0` alone is true in all three cases
+  // (still loading, the fetch failed, or the room is genuinely empty), and a
+  // transcript rendering "Nothing said here yet." from that alone would state
+  // a fact the console does not actually know, on every room open and every
+  // failed fetch.
+  roomLoad: 'loading' | 'ready' | 'failed'
   connection: Connection
   hasMoreHistory: boolean
   loadingOlder: boolean
@@ -57,6 +64,7 @@ export function createStore(deps: {
     roomEvents: [],
     messages: [],
     room: null,
+    roomLoad: 'loading',
     connection: 'reconnecting',
     hasMoreHistory: false,
     loadingOlder: false,
@@ -203,6 +211,9 @@ export function createStore(deps: {
         roomEvents: [],
         hasMoreHistory: false,
         loadingOlder: false,
+        // Left 'loading' on the `!name` early return below — there is no room
+        // to have loaded, so neither 'ready' nor 'failed' would be true.
+        roomLoad: 'loading',
       })
       // Bumped on every path, including `null`: the generation marks "a new
       // selection has happened", and deselecting is a selection. Bumping it only
@@ -224,10 +235,17 @@ export function createStore(deps: {
         // A second selection may have landed while these were in flight; its own
         // fetches own the state, not ours.
         if (mine !== roomGeneration) return
-        setState({ messages, roomEvents, hasMoreHistory: messages.length === PAGE })
+        setState({
+          messages,
+          roomEvents,
+          hasMoreHistory: messages.length === PAGE,
+          roomLoad: 'ready',
+        })
       } catch {
         // Leave the empty transcript rather than a stale one. The connection pill
-        // already reports trouble.
+        // already reports trouble. Guarded the same way the success path is: a
+        // superseded load must not overwrite the state a newer selection owns.
+        if (mine === roomGeneration) setState({ roomLoad: 'failed' })
       }
     },
     async loadOlder() {
