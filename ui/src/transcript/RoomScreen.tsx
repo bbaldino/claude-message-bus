@@ -74,7 +74,8 @@ import styles from './Transcript.module.css'
 // was written. Only the pin/scrollTop half is protected by code inspection
 // alone.
 export function RoomScreen() {
-  const { rail, messages, roomEvents, room, roomLoad, hasMoreHistory, dockOpen } = useStore()
+  const { rail, messages, roomEvents, room, roomLoad, hasMoreHistory, dockOpen, connection } =
+    useStore()
   const delivery = useMemo(() => deliveryFor(roomEvents), [roomEvents])
   const railRoom = rail?.rooms.find((r) => r.name === room)
 
@@ -95,6 +96,68 @@ export function RoomScreen() {
       live = false
     }
   }, [room])
+
+  // Repairs the files list on the same signal the transcript repairs itself
+  // from (see `store.ts`'s `repairRoom`): the connection's transition *into*
+  // `'live'`, not the value itself, so a re-render that is already `'live'`
+  // does not refetch. `prevConnection` starts equal to `connection` on this
+  // component's first render — a fresh `RoomScreen` mounts per room (see
+  // `KeyedRoomScreen` in App.tsx) — so a room opened while already live never
+  // sees a false transition on mount, only a genuine flip counts.
+  //
+  // Gated on `filesFailed` rather than firing on every reconnect, for the
+  // same reason the store gates its own repair on `roomLoad === 'failed'`: a
+  // reconnect that finds a list which already loaded has nothing to repair.
+  // The two gates are independent on purpose — the files fetch and the
+  // transcript fetch are separate requests, and one can fail while the other
+  // succeeds.
+  const prevConnection = useRef(connection)
+  useEffect(() => {
+    const prev = prevConnection.current
+    prevConnection.current = connection
+    if (prev === 'live' || connection !== 'live' || !room || !filesFailed) return
+    let live = true
+    fetchRoomFiles(room)
+      .then((f) => {
+        if (!live) return
+        setFiles(f)
+        setFilesFailed(false)
+      })
+      .catch(() => live && setFilesFailed(true))
+    return () => {
+      live = false
+    }
+    // Deliberately keyed on `connection` alone — `room` and `filesFailed` are
+    // read fresh inside, not tracked as triggers, so a room switch (handled
+    // by the effect above) or files failing later cannot themselves re-run
+    // this one.
+  }, [connection])
+
+  // Refetches the files list when a `file_stored` event for this room
+  // arrives — otherwise the tab's count and table go stale against traffic
+  // the dock is already showing (see `src/bus/commands.rs`, which appends
+  // this event kind on every successful upload). `wasReady`/`prevTopId`
+  // together distinguish a genuine live push from the room's initial (or
+  // reconnect-repaired) event history landing in one batch: a batch replace
+  // arrives on the same tick `roomLoad` flips to `'ready'`, so `wasReady`
+  // (the *previous* tick's readiness) is still false for it, and it is
+  // treated as the new baseline rather than a trigger. Only once `roomLoad`
+  // has already been `'ready'` on a prior tick does a changed top id count as
+  // a real push.
+  const wasRoomReady = useRef(false)
+  const prevTopEventId = useRef<number | null>(null)
+  useEffect(() => {
+    const top = roomEvents[0] ?? null
+    const wasReady = wasRoomReady.current
+    wasRoomReady.current = roomLoad === 'ready'
+    const isNewTop =
+      wasReady && roomLoad === 'ready' && top !== null && top.id !== prevTopEventId.current
+    prevTopEventId.current = top?.id ?? null
+    if (!isNewTop || top?.kind !== 'file_stored' || !room) return
+    fetchRoomFiles(room)
+      .then(setFiles)
+      .catch(() => setFilesFailed(true))
+  }, [roomEvents, roomLoad, room])
 
   const scroller = useRef<HTMLDivElement>(null)
   const content = useRef<HTMLDivElement>(null)

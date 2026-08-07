@@ -79,7 +79,20 @@ export function createStore(deps: {
     notify()
   }
 
-  deps.live.on('connection', (p) => setState({ connection: p as Connection }))
+  // Repairs the open room's transcript on the transition *into* `'live'` —
+  // not on the value, so a re-render that is already `'live'` (the second of
+  // two back-to-back pushes, say) must not repair anything a second time.
+  // `repairRoom` (defined below, alongside `loadRoomInto`) is looked up at
+  // call time, once the connection genuinely flips, by which point the
+  // `const` further down in this function body has long since run — the
+  // forward reference here is only to where it's *written*, not to when it's
+  // evaluated.
+  deps.live.on('connection', (p) => {
+    const next = p as Connection
+    const wasLive = state.connection === 'live'
+    setState({ connection: next })
+    if (!wasLive && next === 'live') repairRoom()
+  })
 
   // Every push handler below narrows the frame against `FromBus`, the union
   // ts-rs generates from `src/proto.rs`. The single `as FromBus` sits at the
@@ -177,6 +190,57 @@ export function createStore(deps: {
 
   const PAGE = 100
 
+  // The actual fetch-and-apply behind both a fresh room selection and a
+  // reconnect repair (see `repairRoom`). `mine` is the `roomGeneration` this
+  // load belongs to — captured by the caller, not read fresh here, so a
+  // `selectRoom` snapshots the value it bumped to while a `repairRoom` (which
+  // never bumps the counter — it isn't a new selection) snapshots whatever is
+  // still current. Either way, the same check below discards a result that a
+  // newer selection has since superseded.
+  const loadRoomInto = async (name: string, mine: number) => {
+    try {
+      const [messages, roomEvents] = await Promise.all([
+        deps.fetchMessages(name, PAGE),
+        deps.fetchEvents({ room: name, limit: 500 }),
+      ])
+      // A second selection may have landed while these were in flight; its own
+      // fetches own the state, not ours.
+      if (mine !== roomGeneration) return
+      setState({
+        messages,
+        roomEvents,
+        hasMoreHistory: messages.length === PAGE,
+        roomLoad: 'ready',
+      })
+    } catch {
+      // Leave the empty transcript rather than a stale one. The connection pill
+      // already reports trouble. Guarded the same way the success path is: a
+      // superseded load must not overwrite the state a newer selection owns.
+      if (mine === roomGeneration) setState({ roomLoad: 'failed' })
+    }
+  }
+
+  // Retries the open room's load on a reconnect. Gated on `roomLoad ===
+  // 'failed'` rather than firing on every reconnect: a healthy reconnect
+  // finds a transcript that already loaded, and throwing a good one away to
+  // re-fetch it is exactly the yank the "N new below" affordance elsewhere in
+  // this app exists to avoid causing. A failed load, by contrast, has nothing
+  // to lose — the transcript is already showing a failure, so replacing it
+  // (on success) or leaving it (on another failure) are the only two
+  // outcomes, both fine.
+  //
+  // No `roomGeneration` bump here, deliberately: this isn't a new selection,
+  // it's a retry of the current one, so it reuses whatever generation is
+  // already current — same pattern `loadOlder` uses, for the same reason.
+  // That's what lets a room switch racing this repair win: `selectRoom` bumps
+  // the generation on its own, synchronous path, so by the time this repair's
+  // `loadRoomInto` checks it the switch has already invalidated it.
+  const repairRoom = () => {
+    const { room, roomLoad } = state
+    if (!room || roomLoad !== 'failed') return
+    void loadRoomInto(room, roomGeneration)
+  }
+
   // Shared by the poll timer and by any explicit caller (the delete modal, for
   // one) that wants the rail to reflect a change it just made rather than wait
   // out the rest of the 25s interval. Failure is intentionally silent here too:
@@ -227,26 +291,7 @@ export function createStore(deps: {
         return
       }
       deps.live.watchRoom(name)
-      try {
-        const [messages, roomEvents] = await Promise.all([
-          deps.fetchMessages(name, PAGE),
-          deps.fetchEvents({ room: name, limit: 500 }),
-        ])
-        // A second selection may have landed while these were in flight; its own
-        // fetches own the state, not ours.
-        if (mine !== roomGeneration) return
-        setState({
-          messages,
-          roomEvents,
-          hasMoreHistory: messages.length === PAGE,
-          roomLoad: 'ready',
-        })
-      } catch {
-        // Leave the empty transcript rather than a stale one. The connection pill
-        // already reports trouble. Guarded the same way the success path is: a
-        // superseded load must not overwrite the state a newer selection owns.
-        if (mine === roomGeneration) setState({ roomLoad: 'failed' })
-      }
+      await loadRoomInto(name, mine)
     },
     async loadOlder() {
       const { room, messages, hasMoreHistory, loadingOlder } = state

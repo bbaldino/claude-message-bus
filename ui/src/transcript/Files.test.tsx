@@ -1,5 +1,6 @@
 import { fireEvent, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import type { ReactElement } from 'react'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { renderWithStore, setStoreState } from '../testing/fakeStore'
 import { RoomScreen } from './RoomScreen'
@@ -30,7 +31,7 @@ const files = [
 ]
 
 function mockFiles(payload: unknown, status = 200) {
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     if (String(input).includes('/files')) {
       return new Response(status === 200 ? JSON.stringify(payload) : null, {
         status,
@@ -40,6 +41,13 @@ function mockFiles(payload: unknown, status = 200) {
     return new Response('[]', { headers: { 'content-type': 'application/json' } })
   })
 }
+
+const rerenderScreen = (rerender: (ui: ReactElement) => void) =>
+  rerender(
+    <MemoryRouter>
+      <RoomScreen />
+    </MemoryRouter>,
+  )
 
 beforeEach(() => vi.restoreAllMocks())
 
@@ -140,4 +148,133 @@ test('an appended message still counts toward unseen when the transcript measure
   )
 
   expect(await screen.findByText('1 new below')).toBeDefined()
+})
+
+test('a file_stored event for the open room refetches the files list', async () => {
+  mockFiles([])
+  const { rerender } = renderWithStore(<RoomScreen />, {
+    rail,
+    room: 'protocol',
+    messages: [],
+    roomLoad: 'ready',
+    roomEvents: [],
+  })
+  await screen.findByText('files · 0')
+
+  mockFiles(files)
+  setStoreState({
+    rail,
+    room: 'protocol',
+    messages: [],
+    roomLoad: 'ready',
+    roomEvents: [
+      {
+        id: 42,
+        kind: 'file_stored',
+        agent: 'caas',
+        room: 'protocol',
+        detail: { key: 'digest-report.json', size: 743, sha256: 'x' },
+        createdAt: 2,
+      },
+    ],
+  })
+  rerenderScreen(rerender)
+
+  expect(await screen.findByText('files · 1')).toBeDefined()
+})
+
+test('an event of another kind for the open room does not refetch the files list', async () => {
+  mockFiles(files)
+  const { rerender } = renderWithStore(<RoomScreen />, {
+    rail,
+    room: 'protocol',
+    messages: [],
+    roomLoad: 'ready',
+    roomEvents: [],
+  })
+  await screen.findByText('files · 1')
+
+  // If this wrongly refetches, the empty payload would flip the count to 0.
+  mockFiles([])
+  setStoreState({
+    rail,
+    room: 'protocol',
+    messages: [],
+    roomLoad: 'ready',
+    roomEvents: [
+      {
+        id: 43,
+        kind: 'message_sent',
+        agent: 'caas',
+        room: 'protocol',
+        detail: {},
+        createdAt: 3,
+      },
+    ],
+  })
+  rerenderScreen(rerender)
+
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(screen.getByText('files · 1')).toBeDefined()
+})
+
+test('a reconnect repairs the files list after a failed read', async () => {
+  mockFiles(null, 500)
+  const { rerender } = renderWithStore(<RoomScreen />, {
+    rail,
+    room: 'protocol',
+    messages: [],
+    connection: 'live',
+  })
+  await screen.findByText(/could not read the file list/)
+
+  mockFiles(files)
+  setStoreState({ rail, room: 'protocol', messages: [], connection: 'reconnecting' })
+  rerenderScreen(rerender)
+  setStoreState({ rail, room: 'protocol', messages: [], connection: 'live' })
+  rerenderScreen(rerender)
+
+  expect(await screen.findByText('files · 1')).toBeDefined()
+  expect(screen.queryByText(/could not read the file list/)).toBeNull()
+})
+
+test('a healthy reconnect does not refetch a files list that already succeeded', async () => {
+  mockFiles(files)
+  const { rerender } = renderWithStore(<RoomScreen />, {
+    rail,
+    room: 'protocol',
+    messages: [],
+    connection: 'live',
+  })
+  await screen.findByText('files · 1')
+
+  // If this wrongly refetches, the failing response would replace the good
+  // count with the failure line.
+  mockFiles(null, 500)
+  setStoreState({ rail, room: 'protocol', messages: [], connection: 'reconnecting' })
+  rerenderScreen(rerender)
+  setStoreState({ rail, room: 'protocol', messages: [], connection: 'live' })
+  rerenderScreen(rerender)
+
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(screen.getByText('files · 1')).toBeDefined()
+  expect(screen.queryByText(/could not read the file list/)).toBeNull()
+})
+
+test('a repair is a no-op when no room is selected', async () => {
+  mockFiles([])
+  const { rerender } = renderWithStore(<RoomScreen />, {
+    rail,
+    room: null,
+    messages: [],
+    connection: 'live',
+  })
+
+  setStoreState({ rail, room: null, messages: [], connection: 'reconnecting' })
+  rerenderScreen(rerender)
+  setStoreState({ rail, room: null, messages: [], connection: 'live' })
+  rerenderScreen(rerender)
+
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(screen.queryByText(/could not read the file list/)).toBeNull()
 })

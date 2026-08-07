@@ -28,6 +28,12 @@ beforeEach(() => {
   live = fakeLive()
 })
 
+// Flushes a macrotask, not just a microtask — the repair path chains a
+// `Promise.all` through a `.then`-equivalent `await`, which outlasts one or
+// two bare `Promise.resolve()` ticks. A `setTimeout(0)` reliably drains every
+// pending microtask ahead of it.
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
 test('a pushed event lands in the log', () => {
   const store = createStore({
     live,
@@ -385,4 +391,144 @@ test('an interleaved start()/stop()/start() during the initial fetch leaves no l
   } finally {
     vi.useRealTimers()
   }
+})
+
+test('a reconnect after a failed room load repairs the transcript', async () => {
+  // First call fails (the bus is down), second call (the repair) succeeds.
+  let call = 0
+  const messages = [msg(1)]
+  const events = [
+    { id: 9, kind: 'message_sent', agent: 'caas', room: 'protocol', detail: {}, createdAt: 1 },
+  ]
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: async () => {
+      call++
+      if (call === 1) throw new Error('boom')
+      return messages
+    },
+    fetchEvents: async () => events,
+  })
+  await store.selectRoom('protocol')
+  expect(store.getState().roomLoad).toBe('failed')
+
+  // A reconnect: the connection transitions into 'live'.
+  live.emit('connection', 'reconnecting')
+  live.emit('connection', 'live')
+  // The repair fetch is async; let it settle.
+  await flush()
+
+  expect(store.getState().roomLoad).toBe('ready')
+  expect(store.getState().messages).toEqual(messages)
+  expect(store.getState().roomEvents).toEqual(events)
+})
+
+test('a healthy reconnect does not refetch a transcript that already loaded', async () => {
+  let call = 0
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: async () => {
+      call++
+      return [msg(1)]
+    },
+    fetchEvents: async () => [],
+  })
+  await store.selectRoom('protocol')
+  expect(call).toBe(1)
+  expect(store.getState().roomLoad).toBe('ready')
+
+  live.emit('connection', 'reconnecting')
+  live.emit('connection', 'live')
+  await flush()
+
+  // The transcript already loaded successfully — a reconnect must not throw
+  // it away and refetch.
+  expect(call).toBe(1)
+})
+
+test('a reconnect repair is a no-op when no room is selected', async () => {
+  let call = 0
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: async () => {
+      call++
+      return []
+    },
+    fetchEvents: async () => [],
+  })
+  live.emit('connection', 'reconnecting')
+  live.emit('connection', 'live')
+  await flush()
+  expect(call).toBe(0)
+  expect(store.getState().room).toBeNull()
+})
+
+test('re-rendering at live (no transition) does not repair anything', async () => {
+  let call = 0
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: async () => {
+      call++
+      if (call === 1) throw new Error('boom')
+      return [msg(1)]
+    },
+    fetchEvents: async () => [],
+  })
+  await store.selectRoom('protocol')
+  expect(store.getState().roomLoad).toBe('failed')
+  expect(call).toBe(1)
+
+  // Already 'live' from store creation's default state ('reconnecting')...
+  // emit 'live' once to actually transition, then emit 'live' again with no
+  // change in between — the second emit is a re-render at the same value,
+  // not a transition, and must not trigger a second repair on top of the
+  // first (which is still in flight when the second 'live' lands, since no
+  // await has happened yet).
+  live.emit('connection', 'live')
+  live.emit('connection', 'live')
+  await flush()
+
+  expect(call).toBe(2)
+  expect(store.getState().roomLoad).toBe('ready')
+})
+
+test('a reconnect repair racing a newer room switch does not overwrite it', async () => {
+  // 'protocol' failed to load. A reconnect fires the repair fetch for
+  // 'protocol', but before it resolves the operator switches to 'other'.
+  // The stale repair landing afterwards must not stamp over 'other'.
+  let resolveRepair: (messages: ReturnType<typeof msg>[]) => void = () => {}
+  let protocolCalls = 0
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: async (room) => {
+      if (room === 'protocol') {
+        protocolCalls++
+        if (protocolCalls === 1) throw new Error('boom')
+        return new Promise<ReturnType<typeof msg>[]>((resolve) => {
+          resolveRepair = resolve
+        })
+      }
+      return [msg(2)]
+    },
+    fetchEvents: async () => [],
+  })
+  await store.selectRoom('protocol')
+  expect(store.getState().roomLoad).toBe('failed')
+
+  live.emit('connection', 'reconnecting')
+  live.emit('connection', 'live')
+  await flush() // let the repair's fetch call happen (still pending)
+
+  await store.selectRoom('other')
+  resolveRepair([msg(1)])
+  await flush()
+
+  expect(store.getState().room).toBe('other')
+  expect(store.getState().messages).toEqual([msg(2)])
+  expect(store.getState().roomLoad).toBe('ready')
 })
