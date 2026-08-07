@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useStore, store } from '../useStore'
+import { canSubmit } from './canSubmit'
 import { readSendAs, writeSendAs } from './identity'
 import styles from './Composer.module.css'
 
@@ -9,7 +10,10 @@ import styles from './Composer.module.css'
 /// The delete modal shipped the inverse in a previous phase — the control was
 /// correctly disabled while `Enter` called the action directly, and the action
 /// carried only half the guard, so `Enter` deleted an agent the UI had already
-/// refused to delete. Two paths reach one action here too.
+/// refused to delete. Two paths reach one action here too. The precondition
+/// itself lives in `canSubmit` (pure, tested directly) rather than inline here
+/// — see its comment for why a component-level test of the `!name` branch
+/// would be vacuous in this render structure.
 export function Composer({ room }: { room: string }) {
   const { drafts, rail, sendAs } = useStore()
   const [name, setName] = useState(() => readSendAs())
@@ -19,8 +23,7 @@ export function Composer({ room }: { room: string }) {
   const text = drafts[room] ?? ''
 
   const submit = () => {
-    if (!name) return
-    if (!text.trim()) return
+    if (!canSubmit(name, text)) return
     void store.send(room, text, done)
     setDone(false)
   }

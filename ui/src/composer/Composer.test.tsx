@@ -32,13 +32,18 @@ test('Enter sends and Shift+Enter does not', () => {
   expect(storeActions.send).toHaveBeenCalledWith('protocol', 'hello', false)
 })
 
-test('Enter cannot send with no name set, even though the box is hidden', () => {
-  // THE GUARD LIVES IN THE ACTION, NOT ON THE CONTROL. This is the exact shape of
-  // the delete modal's Critical: the button was correctly disabled while Enter
-  // called submit() directly, and submit() carried only half the guard.
+test('with no name set, there is no message control to reach submit through', () => {
+  // Not a test of the `!name` guard in `canSubmit` — that's `canSubmit.test.ts`,
+  // which exercises the predicate directly. What this asserts is narrower and
+  // literally true: until a name is set, neither the textarea nor the send
+  // button is mounted, so there is no control an operator (or a stray keydown)
+  // could use to reach `submit` in the first place. Firing `keyDown` at the
+  // `send-as` field proves nothing here — it has no keydown handler wired to
+  // it, so this would pass whether or not any guard existed, which is exactly
+  // the false confidence a previous version of this test gave.
   renderWithStore(<Composer room="protocol" />, { drafts: { protocol: 'hello' } })
-  fireEvent.keyDown(screen.getByLabelText('send as'), { key: 'Enter' })
-  expect(storeActions.send).not.toHaveBeenCalled()
+  expect(screen.queryByLabelText('message')).toBeNull()
+  expect(screen.queryByRole('button', { name: /send/i })).toBeNull()
 })
 
 test('Enter does not send an empty or whitespace-only draft', () => {
