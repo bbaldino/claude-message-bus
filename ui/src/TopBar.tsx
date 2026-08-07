@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { fetchMeta } from './data/api'
 import type { Meta } from './types/Meta'
+import { isTypingTarget } from './ui/platform'
 import { useStore } from './useStore'
 import styles from './TopBar.module.css'
 
@@ -39,15 +40,7 @@ export function TopBar({ value = '', onChange = () => {} }: Props) {
     // after this handler and inserts it.
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== '/') return
-      const active = document.activeElement
-      const tag = active?.tagName
-      if (
-        tag === 'INPUT' ||
-        tag === 'TEXTAREA' ||
-        (active as HTMLElement | null)?.isContentEditable
-      ) {
-        return
-      }
+      if (isTypingTarget(e.target)) return
       e.preventDefault()
       searchRef.current?.focus()
     }

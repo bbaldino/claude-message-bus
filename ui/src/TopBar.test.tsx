@@ -57,6 +57,23 @@ test('pressing / focuses the search field', () => {
   expect(document.activeElement).toBe(input)
 })
 
+test('pressing / does not steal the keystroke while a different text field has focus', () => {
+  // Mirrors the dock's equivalent test for its own chord: the check has to be
+  // `isTypingTarget`, shared with every other global shortcut, not a
+  // component-local re-implementation that only knows about its own field.
+  render(
+    <>
+      <input data-testid="field" />
+      <TopBar />
+    </>,
+  )
+  const field = screen.getByTestId('field')
+  field.focus()
+  const notCancelled = fireEvent.keyDown(field, { key: '/', bubbles: true })
+  expect(notCancelled).toBe(true)
+  expect(document.activeElement).toBe(field)
+})
+
 test('pressing / while the search field already has focus does not steal the keystroke', () => {
   render(<TopBar />)
   const input = screen.getByPlaceholderText(/search/)
