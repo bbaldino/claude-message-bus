@@ -298,6 +298,16 @@ pub async fn delete_with_origin(port: u16, path: &str, origin: &str) -> u16 {
     status_of(&raw)
 }
 
+/// DELETE `path` with no `Origin` header at all — like curl, or any
+/// non-browser caller. The same-origin check must allow this: such a caller
+/// could already reach the port directly, so refusing it buys nothing. See
+/// `origin_matches_host`'s doc comment and `src/web/mod.rs`'s module doc.
+/// Returns just the status code.
+pub async fn delete_no_origin(port: u16, path: &str) -> u16 {
+    let raw = delete_raw(port, path, None).await;
+    status_of(&raw)
+}
+
 /// Same as `wait_until`, but with an explicit deadline instead of the 5s
 /// default — used by `wait_until_bus_ready`, which wants longer.
 pub async fn wait_until_timeout<F, Fut>(timeout: std::time::Duration, f: F) -> bool

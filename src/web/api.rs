@@ -505,8 +505,18 @@ pub(crate) async fn agent_deletion_preview(
 /// Guards run in the order that lets each one narrow what the next has to
 /// handle, mirroring `delete_agent_perform` next door:
 ///
-/// 1. **Cross-origin.** Checked via `origin_matches_host` before anything else
-///    is read.
+/// 1. **Cross-origin.** A request whose `Origin` disagrees with `Host` is
+///    refused; a request with *no* `Origin` at all (curl, scripts) is
+///    allowed, since it could already reach the port directly — refusing it
+///    buys nothing. Same rule as the HTML path's `POST`, and for the same
+///    reason (see the module doc), even though the mechanism it defends
+///    against doesn't transfer: `DELETE` isn't a CORS-safelisted method, so a
+///    browser preflights it and a plain cross-origin `<form>` or no-CORS
+///    `fetch` can't forge it the way a `POST` can. The check is kept anyway,
+///    for parity with the HTML path and as a second line of defence. `Host`
+///    absent — a malformed HTTP/1.1 request — is treated as an empty string,
+///    which no real `Origin` matches, so a present `Origin` is refused rather
+///    than silently waved through.
 /// 2. **Unknown name**, looked up here rather than trusted from the preview —
 ///    it is what stops any name at all from forging an `agent_deleted` event,
 ///    and the row it returns supplies the `host` this event carries, matching
@@ -521,12 +531,14 @@ pub(crate) async fn agent_delete(
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> StatusCode {
-    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
-    let host = headers.get("host").and_then(|v| v.to_str().ok());
-    match (origin, host) {
-        // A same-origin fetch from the console always sends Origin on DELETE.
-        (Some(o), Some(h)) if crate::web::origin_matches_host(o, h) => {}
-        _ => return StatusCode::FORBIDDEN,
+    if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
+        let host = headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if !crate::web::origin_matches_host(origin, host) {
+            return StatusCode::FORBIDDEN;
+        }
     }
 
     let row = match app.store.agents().await {

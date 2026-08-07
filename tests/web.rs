@@ -2113,6 +2113,24 @@ async fn deleting_an_offline_agent_removes_it() {
 }
 
 #[tokio::test]
+async fn deleting_with_no_origin_header_succeeds() {
+    // A request with no Origin at all — curl, a script — is allowed, mirroring
+    // the HTML path's `POST`: it could already reach the port directly, so
+    // refusing it buys nothing. Ships untested in neither direction until
+    // now, which is exactly what let the stricter, brief-supplied "Origin and
+    // Host both required" check land unnoticed.
+    let (_d, port) = common::start_bus().await;
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await;
+    drop(caas);
+    common::wait_until(|| async { !common::agent_is_online(port, "caas").await }).await;
+
+    let status = common::delete_no_origin(port, "/api/agents/caas").await;
+    assert_eq!(status, 204);
+    assert_eq!(common::get_status(port, "/api/agents/caas").await, 404);
+}
+
+#[tokio::test]
 async fn deleting_an_online_agent_is_refused_and_changes_nothing() {
     // The race this endpoint exists to lose safely: the client believed the
     // agent was offline, and it is not.
