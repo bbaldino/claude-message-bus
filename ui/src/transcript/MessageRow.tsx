@@ -11,10 +11,12 @@ export function MessageRow({
   message,
   host,
   delivery,
+  narrow,
 }: {
   message: Message
   host: string | null
   delivery: Delivery | undefined
+  narrow?: boolean
 }) {
   return (
     <div className={styles.row} data-testid="message-row">
@@ -30,7 +32,7 @@ export function MessageRow({
             <span className={styles.host}>{host}</span>
           )}
         </div>
-        <MessageBody body={message.body} />
+        <MessageBody body={message.body} narrow={narrow} />
         <div className={styles.meta}>
           <span className={styles.seq}>#{message.id}</span>
           {delivery && delivery.deliveredTo.length > 0 && (

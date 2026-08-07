@@ -1,7 +1,13 @@
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { expect, test, vi } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 import { RoomScreen } from './RoomScreen'
+import styles from './Transcript.module.css'
+
+// Mutable, like the dock's own test: `dockOpen` drives the same narrow/push
+// decision in both RoomScreen and EventsDock, and this pins that RoomScreen
+// reads it from the store rather than tracking its own copy.
+let dockOpen = false
 
 const base = {
   rail: {
@@ -67,9 +73,13 @@ const base = {
 }
 
 vi.mock('../useStore', () => ({
-  useStore: () => base,
+  useStore: () => ({ ...base, dockOpen }),
   store: { loadOlder: vi.fn() },
 }))
+
+beforeEach(() => {
+  dockOpen = false
+})
 
 const renderScreen = () =>
   render(
@@ -111,4 +121,20 @@ test('a done message shows the done chip without the prototype gloss', () => {
 test('a date divider opens the day', () => {
   renderScreen()
   expect(screen.getAllByTestId('date-divider').length).toBeGreaterThan(0)
+})
+
+test('the transcript body narrows when the dock is open, driven by the store value', () => {
+  dockOpen = true
+  renderScreen()
+  const bodies = document.querySelectorAll(`.${styles.body}`)
+  expect(bodies.length).toBeGreaterThan(0)
+  bodies.forEach((el) => expect(el.classList.contains(styles.bodyNarrow)).toBe(true))
+})
+
+test('the transcript body stays wide when the dock is closed', () => {
+  dockOpen = false
+  renderScreen()
+  const bodies = document.querySelectorAll(`.${styles.body}`)
+  expect(bodies.length).toBeGreaterThan(0)
+  bodies.forEach((el) => expect(el.classList.contains(styles.bodyNarrow)).toBe(false))
 })

@@ -6,7 +6,7 @@
 
 .shellBody {
   display: grid;
-  grid-template-columns: var(--rail-width) 1fr;
+  grid-template-columns: var(--rail-width) 1fr auto;
   min-height: 0;
 }
 

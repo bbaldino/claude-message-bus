@@ -146,6 +146,10 @@
   margin-top: 3px;
 }
 
+.bodyNarrow {
+  max-width: 66ch;
+}
+
 .para {
   margin: 0 0 10px;
 }

@@ -9,7 +9,7 @@ import styles from './Transcript.module.css'
 const day = (ms: number) => new Date(ms).toLocaleDateString([], { day: 'numeric', month: 'long' })
 
 export function RoomScreen() {
-  const { rail, messages, roomEvents, room, hasMoreHistory } = useStore()
+  const { rail, messages, roomEvents, room, hasMoreHistory, dockOpen } = useStore()
   const delivery = useMemo(() => deliveryFor(roomEvents), [roomEvents])
   const railRoom = rail?.rooms.find((r) => r.name === room)
 
@@ -80,6 +80,7 @@ export function RoomScreen() {
                 message={m}
                 host={rail?.agents.find((a) => a.name === m.from)?.host ?? null}
                 delivery={delivery.get(m.id)}
+                narrow={dockOpen}
               />
             </div>
           )

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Outlet, useMatch, useParams } from 'react-router-dom'
+import { EventsDock } from './dock/EventsDock'
 import { Rail } from './rail/Rail'
 import { TopBar } from './TopBar'
 import { store } from './useStore'
@@ -49,6 +50,7 @@ export function Shell() {
         <main className={styles.shellMain}>
           <Outlet />
         </main>
+        <EventsDock />
       </div>
     </div>
   )

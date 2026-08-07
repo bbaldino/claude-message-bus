@@ -21,9 +21,9 @@ function Inlines({ text }: { text: string }) {
 /// Every fragment below is a React element, so message text is escaped by
 /// construction. There is no `dangerouslySetInnerHTML` here and there must never
 /// be: the bus is unauthenticated, and this is where arbitrary text is rendered.
-export function MessageBody({ body }: { body: string }) {
+export function MessageBody({ body, narrow }: { body: string; narrow?: boolean }) {
   return (
-    <div className={styles.body}>
+    <div className={`${styles.body} ${narrow ? styles.bodyNarrow : ''}`}>
       {parseBlocks(body).map((block, i) => {
         if (block.kind === 'code') {
           return (
