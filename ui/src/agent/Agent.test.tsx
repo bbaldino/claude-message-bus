@@ -61,3 +61,20 @@ test('a version matching the bus says so; a differing one gets the differs badge
   expect(await screen.findByText(/matches bus/)).toBeDefined()
   expect(screen.queryByText('differs')).toBeNull()
 })
+
+test('a version that differs from the bus renders the differs badge, not matches bus', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    if (url.includes('/api/meta')) {
+      return new Response(JSON.stringify({ host: 'hardac', version: '0.3.3' }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ ...detail, version: '0.2.9' }), {
+      headers: { 'content-type': 'application/json' },
+    })
+  })
+  renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
+  expect(await screen.findByText('differs')).toBeDefined()
+  expect(screen.queryByText(/matches bus/)).toBeNull()
+})

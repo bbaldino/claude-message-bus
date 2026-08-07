@@ -6,9 +6,9 @@ import { TopBar } from './TopBar'
 import { store } from './useStore'
 import styles from './Shell.module.css'
 
-/// The main pane for routes with no screen of their own yet — the index route
-/// and the agent route (2d). The room route no longer lands here; it has its
-/// own screen now.
+/// The main pane for routes with no screen of their own yet — currently just
+/// the index route. The room and agent routes no longer land here; both have
+/// their own screens now.
 export function MainPlaceholder() {
   const { name } = useParams()
   return (

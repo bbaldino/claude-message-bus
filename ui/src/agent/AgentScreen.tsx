@@ -20,6 +20,15 @@ export function AgentScreen({ name: nameProp }: { name?: string }) {
     let live = true
     setAgent(null)
     setError(null)
+    // A second deliberate exception to "components subscribe to the store;
+    // nothing fetches on its own" (see useStore.ts and TopBar's `fetchMeta`
+    // effect, the first exception). Safe here for the same reason: agent
+    // detail has exactly one consumer (this screen) and is fetched once per
+    // screen visit — there is no second view for it to disagree with. That
+    // stops being true the moment either of two things happens: a second
+    // consumer of agent detail appears, or this screen wants to update live
+    // while open (e.g. reflect a room join without a manual refresh) — either
+    // one means this belongs in the store instead.
     fetchAgent(name)
       .then((a) => live && setAgent(a))
       .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)))
