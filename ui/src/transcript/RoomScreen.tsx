@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { fetchRoomFiles } from '../data/api'
 import { deliveryFor } from '../data/delivery'
-import { day } from '../ui/time'
+import type { RoomFile } from '../types/RoomFile'
+import { day, useTicker } from '../ui/time'
 import { store, useStore } from '../useStore'
+import filesStyles from './Files.module.css'
+import { FilesTable } from './FilesTable'
 import { MessageRow } from './MessageRow'
 import { RoomHeader } from './RoomHeader'
+import { RoomTabs } from './RoomTabs'
 import { classifyArrival, isAtBottom, scrollAction, shouldLoadOlder } from './scroll'
 import styles from './Transcript.module.css'
 
@@ -51,6 +56,25 @@ export function RoomScreen() {
   const { rail, messages, roomEvents, room, hasMoreHistory, dockOpen } = useStore()
   const delivery = useMemo(() => deliveryFor(roomEvents), [roomEvents])
   const railRoom = rail?.rooms.find((r) => r.name === room)
+  const now = useTicker(1000)
+
+  const [view, setView] = useState<'transcript' | 'files'>('transcript')
+  const [files, setFiles] = useState<RoomFile[] | null>(null)
+  const [filesFailed, setFilesFailed] = useState(false)
+
+  // Fetched when the room opens, not when the tab is clicked: the count lives
+  // in the tab label, and a lazy fetch could not fill it.
+  useEffect(() => {
+    let live = true
+    setFiles(null)
+    setFilesFailed(false)
+    fetchRoomFiles(room ?? '')
+      .then((f) => live && setFiles(f))
+      .catch(() => live && setFilesFailed(true))
+    return () => {
+      live = false
+    }
+  }, [room])
 
   const scroller = useRef<HTMLDivElement>(null)
   const content = useRef<HTMLDivElement>(null)
@@ -204,7 +228,21 @@ export function RoomScreen() {
   return (
     <div className={styles.screen}>
       {railRoom && <RoomHeader room={railRoom} agents={rail?.agents ?? []} />}
-      <div className={styles.transcript} ref={scroller} onScroll={onScroll}>
+      <RoomTabs view={view} onView={setView} count={filesFailed ? null : (files?.length ?? null)} />
+      {/* Not gated on `view`: a failed read is worth surfacing without
+          requiring the tab to be opened, the same reasoning that puts the
+          count in the tab label itself. */}
+      {filesFailed && <p className={filesStyles.failed}>could not read the file list</p>}
+      {/* The transcript stays mounted (merely hidden) rather than being
+          unmounted on tab switch: `scroller`/`content` and every effect above
+          that depends on them assume this node's lifetime spans the whole
+          room, not just the transcript tab being active. */}
+      <div
+        className={styles.transcript}
+        ref={scroller}
+        onScroll={onScroll}
+        style={view === 'files' ? { display: 'none' } : undefined}
+      >
         <div ref={content}>
           {messages.map((m, i) => {
             const prev = messages[i - 1]
@@ -229,7 +267,8 @@ export function RoomScreen() {
           })}
         </div>
       </div>
-      {unseen > 0 && (
+      {view === 'files' && files !== null && <FilesTable files={files} now={now} />}
+      {view === 'transcript' && unseen > 0 && (
         <button
           className={styles.newBelow}
           onClick={() => {

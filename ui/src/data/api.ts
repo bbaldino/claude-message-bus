@@ -4,6 +4,7 @@ import type { Message } from '../types/Message'
 import type { Event } from '../types/Event'
 import type { AgentDetail } from '../types/AgentDetail'
 import type { DeletionPreview } from '../types/DeletionPreview'
+import type { RoomFile } from '../types/RoomFile'
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -37,3 +38,6 @@ export const fetchAgent = (name: string) =>
 
 export const fetchDeletionPreview = (name: string) =>
   getJson<DeletionPreview>(`/api/agents/${encodeURIComponent(name)}/deletion`)
+
+export const fetchRoomFiles = (room: string) =>
+  getJson<RoomFile[]>(`/api/rooms/${encodeURIComponent(room)}/files`)
