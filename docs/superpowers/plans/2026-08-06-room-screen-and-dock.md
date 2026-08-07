@@ -1708,10 +1708,11 @@ export function EventsDock() {
   // A scope switch swaps the entire list, so its length change is not arrivals.
   // Rebase rather than counting it, or toggling the segmented control would
   // inflate the badge.
+  // Deliberately keyed on `scope` alone: this must fire when the scope changes
+  // and not when the list it points at grows.
   useEffect(() => {
     prevLen.current = source.length
     setUnseen(0)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope])
 
   useEffect(() => {
