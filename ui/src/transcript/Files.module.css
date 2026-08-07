@@ -72,10 +72,25 @@
   border-bottom: 1px solid var(--border-hairline);
 }
 
+/* The handoff bleeds the row hover to the section edge with a negative margin
+   on the row itself; a `display: contents` row has no box to carry that. The
+   closest equivalent under this structure is to put the same trick on the
+   two edge cells only — pad back out to where the container's own padding
+   put the text, then pull the box left/right by that same amount so the
+   hover background (painted per-cell, see `.row:hover > *` above) reaches the
+   table's outer edge instead of stopping at the 24px inset. This only
+   reaches the two outer edges: the 14px gutters between the four columns
+   stay uncovered, since that gap is the grid's `gap`, not a cell's own box,
+   and there is no per-cell way to paint into a space that belongs to
+   neither cell. */
 .keyCell {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  padding-left: 24px;
+  margin-left: -24px;
+  border-top-left-radius: 5px;
+  border-bottom-left-radius: 5px;
 }
 
 .key {
@@ -119,6 +134,11 @@
   font-weight: 400;
   font-size: 10.5px;
   color: var(--text-dimmer);
+  /* The right-edge half of the bleed described above `.keyCell`. */
+  padding-right: 24px;
+  margin-right: -24px;
+  border-top-right-radius: 5px;
+  border-bottom-right-radius: 5px;
 }
 
 /* An empty room is a normal state, not an error: one line stating what is

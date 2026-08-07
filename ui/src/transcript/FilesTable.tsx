@@ -1,5 +1,5 @@
 import type { RoomFile } from '../types/RoomFile'
-import { age } from '../ui/time'
+import { age, useTicker } from '../ui/time'
 import styles from './Files.module.css'
 
 /// Bytes at the precision a reader scans for, not the precision a machine
@@ -35,4 +35,15 @@ export function FilesTable({ files, now }: { files: RoomFile[]; now: number }) {
       ))}
     </div>
   )
+}
+
+/// Owns its own tick rather than taking `now` from `RoomScreen`: `now` has
+/// exactly one consumer (this pane), and hoisting `useTicker` into `RoomScreen`
+/// would re-render the whole room screen — including the transcript's markdown
+/// reparse, even while it sits hidden behind the `files` tab — once a second.
+/// Scoping the ticker here means the once-a-second render stays inside this
+/// small subtree.
+export function FilesPane({ files }: { files: RoomFile[] }) {
+  const now = useTicker(1000)
+  return <FilesTable files={files} now={now} />
 }

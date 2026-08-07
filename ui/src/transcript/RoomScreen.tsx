@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchRoomFiles } from '../data/api'
 import { deliveryFor } from '../data/delivery'
 import type { RoomFile } from '../types/RoomFile'
-import { day, useTicker } from '../ui/time'
+import { day } from '../ui/time'
 import { store, useStore } from '../useStore'
 import filesStyles from './Files.module.css'
-import { FilesTable } from './FilesTable'
+import { FilesPane } from './FilesTable'
 import { MessageRow } from './MessageRow'
 import { RoomHeader } from './RoomHeader'
 import { RoomTabs } from './RoomTabs'
@@ -52,11 +52,24 @@ import styles from './Transcript.module.css'
 // there is no room-switch-during-load-older test for this component in the
 // suite. That path is protected by code inspection only; a refactor here
 // will not be caught by `npm test`.
+//
+// A second, more load-bearing coverage gap: the files tab hides this scroller
+// with `display: none` rather than unmounting it (see the note by the
+// scroller below), and a hidden element reports 0 for `scrollTop`,
+// `scrollHeight` and `clientHeight`. Both the messages effect and the
+// ResizeObserver guard against measuring a collapsed box (`el.clientHeight ===
+// 0`), because an unguarded read there always classifies as "already at the
+// bottom" and forces `atBottom.current = true` regardless of where the reader
+// actually was — exactly the yank this file's whole invariant exists to
+// prevent. jsdom reports zero layout dimensions unconditionally, hidden or
+// not, so it cannot distinguish a genuinely-collapsed box from this guard
+// doing nothing at all: a test suite built on jsdom cannot exercise this path
+// either way, in the visible or the hidden case. It is protected by code
+// inspection only.
 export function RoomScreen() {
   const { rail, messages, roomEvents, room, hasMoreHistory, dockOpen } = useStore()
   const delivery = useMemo(() => deliveryFor(roomEvents), [roomEvents])
   const railRoom = rail?.rooms.find((r) => r.name === room)
-  const now = useTicker(1000)
 
   const [view, setView] = useState<'transcript' | 'files'>('transcript')
   const [files, setFiles] = useState<RoomFile[] | null>(null)
@@ -117,18 +130,31 @@ export function RoomScreen() {
         atBottom.current = true
         setUnseen(0)
       } else if (arrival.kind === 'append') {
-        const action = scrollAction({
-          scrollTop: el.scrollTop,
-          scrollHeight: el.scrollHeight,
-          clientHeight: el.clientHeight,
-          grew: true,
-        })
-        if (action === 'pin') {
-          el.scrollTop = el.scrollHeight
-          lastScrollTop.current = el.scrollTop
-          atBottom.current = true
+        if (el.clientHeight === 0) {
+          // The files tab is active, which hides this element (`display:
+          // none`) rather than unmounting it — see the note by the scroller
+          // below. A hidden element reports 0 for scrollTop/scrollHeight/
+          // clientHeight, so `scrollAction` below would always read that as
+          // "already at the bottom" and force a 'pin', corrupting
+          // `atBottom.current` for a reader who had actually scrolled away.
+          // Leave `atBottom`/`scrollTop` untouched; still count the arrival so
+          // the "N new below" affordance is correct once the reader returns,
+          // rather than a message going missing from the count.
+          setUnseen((n) => n + arrival.count)
+        } else {
+          const action = scrollAction({
+            scrollTop: el.scrollTop,
+            scrollHeight: el.scrollHeight,
+            clientHeight: el.clientHeight,
+            grew: true,
+          })
+          if (action === 'pin') {
+            el.scrollTop = el.scrollHeight
+            lastScrollTop.current = el.scrollTop
+            atBottom.current = true
+          }
+          if (action === 'notify') setUnseen((n) => n + arrival.count)
         }
-        if (action === 'notify') setUnseen((n) => n + arrival.count)
       }
       // 'none' covers a prepend (or no change); scroll-position restoration for
       // a prepend is handled in onScroll, not here.
@@ -155,6 +181,14 @@ export function RoomScreen() {
     const contentEl = content.current
     if (!el || !contentEl || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
+      // Same hazard as the messages effect above: while the files tab hides
+      // this element, it resizes to 0 and fires here with nothing real to
+      // measure. Skipping on a collapsed box is cause-agnostic — it also
+      // covers a resize this component didn't cause — and, critically, means
+      // `atBottom.current` is never read here in a state a hidden element
+      // could have corrupted, because the append-branch guard above never
+      // wrote to it while hidden either.
+      if (el.clientHeight === 0) return
       if (atBottom.current) {
         el.scrollTop = el.scrollHeight
         lastScrollTop.current = el.scrollTop
@@ -267,7 +301,7 @@ export function RoomScreen() {
           })}
         </div>
       </div>
-      {view === 'files' && files !== null && <FilesTable files={files} now={now} />}
+      {view === 'files' && files !== null && <FilesPane files={files} />}
       {view === 'transcript' && unseen > 0 && (
         <button
           className={styles.newBelow}
