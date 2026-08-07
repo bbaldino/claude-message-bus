@@ -13,7 +13,7 @@ export function MainPlaceholder() {
   const { name } = useParams()
   return (
     <p className={styles.shellPlaceholder} data-testid="main-placeholder">
-      {name ? `selected: ${name}` : 'select a room or agent'}
+      {name ? `agent: ${name} — screen arrives with the detail phase` : 'select a room or agent'}
     </p>
   )
 }
