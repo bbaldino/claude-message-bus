@@ -14,8 +14,13 @@ async function getJson<T>(path: string): Promise<T> {
 export const fetchRail = () => getJson<RailSummary>('/api/rail')
 export const fetchMeta = () => getJson<Meta>('/api/meta')
 
-export const fetchMessages = (room: string, limit = 100) =>
-  getJson<Message[]>(`/api/rooms/${encodeURIComponent(room)}/messages?limit=${limit}`)
+export const fetchMessages = (room: string, limit = 100, before?: number) => {
+  const p = new URLSearchParams({ limit: String(limit) })
+  // The endpoint has accepted `before` since the data-layer phase; only this
+  // client omitted it. Absent means "the most recent `limit`".
+  if (before !== undefined) p.set('before', String(before))
+  return getJson<Message[]>(`/api/rooms/${encodeURIComponent(room)}/messages?${p}`)
+}
 
 export const fetchEvents = (opts: { room?: string; kind?: string; limit?: number } = {}) => {
   const p = new URLSearchParams()

@@ -7,9 +7,13 @@ import type { Connection } from './live'
 export type State = {
   rail: RailSummary | null
   events: Event[]
+  roomEvents: Event[]
   messages: Message[]
   room: string | null
   connection: Connection
+  hasMoreHistory: boolean
+  loadingOlder: boolean
+  dockOpen: boolean
 }
 
 type Live = {
@@ -20,16 +24,28 @@ type Live = {
   stop(): void
 }
 
+const DOCK_OPEN_KEY = 'claude-bus.dockOpen'
+
 /// One store rather than per-screen hooks: presence and events feed the rail, the
 /// dock, the unseen badge and the transcript at once, and separate subscriptions
 /// to one stream would let them disagree about what is current.
-export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSummary> }) {
+export function createStore(deps: {
+  live: Live
+  fetchRail: () => Promise<RailSummary>
+  fetchMessages: (room: string, limit?: number, before?: number) => Promise<Message[]>
+  fetchEvents: (opts: { room?: string; kind?: string; limit?: number }) => Promise<Event[]>
+}) {
   let state: State = {
     rail: null,
     events: [],
+    roomEvents: [],
     messages: [],
     room: null,
     connection: 'reconnecting',
+    hasMoreHistory: false,
+    loadingOlder: false,
+    // Defaults to false, per the design: the dock is closed until asked for.
+    dockOpen: localStorage.getItem(DOCK_OPEN_KEY) === 'true',
   }
   const subs = new Set<() => void>()
   const notify = () => subs.forEach((f) => f())
@@ -64,7 +80,13 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
       detail: frame.detail,
       createdAt: frame.created_at,
     }
-    setState({ events: [event, ...state.events].slice(0, 500) })
+    setState({
+      events: [event, ...state.events].slice(0, 500),
+      roomEvents:
+        event.room && event.room === state.room
+          ? [event, ...state.roomEvents].slice(0, 500)
+          : state.roomEvents,
+    })
   })
 
   deps.live.on('message', (p) => {
@@ -123,6 +145,14 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
   // ever having cleared the first one.
   let generation = 0
 
+  // Bumped by every `selectRoom()`, separately from `generation` above: that one
+  // guards `start()`/`stop()` races against the rail poll, this one guards room
+  // selection races against the history/events fetch. Sharing a counter would
+  // make a rail refresh cancel an in-flight room load, and vice versa.
+  let roomGeneration = 0
+
+  const PAGE = 100
+
   return {
     getState: () => state,
     setState,
@@ -136,13 +166,47 @@ export function createStore(deps: { live: Live; fetchRail: () => Promise<RailSum
     // unwatching the old one as a side effect of watching the new one) — it's
     // "watch nothing", which needs its own call so the console never stays
     // subscribed to a room the operator has navigated away from.
-    selectRoom(name: string | null) {
-      setState({ room: name, messages: [] })
-      if (name) {
-        deps.live.watchRoom(name)
-      } else {
+    async selectRoom(name: string | null) {
+      setState({ room: name, messages: [], roomEvents: [], hasMoreHistory: false })
+      if (!name) {
         deps.live.unwatchRoom()
+        return
       }
+      deps.live.watchRoom(name)
+      const mine = ++roomGeneration
+      try {
+        const [messages, roomEvents] = await Promise.all([
+          deps.fetchMessages(name, PAGE),
+          deps.fetchEvents({ room: name, limit: 500 }),
+        ])
+        // A second selection may have landed while these were in flight; its own
+        // fetches own the state, not ours.
+        if (mine !== roomGeneration) return
+        setState({ messages, roomEvents, hasMoreHistory: messages.length === PAGE })
+      } catch {
+        // Leave the empty transcript rather than a stale one. The connection pill
+        // already reports trouble.
+      }
+    },
+    async loadOlder() {
+      const { room, messages, hasMoreHistory, loadingOlder } = state
+      if (!room || !hasMoreHistory || loadingOlder || messages.length === 0) return
+      setState({ loadingOlder: true })
+      const mine = roomGeneration
+      try {
+        const older = await deps.fetchMessages(room, PAGE, messages[0].id)
+        if (mine !== roomGeneration) return
+        setState({
+          messages: [...older, ...state.messages],
+          hasMoreHistory: older.length === PAGE,
+        })
+      } finally {
+        if (mine === roomGeneration) setState({ loadingOlder: false })
+      }
+    },
+    setDockOpen(open: boolean) {
+      localStorage.setItem(DOCK_OPEN_KEY, String(open))
+      setState({ dockOpen: open })
     },
     async start() {
       const myGeneration = ++generation

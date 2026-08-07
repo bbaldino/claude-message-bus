@@ -3,6 +3,8 @@ import { createStore } from './store'
 import type { RailSummary } from '../types/RailSummary'
 
 const emptyRail: RailSummary = { rooms: [], agents: [] }
+const noMessages = async () => []
+const noEvents = async () => []
 
 function fakeLive() {
   const handlers: Record<string, (p: unknown) => void> = {}
@@ -27,7 +29,12 @@ beforeEach(() => {
 })
 
 test('a pushed event lands in the log', () => {
-  const store = createStore({ live, fetchRail: async () => emptyRail })
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+  })
   live.emit('event', {
     type: 'event',
     id: 1,
@@ -42,7 +49,12 @@ test('a pushed event lands in the log', () => {
 })
 
 test('a presence push flips an agent online', () => {
-  const store = createStore({ live, fetchRail: async () => emptyRail })
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+  })
   store.setState({
     rail: {
       rooms: [],
@@ -67,13 +79,23 @@ test('a presence push flips an agent online', () => {
 })
 
 test('a dropped socket surfaces as disconnected', () => {
-  const store = createStore({ live, fetchRail: async () => emptyRail })
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+  })
   live.emit('connection', 'disconnected')
   expect(store.getState().connection).toBe('disconnected')
 })
 
 test('a pushed message is normalised into the stored message shape', () => {
-  const store = createStore({ live, fetchRail: async () => emptyRail })
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+  })
   store.selectRoom('protocol')
   live.emit('message', {
     type: 'message',
@@ -94,7 +116,12 @@ test('a pushed message for another room never enters the transcript', () => {
   // protocol has no `Unwatch`, so pushes for rooms other than the open one keep
   // arriving. They must not land in a transcript that has just been cleared for
   // a different room — they would read as current traffic in the wrong place.
-  const store = createStore({ live, fetchRail: async () => emptyRail })
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+  })
   store.selectRoom('protocol')
   live.emit('message', {
     type: 'message',
@@ -109,7 +136,12 @@ test('a pushed message for another room never enters the transcript', () => {
 })
 
 test('selecting null clears the room and unwatches, without watching anything new', () => {
-  const store = createStore({ live, fetchRail: async () => emptyRail })
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+  })
   store.selectRoom('protocol')
   store.selectRoom(null)
   expect(store.getState().room).toBeNull()
@@ -120,12 +152,102 @@ test('selecting null clears the room and unwatches, without watching anything ne
 })
 
 test('subscribers are notified when state changes', () => {
-  const store = createStore({ live, fetchRail: async () => emptyRail })
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+  })
   const seen = vi.fn()
   store.subscribe(seen)
   live.emit('connection', 'reconnecting')
   expect(seen).toHaveBeenCalled()
 })
+
+test('selecting a room loads its history and its events', async () => {
+  const messages = [
+    { id: 1, room: 'protocol', from: 'caas', body: 'hi', done: false, human: false, createdAt: 1 },
+  ]
+  const events = [
+    { id: 9, kind: 'message_sent', agent: 'caas', room: 'protocol', detail: {}, createdAt: 1 },
+  ]
+  const store = createStore({
+    live: fakeLive(),
+    fetchRail: async () => emptyRail,
+    fetchMessages: async () => messages,
+    fetchEvents: async () => events,
+  })
+  await store.selectRoom('protocol')
+  expect(store.getState().messages).toEqual(messages)
+  expect(store.getState().roomEvents).toEqual(events)
+})
+
+test('a live event for the open room lands in roomEvents, one for another room does not', () => {
+  const live = fakeLive()
+  const store = createStore({
+    live,
+    fetchRail: async () => emptyRail,
+    fetchMessages: async () => [],
+    fetchEvents: async () => [],
+  })
+  store.setState({ room: 'protocol' })
+  live.emit('event', {
+    type: 'event',
+    id: 1,
+    kind: 'joined',
+    agent: 'caas',
+    room: 'protocol',
+    detail: {},
+    created_at: 1,
+  })
+  live.emit('event', {
+    type: 'event',
+    id: 2,
+    kind: 'joined',
+    agent: 'hub',
+    room: 'other',
+    detail: {},
+    created_at: 2,
+  })
+  // The global feed takes both — it is the `whole bus` dock scope.
+  expect(store.getState().events).toHaveLength(2)
+  // The room-scoped list takes only the open room's.
+  expect(store.getState().roomEvents.map((e) => e.id)).toEqual([1])
+})
+
+test('loadOlder prepends a page and stops when a short page comes back', async () => {
+  let call = 0
+  const store = createStore({
+    live: fakeLive(),
+    fetchRail: async () => emptyRail,
+    fetchMessages: async (_room, _limit, before) => {
+      call++
+      if (before === undefined) {
+        return Array.from({ length: 100 }, (_, i) => msg(i + 100))
+      }
+      return [msg(1), msg(2)] // short page — the beginning
+    },
+    fetchEvents: async () => [],
+  })
+  await store.selectRoom('protocol')
+  expect(store.getState().hasMoreHistory).toBe(true)
+  await store.loadOlder()
+  expect(store.getState().messages[0].id).toBe(1)
+  expect(store.getState().hasMoreHistory).toBe(false)
+  expect(call).toBe(2)
+})
+
+function msg(id: number) {
+  return {
+    id,
+    room: 'protocol',
+    from: 'caas',
+    body: `m${id}`,
+    done: false,
+    human: false,
+    createdAt: id,
+  }
+}
 
 test('an interleaved start()/stop()/start() during the initial fetch leaves no leaked interval', async () => {
   // React StrictMode double-invokes the mount effect in dev: start(); stop();
@@ -142,7 +264,7 @@ test('an interleaved start()/stop()/start() during the initial fetch leaves no l
         calls++
         queueMicrotask(() => resolve(emptyRail))
       })
-    const store = createStore({ live, fetchRail })
+    const store = createStore({ live, fetchRail, fetchMessages: noMessages, fetchEvents: noEvents })
 
     const first = store.start()
     store.stop()
