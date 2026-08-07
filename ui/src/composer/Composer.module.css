@@ -1,0 +1,86 @@
+.composer {
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--border-rule);
+}
+
+.card {
+  border: 1px solid var(--border-emphasis);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  padding: 11px 13px;
+}
+
+.input {
+  background: transparent;
+  border: none;
+  resize: none;
+  width: 100%;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.input::placeholder {
+  color: var(--text-dim);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.markDone {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-tertiary-dim);
+  border: 1px solid var(--border-control);
+  border-radius: 4px;
+  padding: 3px 9px;
+}
+
+.preview {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-dimmest);
+  margin-left: auto;
+}
+
+.send {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--surface-page);
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  padding: 5px 13px;
+  cursor: pointer;
+}
+
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nameLabel {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.nameInput {
+  border: 1px solid var(--border-emphasis);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  padding: 11px 13px;
+  color: var(--human);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  flex: 1;
+}

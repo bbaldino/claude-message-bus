@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Composer } from '../composer/Composer'
 import { fetchRoomFiles } from '../data/api'
 import { deliveryFor } from '../data/delivery'
 import type { RoomFile } from '../types/RoomFile'
@@ -7,6 +8,7 @@ import { store, useStore } from '../useStore'
 import filesStyles from './Files.module.css'
 import { FilesPane } from './FilesTable'
 import { MessageRow } from './MessageRow'
+import { PendingRow } from './PendingRow'
 import { RoomHeader } from './RoomHeader'
 import { RoomTabs } from './RoomTabs'
 import { classifyArrival, isAtBottom, scrollAction, shouldLoadOlder } from './scroll'
@@ -74,8 +76,17 @@ import styles from './Transcript.module.css'
 // was written. Only the pin/scrollTop half is protected by code inspection
 // alone.
 export function RoomScreen() {
-  const { rail, messages, roomEvents, room, roomLoad, hasMoreHistory, dockOpen, connection } =
-    useStore()
+  const {
+    rail,
+    messages,
+    roomEvents,
+    room,
+    roomLoad,
+    hasMoreHistory,
+    dockOpen,
+    connection,
+    pending,
+  } = useStore()
   const delivery = useMemo(() => deliveryFor(roomEvents), [roomEvents])
   const railRoom = rail?.rooms.find((r) => r.name === room)
 
@@ -396,9 +407,15 @@ export function RoomScreen() {
               </div>
             )
           })}
+          {pending
+            .filter((p) => p.room === room)
+            .map((p) => (
+              <PendingRow key={p.clientId} send={p} />
+            ))}
         </div>
       </div>
       {view === 'files' && files !== null && <FilesPane files={files} />}
+      {view === 'transcript' && room && <Composer room={room} />}
       {view === 'transcript' && unseen > 0 && (
         <button
           className={styles.newBelow}

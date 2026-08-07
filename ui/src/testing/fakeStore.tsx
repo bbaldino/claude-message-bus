@@ -33,6 +33,10 @@ export const storeActions = {
   start: vi.fn(),
   stop: vi.fn(),
   refreshRail: vi.fn(),
+  send: vi.fn(),
+  setDraft: vi.fn(),
+  retry: vi.fn(),
+  discard: vi.fn(),
 }
 
 let current: State = emptyState
