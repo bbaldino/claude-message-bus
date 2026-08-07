@@ -1,8 +1,17 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Route, Routes, useParams } from 'react-router-dom'
 import { MainPlaceholder, Shell } from './Shell'
 import { RoomScreen } from './transcript/RoomScreen'
 import { store } from './useStore'
+
+/// A fresh RoomScreen per room. Without the key, React reuses one instance and
+/// one scroller DOM node across rooms, which is what forced `prevRoom`,
+/// forced `roomChanged` through `classifyArrival`, and let a paging correction
+/// in flight apply one room's height delta to another's node.
+function KeyedRoomScreen() {
+  const { name } = useParams()
+  return <RoomScreen key={name} />
+}
 
 export function App() {
   useEffect(() => {
@@ -18,7 +27,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Shell />}>
           <Route index element={<MainPlaceholder />} />
-          <Route path="rooms/:name" element={<RoomScreen />} />
+          <Route path="rooms/:name" element={<KeyedRoomScreen />} />
           <Route path="agents/:name" element={<MainPlaceholder />} />
         </Route>
       </Routes>

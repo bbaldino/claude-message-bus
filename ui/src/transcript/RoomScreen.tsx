@@ -55,7 +55,6 @@ export function RoomScreen() {
   const scroller = useRef<HTMLDivElement>(null)
   const content = useRef<HTMLDivElement>(null)
   const prevLastId = useRef<number | null>(null)
-  const prevRoom = useRef<string | null>(null)
   const [unseen, setUnseen] = useState(0)
   // Guards the load-older-and-restore sequence in `onScroll`: at most one
   // restoration may be in flight at a time. The store's `loadingOlder` flag
@@ -84,8 +83,7 @@ export function RoomScreen() {
 
   useEffect(() => {
     const el = scroller.current
-    const roomChanged = room !== prevRoom.current
-    const arrival = classifyArrival({ prevLastId: prevLastId.current, messages, roomChanged })
+    const arrival = classifyArrival({ prevLastId: prevLastId.current, messages })
     if (el) {
       if (arrival.kind === 'initial') {
         // `scrollTop` directly, never `scrollIntoView` — the handoff is explicit,
@@ -112,7 +110,6 @@ export function RoomScreen() {
       // a prepend is handled in onScroll, not here.
     }
     prevLastId.current = messages.length > 0 ? messages[messages.length - 1].id : null
-    prevRoom.current = room
   }, [messages, room])
 
   // A pin can go stale a moment after it runs, for reasons that have nothing
@@ -179,14 +176,16 @@ export function RoomScreen() {
         // (nothing more to load), `scrollHeight` is unchanged and this delta is
         // zero — harmless.
         requestAnimationFrame(() => {
-          // The route has no `key`, so navigating room -> room reuses this
-          // component and this same scroller node. `loadOlder()` is
-          // generation-guarded and resolves as a no-op for a superseded
-          // room, but this rAF was already queued against `el` before that
-          // happened — without this check it would apply `before` (A's
-          // height) to B's `scrollHeight`, landing B at an arbitrary offset.
-          // The mutex still has to be released here on the bail path, or
-          // paging wedges shut for the new room permanently.
+          // The route key gives every room its own component instance and
+          // scroller node — but that changes which component renders, not
+          // what the browser has already scheduled. This rAF was queued
+          // against `el` before the room changed and this instance unmounted;
+          // `loadOlder()` is generation-guarded and resolves as a no-op for a
+          // superseded room, but the rAF still fires against the now-detached
+          // node. Without this check it would apply `before` (this room's
+          // pre-fetch height) to a `scrollHeight` read that no longer means
+          // anything. The mutex still has to be released here on the bail
+          // path, or paging wedges shut for the new room permanently.
           if (store.getState().room !== forRoom) {
             restoringOlder.current = false
             return

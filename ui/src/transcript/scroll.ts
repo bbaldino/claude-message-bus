@@ -33,11 +33,11 @@ export type Arrival = { kind: 'initial' } | { kind: 'append'; count: number } | 
 export function classifyArrival(args: {
   prevLastId: number | null
   messages: { id: number }[]
-  roomChanged: boolean
 }): Arrival {
-  const { prevLastId, messages, roomChanged } = args
-  if (roomChanged || prevLastId === null) return { kind: 'initial' }
-  const lastId = messages.length > 0 ? messages[messages.length - 1].id : null
-  if (lastId === prevLastId) return { kind: 'none' }
-  return { kind: 'append', count: messages.filter((m) => m.id > prevLastId).length }
+  const lastId = args.messages.length ? args.messages[args.messages.length - 1].id : null
+  // A fresh mount per room means `prevLastId === null` is exactly "first load
+  // of this room" — the room-change case no longer needs its own signal.
+  if (args.prevLastId === null) return { kind: 'initial' }
+  if (lastId === null || lastId === args.prevLastId) return { kind: 'none' }
+  return { kind: 'append', count: args.messages.filter((m) => m.id > args.prevLastId!).length }
 }

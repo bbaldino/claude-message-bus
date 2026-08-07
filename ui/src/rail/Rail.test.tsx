@@ -1,6 +1,7 @@
 import { act, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, test, vi } from 'vitest'
+import { renderWithStore } from '../testing/fakeStore'
 import { Rail } from './Rail'
 import { RoomRow } from './RoomRow'
 import { AgentRow } from './AgentRow'
@@ -49,16 +50,8 @@ const rail: RailSummary = {
   ],
 }
 
-vi.mock('../useStore', () => ({
-  useStore: () => ({ rail, events: [], messages: [], room: null, connection: 'live' }),
-}))
-
 function renderRail(query?: string) {
-  return render(
-    <MemoryRouter>
-      <Rail query={query} />
-    </MemoryRouter>,
-  )
+  return renderWithStore(<Rail query={query} />, { rail })
 }
 
 function renderRoomRow(room: RailRoom, path = '/') {

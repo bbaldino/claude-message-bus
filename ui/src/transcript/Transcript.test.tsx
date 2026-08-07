@@ -1,6 +1,7 @@
-import { render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, expect, test, vi } from 'vitest'
+import { screen } from '@testing-library/react'
+import { beforeEach, expect, test } from 'vitest'
+import { renderWithStore } from '../testing/fakeStore'
+import type { State } from '../data/store'
 import { RoomScreen } from './RoomScreen'
 import styles from './Transcript.module.css'
 
@@ -9,7 +10,7 @@ import styles from './Transcript.module.css'
 // reads it from the store rather than tracking its own copy.
 let dockOpen = false
 
-const base = {
+const base: Partial<State> = {
   rail: {
     rooms: [
       { name: 'protocol', members: ['caas', 'hub'], lastActivity: 5, buckets: [1], flag: null },
@@ -72,21 +73,11 @@ const base = {
   loadingOlder: false,
 }
 
-vi.mock('../useStore', () => ({
-  useStore: () => ({ ...base, dockOpen }),
-  store: { loadOlder: vi.fn() },
-}))
-
 beforeEach(() => {
   dockOpen = false
 })
 
-const renderScreen = () =>
-  render(
-    <MemoryRouter>
-      <RoomScreen />
-    </MemoryRouter>,
-  )
+const renderScreen = () => renderWithStore(<RoomScreen />, { ...base, dockOpen })
 
 test('the header summarises membership from the rail', () => {
   renderScreen()
