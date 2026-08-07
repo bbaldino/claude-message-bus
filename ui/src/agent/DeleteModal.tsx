@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { fetchDeletionPreview } from '../data/api'
 import type { DeletionPreview } from '../types/DeletionPreview'
-import { useStore } from '../useStore'
+import { store, useStore } from '../useStore'
 import styles from './DeleteModal.module.css'
 
 export function DeleteModal({
@@ -71,7 +71,18 @@ export function DeleteModal({
     if (!matches) return
     try {
       const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, { method: 'DELETE' })
-      if (res.status === 204) onDeleted()
+      if (res.status === 204) {
+        // Ask the store to refresh the rail rather than fetching it here: the
+        // store already owns the rail and re-fetches it on a 25s timer, and
+        // duplicating that fetch would be a third component reaching past it.
+        // Not awaited — getting the operator to a correct console quickly
+        // matters more than getting there atomically, and a spinner after a
+        // successful delete would be the wrong trade. Failure is silent, same
+        // as the poll's own: it leaves the previous rail in place rather than
+        // blank it, and the 25s poll remains the backstop either way.
+        void store.refreshRail()
+        onDeleted()
+      }
       // The bus is the authority on whether the agent is still connected — a
       // 409 renders the refused state regardless of what the client believed.
       else if (res.status === 409) setRefused(true)

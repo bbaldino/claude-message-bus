@@ -28,6 +28,7 @@ export const storeActions = {
   subscribe: vi.fn(),
   start: vi.fn(),
   stop: vi.fn(),
+  refreshRail: vi.fn(),
 }
 
 let current: State = emptyState

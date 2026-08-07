@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, test, vi } from 'vitest'
-import { renderWithStore, setStoreState } from '../testing/fakeStore'
+import { renderWithStore, setStoreState, storeActions } from '../testing/fakeStore'
 import { DeleteModal } from './DeleteModal'
 
 const NAME = 'network-debug#2'
@@ -18,6 +18,7 @@ beforeEach(() => {
       { headers: { 'content-type': 'application/json' } },
     ),
   )
+  storeActions.refreshRail.mockClear()
 })
 
 test('states the real counts from the preview', async () => {
@@ -227,4 +228,65 @@ test('Esc closes in the refused state too', async () => {
   await screen.findByText('Still connected')
   fireEvent.keyDown(window, { key: 'Escape' })
   expect(onClose).toHaveBeenCalled()
+})
+
+test('a successful delete asks the store to refresh the rail', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_i, init) =>
+    (init as RequestInit | undefined)?.method === 'DELETE'
+      ? new Response(null, { status: 204 })
+      : new Response(
+          JSON.stringify({ registration: 1, memberships: 2, cursors: 0, host: 'h', online: false }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+  )
+  const onDeleted = vi.fn()
+  renderWithStore(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={onDeleted} />)
+  const input = await screen.findByTestId('confirm-input')
+  fireEvent.change(input, { target: { value: NAME } })
+  fireEvent.click(screen.getByRole('button', { name: 'delete' }))
+  await waitFor(() => expect(onDeleted).toHaveBeenCalled())
+  expect(storeActions.refreshRail).toHaveBeenCalledTimes(1)
+})
+
+test('a refused delete does not ask for a rail refresh', async () => {
+  // A delete that did not happen must not trigger one — the rail has nothing
+  // to reflect.
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_i, init) =>
+    (init as RequestInit | undefined)?.method === 'DELETE'
+      ? new Response(null, { status: 409 })
+      : new Response(
+          JSON.stringify({ registration: 1, memberships: 0, cursors: 0, host: 'h', online: false }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+  )
+  renderWithStore(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)
+  const input = await screen.findByTestId('confirm-input')
+  fireEvent.change(input, { target: { value: NAME } })
+  fireEvent.click(screen.getByRole('button', { name: 'delete' }))
+  await waitFor(() => expect(screen.getByText('Still connected')).toBeDefined())
+  expect(storeActions.refreshRail).not.toHaveBeenCalled()
+})
+
+test('a failed delete does not ask for a rail refresh', async () => {
+  let deleteCalls = 0
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_i, init) => {
+    if ((init as RequestInit | undefined)?.method === 'DELETE') {
+      deleteCalls++
+      return new Response(null, { status: 500 })
+    }
+    return new Response(
+      JSON.stringify({ registration: 1, memberships: 0, cursors: 0, host: 'h', online: false }),
+      { headers: { 'content-type': 'application/json' } },
+    )
+  })
+  renderWithStore(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)
+  const input = await screen.findByTestId('confirm-input')
+  fireEvent.change(input, { target: { value: NAME } })
+  fireEvent.click(screen.getByRole('button', { name: 'delete' }))
+  // Nothing in this component currently surfaces a submit-time failure other
+  // than through `failed` state (a pre-existing gap, not something this fix
+  // touches) — wait on the DELETE call itself having resolved instead of on
+  // rendered text.
+  await waitFor(() => expect(deleteCalls).toBe(1))
+  expect(storeActions.refreshRail).not.toHaveBeenCalled()
 })

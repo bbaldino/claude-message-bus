@@ -169,6 +169,20 @@ export function createStore(deps: {
 
   const PAGE = 100
 
+  // Shared by the poll timer and by any explicit caller (the delete modal, for
+  // one) that wants the rail to reflect a change it just made rather than wait
+  // out the rest of the 25s interval. Failure is intentionally silent here too:
+  // an explicit refresh that fails leaves the previous rail in place, same as a
+  // missed poll tick, and the poll interval remains the backstop.
+  const refreshRail = async () => {
+    try {
+      setState({ rail: await deps.fetchRail() })
+    } catch {
+      // Leave the previous rail in place; the connection pill already reports
+      // trouble, and blanking the rail would read as an empty fleet.
+    }
+  }
+
   return {
     getState: () => state,
     setState,
@@ -244,20 +258,12 @@ export function createStore(deps: {
     async start() {
       const myGeneration = ++generation
       deps.live.start()
-      const refresh = async () => {
-        try {
-          setState({ rail: await deps.fetchRail() })
-        } catch {
-          // Leave the previous rail in place; the connection pill already reports
-          // trouble, and blanking the rail would read as an empty fleet.
-        }
-      }
-      await refresh()
+      await refreshRail()
       // A `stop()` (or a newer `start()`) ran while the fetch above was in
       // flight. This run has been superseded; installing an interval here
       // would be the leaked one nothing ever clears.
       if (myGeneration !== generation) return
-      timer = setInterval(refresh, 25_000)
+      timer = setInterval(refreshRail, 25_000)
     },
     stop() {
       generation++
@@ -267,5 +273,12 @@ export function createStore(deps: {
       }
       deps.live.stop()
     },
+    // Explicit ask, not a duplicate fetch: reuses the same refreshRail the
+    // poll timer already calls, so there is exactly one code path that knows
+    // how to fetch and apply the rail. Callers that just made a change the
+    // rail should reflect (a completed delete) call this instead of waiting
+    // out the rest of the poll interval; it fails soft the same way the timer
+    // does, and the poll remains the backstop if it fails.
+    refreshRail,
   }
 }
