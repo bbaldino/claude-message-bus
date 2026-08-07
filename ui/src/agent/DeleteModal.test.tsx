@@ -1,6 +1,6 @@
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, test, vi } from 'vitest'
-import { renderWithStore } from '../testing/fakeStore'
+import { renderWithStore, setStoreState } from '../testing/fakeStore'
 import { DeleteModal } from './DeleteModal'
 
 const NAME = 'network-debug#2'
@@ -66,4 +66,96 @@ test('Esc closes', async () => {
   await screen.findByTestId('confirm-input')
   fireEvent.keyDown(window, { key: 'Escape' })
   expect(onClose).toHaveBeenCalled()
+})
+
+test('an online agent opens refused, with the mechanism stated', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(
+      JSON.stringify({ registration: 1, memberships: 1, cursors: 0, host: 'h', online: true }),
+      { headers: { 'content-type': 'application/json' } },
+    ),
+  )
+  renderWithStore(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)
+  expect(await screen.findByText('Still connected')).toBeDefined()
+  // The mechanism, not just the rule.
+  expect(screen.getByText(/re-register on its next heartbeat/)).toBeDefined()
+  expect(screen.queryByTestId('confirm-input')).toBeNull()
+})
+
+test('going offline transitions the dialog to confirmable and re-fetches the counts', async () => {
+  // The dialog claims "this dialog updates itself" — it must be true, and the
+  // counts must be re-read because an agent can change the world on its way out.
+  let calls = 0
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+    calls++
+    return new Response(
+      JSON.stringify({
+        registration: 1,
+        memberships: 1,
+        cursors: 0,
+        host: 'h',
+        online: calls === 1,
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    )
+  })
+
+  const { rerender } = renderWithStore(
+    <DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />,
+    {
+      rail: {
+        rooms: [],
+        agents: [
+          {
+            name: NAME,
+            host: 'h',
+            version: '1',
+            online: true,
+            isHuman: false,
+            lastSeen: 1,
+            buckets: [0],
+          },
+        ],
+      },
+    },
+  )
+  expect(await screen.findByText('Still connected')).toBeDefined()
+
+  // Presence says it went offline.
+  setStoreState({
+    rail: {
+      rooms: [],
+      agents: [
+        {
+          name: NAME,
+          host: 'h',
+          version: '1',
+          online: false,
+          isHuman: false,
+          lastSeen: 1,
+          buckets: [0],
+        },
+      ],
+    },
+  })
+  rerender(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)
+
+  await waitFor(() => expect(screen.getByTestId('confirm-input')).toBeDefined())
+  expect(calls).toBeGreaterThan(1)
+})
+
+test('a server refusal renders refused even when the client believed otherwise', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_i, init) =>
+    (init as RequestInit | undefined)?.method === 'DELETE'
+      ? new Response(null, { status: 409 })
+      : new Response(
+          JSON.stringify({ registration: 1, memberships: 0, cursors: 0, host: 'h', online: false }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+  )
+  renderWithStore(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)
+  const input = await screen.findByTestId('confirm-input')
+  fireEvent.change(input, { target: { value: NAME } })
+  fireEvent.click(screen.getByRole('button', { name: 'delete' }))
+  await waitFor(() => expect(screen.getByText('Still connected')).toBeDefined())
 })
