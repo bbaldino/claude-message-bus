@@ -14,6 +14,11 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { ErrorBoundary } from './ErrorBoundary'
+import { applyTheme, resolveTheme } from './theme'
+
+// Applied before the first render, or every load flashes the wrong theme
+// before correcting itself.
+applyTheme(resolveTheme())
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

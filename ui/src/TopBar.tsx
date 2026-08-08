@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { fetchMeta } from './data/api'
+import type { Theme } from './theme'
+import { resolveTheme, setTheme } from './theme'
 import type { Meta } from './types/Meta'
 import { isTypingTarget } from './ui/platform'
 import { useStore } from './useStore'
@@ -18,6 +20,10 @@ export function TopBar({ value = '', onChange = () => {} }: Props) {
   // The generated type, not a hand-written equivalent — see Global Constraints.
   const [meta, setMeta] = useState<Meta | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  // Initialised from resolveTheme rather than a fixed 'dark': main.tsx already
+  // applied it to the document before this ever rendered, but the button's own
+  // label has to agree with that or the two would disagree on first paint.
+  const [theme, setThemeState] = useState<Theme>(() => resolveTheme())
 
   useEffect(() => {
     // Deliberate exception to "components subscribe to the store; nothing
@@ -70,10 +76,18 @@ export function TopBar({ value = '', onChange = () => {} }: Props) {
         <span className={styles.liveDot} />
         {connection}
       </span>
-      {/* Inert until light mode lands. It occupies space in the bar's specified
-          geometry, so omitting it would change the layout. */}
-      <button className={styles.themeToggle} disabled>
-        dark
+      {/* Labelled with the theme the click switches TO, not the one currently
+          active — see the task report for why the handoff doesn't settle this
+          and how it was decided. */}
+      <button
+        className={styles.themeToggle}
+        onClick={() => {
+          const next: Theme = theme === 'dark' ? 'light' : 'dark'
+          setTheme(next)
+          setThemeState(next)
+        }}
+      >
+        {theme === 'dark' ? 'light' : 'dark'}
       </button>
     </header>
   )

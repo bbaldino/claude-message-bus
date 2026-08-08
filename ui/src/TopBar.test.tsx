@@ -87,3 +87,16 @@ test('pressing / while the search field already has focus does not steal the key
   expect(notCancelled).toBe(true)
   expect(document.activeElement).toBe(input)
 })
+
+test('the toggle is usable and names the theme it will switch to', async () => {
+  document.documentElement.setAttribute('data-theme', 'dark')
+  localStorage.clear()
+  vi.resetModules()
+  mockStore('live')
+  const { TopBar: Fresh } = await import('./TopBar')
+  render(<Fresh />)
+  const button = screen.getByRole('button', { name: /light|dark/i })
+  expect(button.hasAttribute('disabled')).toBe(false)
+  fireEvent.click(button)
+  expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+})
