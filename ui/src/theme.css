@@ -20,6 +20,13 @@
      light-mode phase needs to go back to the handoff for it. */
   --surface-control: #1a1e24;
 
+  /* The modal's scrim and shadow. Tokens rather than literals because light
+     mode gives both a different value — and a warm one, not a darker one: the
+     handoff's light scrim is rgba(48,42,32,.3), so the page behind stays
+     legible as context rather than disappearing. */
+  --modal-scrim: rgba(6, 7, 9, 0.72);
+  --modal-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+
   /* Borders */
   --border-primary: #22262e;
   --border-control: #262b34;

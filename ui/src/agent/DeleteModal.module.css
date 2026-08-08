@@ -5,10 +5,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  /* The one deliberate exception in this file: theme.css has no translucent-
-     scrim token, so this is the handoff's literal rgba(6,7,9,.72) rather than
-     a stray hex a reviewer should flag. Everything else below is var(--…). */
-  background: rgba(6, 7, 9, 0.72);
+  /* The scrim comes from a token in theme.css, which has its own light value.
+     Everything in this file is now var(--…). */
+  background: var(--modal-scrim);
 }
 
 .modal {
@@ -19,14 +18,9 @@
   background: var(--surface-raised);
   border: 1px solid var(--border-emphasis);
   border-radius: 8px;
-  /* Second (and last) deliberate exception in this file, same reasoning as the
-     scrim: theme.css has no translucency token, and this shadow has no token
-     substitute to dim instead — unlike the disabled delete button below, it is
-     not a muted version of anything already tokenized. --surface-raised sits
-     only marginally lighter than --surface-page, and behind a scrim that
-     deliberately leaves the page ~28% visible, the 1px border alone is a much
-     weaker "this is above the page" cue than the design intends. */
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  /* The shadow comes from a token in theme.css, which has its own light value.
+     The dark scrim allows a softer shadow; the light mode will be warmer. */
+  box-shadow: var(--modal-shadow);
 }
 
 .header {

@@ -415,3 +415,21 @@ test('mounting inerts the rest of the page, and unmounting restores it', async (
   expect(behindLink.hasAttribute('inert')).toBe(false)
   behindLink.remove()
 })
+
+test('the scrim and shadow come from tokens, not literals', async () => {
+  // theme.css is the only file allowed to contain a colour. This test pins that
+  // for the modal specifically, because its scrim and shadow were the last two
+  // literals in the tree and light mode gives both a different value.
+  // @ts-expect-error — node modules not typed without @types/node, but they
+  // exist at runtime in Node test environment.
+  const { readFileSync } = await import('node:fs')
+  // @ts-expect-error
+  const { fileURLToPath } = await import('node:url')
+  // @ts-expect-error
+  const { dirname, join } = await import('node:path')
+  const __dirname = dirname(fileURLToPath(import.meta.url))
+  const css = readFileSync(join(__dirname, './DeleteModal.module.css'), 'utf-8')
+  expect(css).not.toMatch(/rgba\(/)
+  expect(css).toMatch(/var\(--modal-scrim\)/)
+  expect(css).toMatch(/var\(--modal-shadow\)/)
+})
