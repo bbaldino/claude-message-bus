@@ -5,6 +5,13 @@
  * component changes. No component may contain a hex colour.
  */
 :root {
+  /* Tells the UA which palette to paint chrome it owns — scrollbars, focus
+     rings, autofill, spellcheck underlines — that component CSS never
+     touches. Without this the UA defaults to light regardless of the theme,
+     so e.g. every scrollbar in the six overflow-y: auto containers renders
+     light-on-dark. */
+  color-scheme: dark;
+
   /* Surfaces */
   --surface-page: #0e1013;
   --surface-rail: #111419;
@@ -137,6 +144,8 @@ body {
    to --text-quaternary (#7c766c) would collapse two tiers the handoff
    deliberately distinguishes into one. */
 [data-theme='light'] {
+  color-scheme: light;
+
   /* Surfaces */
   --surface-page: #ffffff;
   --surface-rail: #f7f6f4;
