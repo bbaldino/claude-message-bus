@@ -115,3 +115,91 @@ body {
   /* Numeric columns are scanned; keep digits aligned everywhere. */
   font-variant-numeric: tabular-nums;
 }
+
+/* Light mode. NOT an inversion — every value is re-picked, because the dark
+   theme carries state as saturated colour against near-black, and flipping
+   lightness turns those muddy while dropping the neutrals below readable
+   contrast. Values are the handoff's (§"Light mode (5a–5h)"), verbatim, except
+   the three marked as decisions below.
+
+   The text ramp holds a floor: every tier carrying text is at least 4.5:1 on
+   white, timestamps most of all since they are the main scan target.
+   Decorative-only tiers sit near 3.75:1. Hold that floor if you re-derive. */
+[data-theme='light'] {
+  /* Surfaces */
+  --surface-page: #ffffff;
+  --surface-rail: #f7f6f4;
+  --surface-raised: #fdfcfb;
+  --surface-recessed: #f4f2ef;
+  --surface-modal-footer: #f4f2ef;
+  /* DECISION, not in the handoff: no light row exists for the inset controls
+     sitting on --surface-raised (the top bar's host pill and search field).
+     They are inputs, so they take the recessed value. */
+  --surface-control: #f4f2ef;
+
+  /* Borders */
+  --border-primary: #e3dfd9;
+  --border-control: #ddd8d1;
+  --border-emphasis: #d5cfc7;
+  --border-hairline: #efece7;
+  --border-rule: #eae6e0;
+  /* DECISION, not in the handoff: the `/` and `Ctrl E` key caps. Takes the
+     emphasis border, the strongest neutral, so a key reads as an object. */
+  --border-key: #d5cfc7;
+
+  /* Rows. The handoff gives one light hover for both dark values. */
+  --row-hover: #f0eee9;
+  --row-hover-dock: #f0eee9;
+  /* Selection is a pale wash, not a lift — there is no elevation to work with
+     on white. The 2px accent edge the handoff pairs with it is already in
+     Rail.module.css and already token-driven, so it needs nothing here. */
+  --row-selected: #eaf0fa;
+
+  /* Text ramp */
+  --text-primary: #16140f;
+  --text-body-strong: #26231d;
+  --text-body: #3a362f;
+  --text-secondary: #3f3b34;
+  --text-tertiary: #6b665d;
+  --text-tertiary-dim: #6b665d;
+  --text-quaternary: #7c766c;
+  --text-quaternary-dim: #857f74;
+  --text-label: #8a8378;
+  --text-dim: #726c62;
+  --text-dimmer: #6f6a60;
+  --text-dimmest: #7c766c;
+  --text-faintest: #8a8378;
+  /* DECISION, not in the handoff: the top-bar spec's placeholder value is
+     dark-only. The ramp table lists placeholders under Dim, so light takes
+     Dim's value. This resolves the contradiction recorded when dark shipped. */
+  --text-placeholder: #726c62;
+
+  /* Semantic. Hue meanings are constant across themes: blue delivery, violet
+     lifecycle, amber attention, red destructive, teal files, green presence. */
+  --accent: #2f5aa8;
+  --code-fg: #1f52ad;
+  --code-bg: #f2efea;
+  --code-border: #e3dfd9;
+  --presence: #2f8a5e;
+  --presence-bg: #e8f4ed;
+  --presence-border: #bfe0cd;
+  --human: #5b3aa8;
+  --human-border: #d9cdf0;
+  --attention: #9a6b1e;
+  --attention-bg: #f9f0dd;
+  --attention-border: #e3cfa4;
+  /* Darker than a mechanical conversion would give: red on white needs more
+     depth than red on black to hold at 11px. */
+  --destructive: #b03a24;
+  --destructive-bg: #fbeeea;
+  --destructive-border: #e6bfb5;
+  --files: #126053;
+  --offline-dot: #c7c0b5;
+  --volume-idle: #b8b0a3;
+  --volume-dead: #cec7bb;
+  --volume-never: #eae6e0;
+
+  /* Warm and light, so the page behind a modal stays legible as context. */
+  --modal-scrim: rgba(48, 42, 32, 0.3);
+  --modal-shadow: 0 18px 50px rgba(60, 52, 40, 0.16);
+}
