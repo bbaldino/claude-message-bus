@@ -74,7 +74,7 @@ discovered during it; an earlier draft of this plan added a redundant
 
 | File | Responsibility |
 |---|---|
-| `ui/src/theme.css` | **Modify.** Gains `--modal-scrim`, `--modal-shadow`, `--row-selected-edge`, and the whole `[data-theme='light']` block. |
+| `ui/src/theme.css` | **Modify.** Gains `--modal-scrim`, `--modal-shadow`, and the whole `[data-theme='light']` block. |
 | `ui/src/agent/DeleteModal.module.css` | **Modify.** Its two `rgba()` literals become tokens. |
 | `ui/src/theme.ts` | **Create.** Resolve, apply, and persist the theme. Pure enough to test. |
 | `ui/src/TopBar.tsx` | **Modify.** The toggle stops being `disabled` and switches the theme. |
@@ -157,7 +157,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `--modal-scrim`, `--modal-shadow` from Task 1.
-- Produces: a complete `[data-theme='light']` block. No new token names except `--row-selected-edge` (Task 3 uses it).
+- Produces: a complete `[data-theme='light']` block. **No new token names** — every token already exists in `:root`, and this block only gives each one a light value.
 
 Every value below is copied from the handoff's tables. Add the block **after** the `:root` block so it overrides by source order as well as specificity.
 
