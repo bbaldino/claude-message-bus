@@ -26,3 +26,54 @@ test("index.html's inline theme script uses the same storage key as theme.ts", (
   const key = match![1]
   expect(html).toContain(key)
 })
+
+// The key-match test above pins one axis of the duplicated resolve logic.
+// Five others can drift with that test still green: the storage medium, the
+// attribute name, the media query and its polarity, the accepted values, and
+// the script's position relative to the injected stylesheet. Each of the
+// following is a grep for one of those axes against the inline script's own
+// text, so a silent drift on any of them fails loudly instead of shipping a
+// flash-of-wrong-theme regression.
+test('the inline theme script reads from localStorage', () => {
+  expect(html).toContain('localStorage')
+})
+
+test('the inline theme script stamps the data-theme attribute', () => {
+  expect(html).toContain('data-theme')
+})
+
+test('the inline theme script queries prefers-color-scheme: light', () => {
+  // The polarity matters as much as the query itself: matching `light` (not
+  // `dark`) is what lets the stored-choice-beats-system rule read correctly
+  // when there is no stored choice.
+  expect(html).toContain('prefers-color-scheme: light')
+})
+
+test('the inline theme script accepts both theme values', () => {
+  expect(html).toContain("'dark'")
+  expect(html).toContain("'light'")
+})
+
+// The three assertions above run against ui/index.html, the source the repo
+// tracks — that file has no <link rel="stylesheet"> of its own; Vite injects
+// one at build time. The ordering claim (inline script before the injected
+// stylesheet and before the module script) can only be checked against a
+// built ui/dist/index.html, so it's skipped rather than failed when dist/ is
+// absent — e.g. on a clean checkout before `npm run build` has ever run.
+test('in the built output, the inline theme script runs before the stylesheet link and the module script', async () => {
+  // @ts-expect-error — see the node:fs import above
+  const { existsSync } = await import('node:fs')
+  const distPath = join(__dirname, '../dist/index.html')
+  if (!existsSync(distPath)) {
+    return
+  }
+  const built = readFileSync(distPath, 'utf8')
+  const scriptIdx = built.indexOf('<script>')
+  const stylesheetIdx = built.indexOf('<link rel="stylesheet"')
+  const moduleIdx = built.indexOf('<script type="module"')
+  expect(scriptIdx).toBeGreaterThan(-1)
+  expect(stylesheetIdx).toBeGreaterThan(-1)
+  expect(moduleIdx).toBeGreaterThan(-1)
+  expect(scriptIdx).toBeLessThan(stylesheetIdx)
+  expect(scriptIdx).toBeLessThan(moduleIdx)
+})

@@ -39,6 +39,15 @@ test('light mode redefines every colour token, and only colour tokens', () => {
 
   // Non-colour tokens are theme-independent and must NOT be repeated — a
   // duplicated width is a value that can drift between themes for no reason.
+  //
+  // This is a prefix allowlist, not a real type check: it knows the four
+  // structural prefixes that exist today and nothing else. A new structural
+  // token under an unlisted prefix (e.g. --radius-sm) would fall through to
+  // "colour" below and get *forced* into the light block, duplicating a
+  // structural value across themes — the exact drift this test exists to
+  // prevent. If you add a new structural token family, extend this pattern
+  // to cover its prefix; do not paper over a missing-token failure by adding
+  // the token to [data-theme='light'] instead.
   const structural = root.filter((t) => /^--(font|rail|topbar|dock)-/.test(t))
   expect(structural.length).toBeGreaterThan(0)
   for (const t of structural) expect(light).not.toContain(t)

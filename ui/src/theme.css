@@ -122,9 +122,20 @@ body {
    contrast. Values are the handoff's (§"Light mode (5a–5h)"), verbatim, except
    the three marked as decisions below.
 
-   The text ramp holds a floor: every tier carrying text is at least 4.5:1 on
-   white, timestamps most of all since they are the main scan target.
-   Decorative-only tiers sit near 3.75:1. Hold that floor if you re-derive. */
+   The text ramp's stated floor — every text-bearing tier at least 4.5:1,
+   decorative tiers near 3.75:1 — is the handoff's own claim, and the handoff
+   measures it against #ffffff. That is NOT the floor this file actually
+   holds: no text-bearing token in the rail, dock, top bar or modal is ever
+   painted on plain white, and against the surfaces they actually occupy
+   (--surface-control, --surface-rail, --surface-recessed) the bottom tiers
+   — --text-quaternary-dim, --text-label/--text-faintest,
+   --text-quaternary/--text-dimmest — measure as low as ~3.47:1, up to ~4.5:1.
+   Recorded here rather than silently treated as meeting the stated floor;
+   re-deriving the ramp against real surfaces is filed as follow-up design
+   work, not something to guess at in this pass. Don't pull individual values
+   toward 4.5 to "fix" this — --text-quaternary-dim (#857f74) sitting closer
+   to --text-quaternary (#7c766c) would collapse two tiers the handoff
+   deliberately distinguishes into one. */
 [data-theme='light'] {
   /* Surfaces */
   --surface-page: #ffffff;
