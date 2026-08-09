@@ -14,7 +14,23 @@
 PREFIX ?= $(HOME)/.local
 BUS ?= ws://127.0.0.1:7777/ws
 
-.PHONY: install uninstall where test deploy config config-project config-check bus-up bus-down bus-logs bus-nuke
+# `ui` must be here, not just for tidiness: a directory named `ui/` exists, so
+# without .PHONY make considers the target already up to date and never builds
+# the frontend.
+.PHONY: install uninstall where test deploy ui config config-project config-check bus-up bus-down bus-logs bus-nuke
+
+## Build the frontend bundle into ui/dist.
+##
+## Every Rust build embeds whatever ui/dist holds at compile time (rust-embed),
+## and a fresh clone holds only .gitkeep — so a `cargo install` without this
+## first produces a binary whose /app has nothing to serve. Only the Docker
+## build did this on its own; `install` now depends on it so the documented
+## install path cannot quietly ship a broken /app.
+##
+## `npm ci` rather than `npm install`: it installs exactly the lockfile, which
+## is what a build step wants.
+ui:
+	cd ui && npm ci && npm run build
 
 ## Build in release mode and install to $(PREFIX)/bin.
 ##
@@ -26,7 +42,10 @@ BUS ?= ws://127.0.0.1:7777/ws
 ## long-running service, since a stripped binary gives useless panic backtraces.
 ## Add `[profile.release] strip = true` to Cargo.toml if you want the ~4M
 ## artifact instead of ~9M.
-install:
+##
+## Depends on `ui` because rust-embed compiles ui/dist into the binary: without
+## a built bundle the install succeeds and /app 404s, with nothing to warn you.
+install: ui
 	cargo install --path . --root "$(PREFIX)" --locked
 	@echo
 	@echo "installed: $(PREFIX)/bin/claude-bus"

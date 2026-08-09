@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use anyhow::Context;
+use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
@@ -46,6 +47,14 @@ pub struct AgentFootprint {
     pub cursors: i64,
 }
 
+/// One room an agent belongs to, with its own traffic in that room.
+#[derive(Debug, Clone)]
+pub struct AgentRoomRow {
+    pub room: String,
+    pub message_count: i64,
+    pub last_activity: i64,
+}
+
 /// Rows actually removed by `forget_agent`, for the audit event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForgetCounts {
@@ -54,9 +63,53 @@ pub struct ForgetCounts {
     pub cursors: u64,
 }
 
+/// Why `forget_agent` did not return `ForgetCounts`.
+///
+/// Kept distinct from a bare `anyhow::Error` because the two callers need to
+/// tell them apart: `StillOnline` is a genuine conflict (the caller's
+/// liveness check and this one's own `online = 0` clause disagreed, however
+/// briefly), while `Storage` is this call having failed for reasons that have
+/// nothing to do with liveness. Conflating them — as this used to, behind one
+/// `anyhow::bail!` — is what let the JSON API map a database error to the same
+/// 409 as a real refusal (see `api::agent_delete`).
+#[derive(Debug)]
+pub enum ForgetAgentError {
+    /// The agent is (still) online. Defence in depth beneath
+    /// `Registry::if_offline`, which is the real authority — see this
+    /// method's doc.
+    StillOnline,
+    /// An sqlx failure unrelated to liveness.
+    Storage(anyhow::Error),
+}
+
+impl std::fmt::Display for ForgetAgentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StillOnline => write!(f, "online; only offline agents can be deleted"),
+            Self::Storage(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ForgetAgentError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::StillOnline => None,
+            Self::Storage(e) => e.source(),
+        }
+    }
+}
+
+impl From<sqlx::Error> for ForgetAgentError {
+    fn from(e: sqlx::Error) -> Self {
+        Self::Storage(e.into())
+    }
+}
+
 pub struct Store {
     pool: SqlitePool,
     blobs_dir: std::path::PathBuf,
+    events_tx: tokio::sync::broadcast::Sender<crate::store::events::EventRow>,
 }
 
 pub fn now_ms() -> i64 {
@@ -94,10 +147,30 @@ impl Store {
                 .with_context(|| format!("applying schema statement: {sql}"))?;
         }
 
-        let store = Self { pool, blobs_dir };
+        // 256 is ample for a personal bus; a lagging receiver drops rather than
+        // blocking the write path, which is the correct trade for an audit tail.
+        let (events_tx, _) = tokio::sync::broadcast::channel(256);
+
+        let store = Self {
+            pool,
+            blobs_dir,
+            events_tx,
+        };
         store.migrate().await?;
 
         Ok(store)
+    }
+
+    /// Subscribe to events as they are appended.
+    ///
+    /// A broadcast channel rather than a registry callback, so `Store` stays
+    /// unaware of the bus. Hooking `append_event` — the single funnel every kind
+    /// already passes through — is what stops a kind added later from silently
+    /// failing to appear in the dock.
+    pub fn subscribe_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::store::events::EventRow> {
+        self.events_tx.subscribe()
     }
 
     /// Bring an existing database up to the current schema.
@@ -314,6 +387,59 @@ impl Store {
         Ok(AgentFootprint { rooms, cursors })
     }
 
+    /// One row per room this agent belongs to, with how many messages it sent there
+    /// and when it last did.
+    ///
+    /// Grouped in SQL rather than counted in Rust for the same reason as the volume
+    /// buckets: the alternative ships every message body to count them.
+    ///
+    /// `message_buckets` takes `now_ms` as a parameter rather than reading the clock
+    /// itself; this follows the same house style by taking none and letting the
+    /// caller decide what "recent" means, since it reports absolute timestamps.
+    pub async fn agent_rooms(&self, name: &str) -> anyhow::Result<Vec<AgentRoomRow>> {
+        let rows = sqlx::query(
+            "SELECT rm.room AS room, \
+                    COUNT(m.id) AS n, \
+                    COALESCE(MAX(m.created_at), 0) AS last_at \
+             FROM room_members rm \
+             LEFT JOIN messages m ON m.room = rm.room AND m.from_agent = rm.agent_name \
+             WHERE rm.agent_name = ?1 \
+             GROUP BY rm.room ORDER BY last_at DESC, rm.room",
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| AgentRoomRow {
+                room: r.get("room"),
+                message_count: r.get("n"),
+                last_activity: r.get("last_at"),
+            })
+            .collect())
+    }
+
+    /// The agent's most recent events, newest first, plus the true total.
+    ///
+    /// The total is a separate COUNT rather than the slice's length because the
+    /// screen's section header states "312 total" while showing far fewer.
+    pub async fn agent_events(
+        &self,
+        name: &str,
+        limit: i64,
+    ) -> anyhow::Result<(Vec<crate::store::events::EventRow>, i64)> {
+        let total: i64 = sqlx::query("SELECT COUNT(*) AS n FROM events WHERE agent = ?1")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await?
+            .get("n");
+        // `events_for_agent` already selects `WHERE agent = ?1 ORDER BY id DESC
+        // LIMIT ?2` through the shared `event_row` mapping — exactly what this
+        // needs, so it is reused rather than adding a second query beside it.
+        let rows = self.events_for_agent(name, limit).await?;
+        Ok((rows, total))
+    }
+
     /// Delete an agent's own rows: its `agents` entry, its room memberships,
     /// and its cursors. Messages and events are deliberately untouched — the
     /// transcript stays readable and the audit trail outlives the agent.
@@ -331,7 +457,7 @@ impl Store {
     /// What this does buy is that a caller added later — this is a public
     /// method whose only other protection lives in a different module —
     /// cannot silently drop a connected agent's memberships.
-    pub async fn forget_agent(&self, name: &str) -> anyhow::Result<ForgetCounts> {
+    pub async fn forget_agent(&self, name: &str) -> Result<ForgetCounts, ForgetAgentError> {
         let mut tx = self.pool.begin().await?;
         let memberships = sqlx::query("DELETE FROM room_members WHERE agent_name = ?1")
             .bind(name)
@@ -360,7 +486,7 @@ impl Store {
                 .is_some();
             if still_there {
                 tx.rollback().await?;
-                anyhow::bail!("{name} is online; only offline agents can be deleted");
+                return Err(ForgetAgentError::StillOnline);
             }
         }
         tx.commit().await?;
@@ -396,6 +522,24 @@ impl Store {
         done: bool,
         human: bool,
     ) -> anyhow::Result<i64> {
+        self.append_message_at(room, from, body, done, human, now_ms())
+            .await
+    }
+
+    /// `append_message` with an explicit timestamp.
+    ///
+    /// Exists because bucket and flag logic is time-dependent, and a test that
+    /// cannot choose when a message happened can only assert "something landed
+    /// somewhere" — which is not a test of bucketing.
+    pub async fn append_message_at(
+        &self,
+        room: &str,
+        from: &str,
+        body: &str,
+        done: bool,
+        human: bool,
+        created_at: i64,
+    ) -> anyhow::Result<i64> {
         self.ensure_room(room).await?;
         let res = sqlx::query(
             "INSERT INTO messages (room, from_agent, body, done, created_at, human)
@@ -405,7 +549,7 @@ impl Store {
         .bind(from)
         .bind(body)
         .bind(done as i64)
-        .bind(now_ms())
+        .bind(created_at)
         .bind(human)
         .execute(self.pool())
         .await?;
@@ -422,6 +566,33 @@ impl Store {
              ) ORDER BY id ASC",
         )
         .bind(room)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(message_row).collect())
+    }
+
+    /// The `limit` messages immediately before `before_id`, returned
+    /// oldest-first like `history` — the backwards-scrollback counterpart.
+    ///
+    /// `history` is left untouched rather than growing an `Option<i64>`
+    /// cursor parameter: it has many call sites, and threading an unused
+    /// `AND id < ?` through all of them for the sake of this one caller would
+    /// be the wrong trade.
+    pub async fn history_before(
+        &self,
+        room: &str,
+        before_id: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<MessageRow>> {
+        let rows = sqlx::query(
+            "SELECT * FROM (
+               SELECT id, room, from_agent, body, done, created_at, human
+               FROM messages WHERE room = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3
+             ) ORDER BY id ASC",
+        )
+        .bind(room)
+        .bind(before_id)
         .bind(limit)
         .fetch_all(self.pool())
         .await?;
@@ -498,6 +669,206 @@ impl Store {
         .fetch_all(self.pool())
         .await?;
         Ok(rows.iter().map(message_row).collect())
+    }
+}
+
+/// Which messages a volume strip counts.
+#[derive(Debug, Clone, Copy)]
+pub enum BucketScope<'a> {
+    Room(&'a str),
+    Agent(&'a str),
+}
+
+impl Store {
+    /// Messages per time slot, oldest slot first, always exactly `buckets` long.
+    ///
+    /// Grouped in SQL rather than by fetching rows and counting in Rust: the rail
+    /// draws one of these per room *and* per agent on every poll, and shipping an
+    /// hour of message bodies to count them is the thing this exists to avoid.
+    ///
+    /// Slot 0 is the newest, so the result is reversed before returning — a strip
+    /// reads left to right as time moving forward.
+    pub async fn message_buckets(
+        &self,
+        scope: BucketScope<'_>,
+        now_ms: i64,
+        bucket_ms: i64,
+        buckets: usize,
+    ) -> anyhow::Result<Vec<i64>> {
+        let window_start = now_ms - (bucket_ms * buckets as i64);
+        let sql = match scope {
+            BucketScope::Room(_) => {
+                "SELECT ((?2 - created_at) / ?3) AS slot, COUNT(*) AS n
+                 FROM messages WHERE room = ?1 AND created_at > ?4
+                 GROUP BY slot"
+            }
+            BucketScope::Agent(_) => {
+                "SELECT ((?2 - created_at) / ?3) AS slot, COUNT(*) AS n
+                 FROM messages WHERE from_agent = ?1 AND created_at > ?4
+                 GROUP BY slot"
+            }
+        };
+        let key = match scope {
+            BucketScope::Room(r) => r,
+            BucketScope::Agent(a) => a,
+        };
+        let rows = sqlx::query(sql)
+            .bind(key)
+            .bind(now_ms)
+            .bind(bucket_ms)
+            .bind(window_start)
+            .fetch_all(self.pool())
+            .await?;
+
+        let mut out = vec![0i64; buckets];
+        for r in rows {
+            let slot: i64 = r.get("slot");
+            if slot >= 0 && (slot as usize) < buckets {
+                out[buckets - 1 - slot as usize] = r.get("n");
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// A room's state, derived from the event stream and membership rather than
+/// stored as a column. Only two exist, deliberately — an earlier design draft
+/// had four and they blurred together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoomFlag {
+    /// The exchange cap tripped and the room cannot continue without a person.
+    NeedsYou { exchanges: i64 },
+    /// Messages are waiting for members who are all offline.
+    Blocked {
+        queued: i64,
+        waiting_on: Vec<String>,
+    },
+}
+
+impl Store {
+    /// Every room whose latest pause/resume event is a pause — the rooms the
+    /// log currently claims are waiting on a person.
+    ///
+    /// Exists for startup reconciliation. The exchange guard's counters live in
+    /// memory (`bus::delivery::Guards`), so a fresh process has no paused rooms
+    /// at all, while every `room_paused` row survives in the database — leaving
+    /// every previously paused room flagged `needs_you` forever after a restart.
+    /// This is the same class of stale-truth problem `mark_all_offline` solves
+    /// for presence, and it is fixed the same way and in the same place.
+    pub async fn paused_rooms(&self) -> anyhow::Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT e.room AS room, e.kind AS kind FROM events e
+             WHERE e.room IS NOT NULL
+               AND e.kind IN ('room_paused', 'resumed')
+               AND e.id = (
+                 SELECT MAX(id) FROM events
+                 WHERE room = e.room AND kind IN ('room_paused', 'resumed')
+               )",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| r.get::<String, _>("kind") == "room_paused")
+            .map(|r| r.get("room"))
+            .collect())
+    }
+
+    /// The room's flag, if any. `online` is the registry's live name list —
+    /// liveness is never read from the persisted `agents.online` column, which
+    /// is only reconciled at process start.
+    ///
+    /// `NeedsYou` wins over `Blocked`: it is the state addressed to the operator,
+    /// so if both hold, the one asking for action is the one shown.
+    pub async fn room_flag(
+        &self,
+        room: &str,
+        online: &[String],
+    ) -> anyhow::Result<Option<RoomFlag>> {
+        // Latest of the pause/resume pair decides. `room_paused` is the exchange
+        // cap; `rate_limited` is the send-interval limiter and is NOT this.
+        let paused = sqlx::query(
+            "SELECT kind, detail_json FROM events
+             WHERE room = ?1 AND kind IN ('room_paused', 'resumed')
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(room)
+        .fetch_optional(self.pool())
+        .await?;
+
+        if let Some(row) = paused {
+            let kind: String = row.get("kind");
+            if kind == "room_paused" {
+                let detail: Value =
+                    serde_json::from_str(&row.get::<String, _>("detail_json")).unwrap_or_default();
+                let exchanges = detail.get("count").and_then(Value::as_i64).unwrap_or(0);
+                return Ok(Some(RoomFlag::NeedsYou { exchanges }));
+            }
+        }
+
+        let members = self.room_members(room).await?;
+        if members.is_empty() || members.iter().any(|m| online.contains(m)) {
+            return Ok(None);
+        }
+
+        let mut waiting_on = Vec::new();
+        for m in &members {
+            if self.unread_count(room, m).await? > 0 {
+                waiting_on.push(m.clone());
+            }
+        }
+        if waiting_on.is_empty() {
+            return Ok(None);
+        }
+        let queued = self.queued_message_count(room, &waiting_on).await?;
+        Ok(Some(RoomFlag::Blocked { queued, waiting_on }))
+    }
+
+    /// How many distinct messages in `room` at least one of `waiting` has not
+    /// seen.
+    ///
+    /// Messages, not deliveries. Summing `unread_count` across members counts the
+    /// same message once per member who has not read it, so two messages and two
+    /// offline members reads as four — while the rail renders the number as a
+    /// message count ("2 queued, 0 delivered"). The server ships data rather than
+    /// sentences precisely so the client can write that sentence, which only works
+    /// if the datum means what the sentence says.
+    ///
+    /// `from_agent != rm.agent_name` matches `unread_count`'s rule: a member's own
+    /// message is never unread for it, and so never counts as queued for it.
+    pub async fn queued_message_count(
+        &self,
+        room: &str,
+        waiting: &[String],
+    ) -> anyhow::Result<i64> {
+        if waiting.is_empty() {
+            return Ok(0);
+        }
+        // `?1` is the room; the waiting members take `?2` onwards. Only the
+        // placeholder *count* varies with the input — every value is still bound,
+        // so no caller data reaches the SQL text. `AssertSqlSafe` is sqlx's speed
+        // bump against building SQL from untrusted data, not a claim of staticness
+        // (see `add_column_if_missing`, which does the same for PRAGMA).
+        let placeholders = (0..waiting.len())
+            .map(|i| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT COUNT(DISTINCT m.id) AS n
+             FROM messages m
+             JOIN room_members rm
+               ON rm.room = m.room AND rm.agent_name IN ({placeholders})
+             LEFT JOIN cursors c
+               ON c.room = m.room AND c.agent_name = rm.agent_name
+             WHERE m.room = ?1
+               AND m.from_agent != rm.agent_name
+               AND m.id > COALESCE(c.last_delivered_id, 0)"
+        );
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(room);
+        for w in waiting {
+            q = q.bind(w);
+        }
+        Ok(q.fetch_one(self.pool()).await?.get("n"))
     }
 }
 

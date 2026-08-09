@@ -32,6 +32,8 @@
 //!
 //! See `docs/superpowers/specs/2026-08-05-agent-delete-design.md`.
 
+mod api;
+mod assets;
 pub mod html;
 
 use std::collections::HashMap;
@@ -296,6 +298,30 @@ pub fn routes() -> Router<App> {
             get(delete_agent_confirm).post(delete_agent_perform),
         )
         .route("/events", get(events_page))
+        .route("/api/agents", get(api::agents))
+        .route(
+            "/api/agents/{name}",
+            get(api::agent_detail).delete(api::agent_delete),
+        )
+        .route(
+            "/api/agents/{name}/deletion",
+            get(api::agent_deletion_preview),
+        )
+        .route("/api/rail", get(api::rail))
+        .route("/api/meta", get(api::meta))
+        .route("/api/rooms/{name}/messages", get(api::room_messages))
+        .route("/api/rooms/{name}/files", get(api::room_files))
+        .route("/api/events", get(api::events))
+        .route("/app", get(assets::app_root))
+        // `/app/` is registered separately and deliberately: matchit requires a
+        // non-empty remainder for a catch-all, so `/app/{*rest}` does not match
+        // the bare trailing slash and neither does `/app`. That form is the app's
+        // canonical URL — `ui/vite.config.ts` sets `base: '/app/'`, it is what a
+        // `location /app/` + `proxy_pass` reverse proxy produces, and it is what
+        // docs/DEPLOY.md tells operators to open. Without this route it is a bare
+        // 404 from the router, never reaching `resolve` at all.
+        .route("/app/", get(assets::app_root))
+        .route("/app/{*rest}", get(assets::app_path))
 }
 
 async fn overview(State(app): State<App>) -> Html<String> {
@@ -668,7 +694,7 @@ async fn delete_agent_confirm(State(app): State<App>, Path(name): Path<String>) 
 /// works behind a reverse proxy or under any name the operator reaches it by.
 /// Anything that is not an `http`/`https` origin — including the literal
 /// `null` a sandboxed frame sends — is not same-origin and is refused.
-fn origin_matches_host(origin: &str, host: &str) -> bool {
+pub(crate) fn origin_matches_host(origin: &str, host: &str) -> bool {
     let (scheme, authority) = match origin.split_once("://") {
         Some(("http", a)) => ("http", a),
         Some(("https", a)) => ("https", a),
@@ -775,6 +801,15 @@ async fn delete_agent_perform(
     };
 
     match result {
+        Ok(counts) if counts.agents == 0 => {
+            // Two concurrent deletes serialise under the registry lock above;
+            // this one found the row at the top of this handler, but by the
+            // time its turn came a sibling call had already removed it. The
+            // agent is genuinely gone, so this is "no such agent" — not a
+            // second successful delete, and it must not append a second
+            // `agent_deleted` event for a delete that removed nothing.
+            no_such_agent(&name).into_response()
+        }
         Ok(counts) => {
             // The only surviving record that this agent ever existed, so a
             // failure to write it is worth saying out loud — `eprintln!` to

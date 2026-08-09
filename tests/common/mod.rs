@@ -224,6 +224,90 @@ where
     wait_until_timeout(std::time::Duration::from_secs(5), f).await
 }
 
+/// Minimal HTTP/1.1 GET, matching `tests/web.rs`'s no-dependency style (this
+/// module cannot depend on that file, so the request-building logic is
+/// duplicated rather than shared). Returns the whole raw response so
+/// `get_json`/`get_status` can pull out the piece each one wants.
+async fn get_raw(port: u16, path: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = String::new();
+    s.read_to_string(&mut buf).await.unwrap();
+    buf
+}
+
+/// GET `path` and parse the response body as JSON.
+pub async fn get_json(port: u16, path: &str) -> serde_json::Value {
+    let raw = get_raw(port, path).await;
+    let body = raw.rsplit("\r\n\r\n").next().unwrap();
+    serde_json::from_str(body.trim()).unwrap_or_else(|e| panic!("bad json {body:?}: {e}"))
+}
+
+/// GET `path` and return just the numeric status code, for tests that only
+/// care whether the route answered 404/200/etc.
+pub async fn get_status(port: u16, path: &str) -> u16 {
+    let raw = get_raw(port, path).await;
+    status_of(&raw)
+}
+
+/// Pull the numeric status code off a raw HTTP response's status line.
+fn status_of(raw: &str) -> u16 {
+    raw.split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("could not parse a status code out of: {raw:?}"))
+}
+
+/// Minimal HTTP/1.1 DELETE, matching `get_raw`'s no-dependency style. `origin`
+/// is the `Origin` header to send, or `None` to send none at all — the same
+/// distinction `tests/web.rs`'s `post`/`post_with_headers` draw for the HTML
+/// delete's same-origin check.
+async fn delete_raw(port: u16, path: &str, origin: Option<&str>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let mut req = format!(
+        "DELETE {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n"
+    );
+    if let Some(o) = origin {
+        req.push_str(&format!("Origin: {o}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = String::new();
+    s.read_to_string(&mut buf).await.unwrap();
+    buf
+}
+
+/// DELETE `path` with an `Origin` naming the same host as the `Host` header
+/// every helper here hardcodes (`localhost`) — the same-origin case a real
+/// console `fetch` sends. Returns just the status code.
+pub async fn delete_same_origin(port: u16, path: &str) -> u16 {
+    delete_with_origin(port, path, "http://localhost").await
+}
+
+/// DELETE `path` with an arbitrary `Origin`, for asserting the cross-origin
+/// refusal. Returns just the status code.
+pub async fn delete_with_origin(port: u16, path: &str, origin: &str) -> u16 {
+    let raw = delete_raw(port, path, Some(origin)).await;
+    status_of(&raw)
+}
+
+/// DELETE `path` with no `Origin` header at all — like curl, or any
+/// non-browser caller. The same-origin check must allow this: such a caller
+/// could already reach the port directly, so refusing it buys nothing. See
+/// `origin_matches_host`'s doc comment and `src/web/mod.rs`'s module doc.
+/// Returns just the status code.
+pub async fn delete_no_origin(port: u16, path: &str) -> u16 {
+    let raw = delete_raw(port, path, None).await;
+    status_of(&raw)
+}
+
 /// Same as `wait_until`, but with an explicit deadline instead of the 5s
 /// default — used by `wait_until_bus_ready`, which wants longer.
 pub async fn wait_until_timeout<F, Fut>(timeout: std::time::Duration, f: F) -> bool

@@ -1,0 +1,225 @@
+/* Design tokens.
+ *
+ * Named by the roles the handoff's own light-mode table uses, so adding light
+ * mode later is one more block of values under [data-theme='light'] and zero
+ * component changes. No component may contain a hex colour.
+ */
+:root {
+  /* Tells the UA which palette to paint chrome it owns — scrollbars, focus
+     rings, autofill, spellcheck underlines — that component CSS never
+     touches. Without this the UA defaults to light regardless of the theme,
+     so e.g. every scrollbar in the six overflow-y: auto containers renders
+     light-on-dark. */
+  color-scheme: dark;
+
+  /* Surfaces */
+  --surface-page: #0e1013;
+  --surface-rail: #111419;
+  --surface-raised: #14171c;
+  --surface-recessed: #0f1217;
+  --surface-modal-footer: #12151a;
+  /* Inset controls sitting on --surface-raised: the top bar's host pill and
+     search field, plus (not yet built) the room header's member pills and the
+     composer's "is composing" rule. All four use this exact value in the
+     handoff — do not re-derive it per component.
+     The handoff's light-mode role tables have no entry for this token — it
+     comes from the top-bar spec only. Don't invent a light value; the
+     light-mode phase needs to go back to the handoff for it. */
+  --surface-control: #1a1e24;
+
+  /* The modal's scrim and shadow. Tokens rather than literals because light
+     mode gives both a different value — and a warm one, not a darker one: the
+     handoff's light scrim is rgba(48,42,32,.3), so the page behind stays
+     legible as context rather than disappearing. */
+  --modal-scrim: rgba(6, 7, 9, 0.72);
+  --modal-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+
+  /* Borders */
+  --border-primary: #22262e;
+  --border-control: #262b34;
+  --border-emphasis: #2a303a;
+  --border-hairline: #191d23;
+  --border-rule: #1e222a;
+  /* Keyboard-key badge border (the top bar's "/" affordance).
+     Not in the handoff's light-mode role tables either — top-bar-spec-only,
+     same as --surface-control and --text-placeholder below. No light value to
+     carry forward; the light-mode phase has to source one. */
+  --border-key: #2c313a;
+
+  /* Row states */
+  --row-hover: #181c22;
+  --row-hover-dock: #161a20;
+  --row-selected: #1d222a;
+
+  /* Text ramp */
+  --text-primary: #eef1f4;
+  --text-body-strong: #dfe3e8;
+  --text-body: #c8cfd8;
+  --text-secondary: #c2c9d2;
+  --text-tertiary: #9aa3af;
+  --text-tertiary-dim: #8d96a2;
+  --text-quaternary: #79818d;
+  --text-quaternary-dim: #6f7885;
+  --text-label: #616a76;
+  --text-dim: #565e69;
+  --text-dimmer: #4d545e;
+  --text-dimmest: #454c56;
+  --text-faintest: #3f4650;
+  /* Placeholder text and the search field's circle affordance outline — a
+     distinct value from --text-dim, not a rounding of it.
+     No light-mode source either (see --surface-control above). It's also the
+     one token where the handoff disagrees with itself: the text-ramp table
+     assigns placeholder text #565e69, while the top-bar spec pins the search
+     placeholder specifically at #59626e. This value follows the top-bar spec
+     as the more specific of the two — worth knowing if a future reader goes
+     looking for #565e69 and can't find it used anywhere. */
+  --text-placeholder: #59626e;
+
+  /* Semantic — hue meanings are constant across themes */
+  --accent: #6ea8fe;
+  --code-fg: #9fd0ff;
+  --code-bg: #191d24;
+  --code-border: #23282f;
+  --presence: #5fc48a;
+  --presence-bg: #12251b;
+  --presence-border: #1e4030;
+  --human: #b18cf0;
+  --human-border: #3a2e55;
+  --attention: #e0b25f;
+  --attention-bg: #221c10;
+  --attention-border: #4a3a1c;
+  --destructive: #e8836f;
+  --destructive-bg: #241715;
+  --destructive-border: #56302a;
+  --files: #5fc4b8;
+  --offline-dot: #333a44;
+
+  /* Volume strip */
+  --volume-idle: #4a5360;
+  --volume-dead: #3b434f;
+  --volume-never: #1c2028;
+
+  /* Type */
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* Fixed dimensions the handoff specifies */
+  --rail-width: 330px;
+  --topbar-height: 46px;
+  --dock-width-open: 340px;
+  --dock-width-closed: 40px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-page);
+  color: var(--text-body);
+  font-family: var(--font-sans);
+  /* Numeric columns are scanned; keep digits aligned everywhere. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Light mode. NOT an inversion — every value is re-picked, because the dark
+   theme carries state as saturated colour against near-black, and flipping
+   lightness turns those muddy while dropping the neutrals below readable
+   contrast. Values are the handoff's (§"Light mode (5a–5h)"), verbatim, except
+   the three marked as decisions below.
+
+   The text ramp's stated floor — every text-bearing tier at least 4.5:1,
+   decorative tiers near 3.75:1 — is the handoff's own claim, and the handoff
+   measures it against #ffffff. That is NOT the floor this file actually
+   holds: no text-bearing token in the rail, dock, top bar or modal is ever
+   painted on plain white, and against the surfaces they actually occupy
+   (--surface-control, --surface-rail, --surface-recessed) the bottom tiers
+   — --text-quaternary-dim, --text-label/--text-faintest,
+   --text-quaternary/--text-dimmest — measure as low as ~3.47:1, up to ~4.5:1.
+   Recorded here rather than silently treated as meeting the stated floor;
+   re-deriving the ramp against real surfaces is filed as follow-up design
+   work, not something to guess at in this pass. Don't pull individual values
+   toward 4.5 to "fix" this — --text-quaternary-dim (#857f74) sitting closer
+   to --text-quaternary (#7c766c) would collapse two tiers the handoff
+   deliberately distinguishes into one. */
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Surfaces */
+  --surface-page: #ffffff;
+  --surface-rail: #f7f6f4;
+  --surface-raised: #fdfcfb;
+  --surface-recessed: #f4f2ef;
+  --surface-modal-footer: #f4f2ef;
+  /* DECISION, not in the handoff: no light row exists for the inset controls
+     sitting on --surface-raised (the top bar's host pill and search field).
+     They are inputs, so they take the recessed value. */
+  --surface-control: #f4f2ef;
+
+  /* Borders */
+  --border-primary: #e3dfd9;
+  --border-control: #ddd8d1;
+  --border-emphasis: #d5cfc7;
+  --border-hairline: #efece7;
+  --border-rule: #eae6e0;
+  /* DECISION, not in the handoff: the `/` and `Ctrl E` key caps. Takes the
+     emphasis border, the strongest neutral, so a key reads as an object. */
+  --border-key: #d5cfc7;
+
+  /* Rows. The handoff gives one light hover for both dark values. */
+  --row-hover: #f0eee9;
+  --row-hover-dock: #f0eee9;
+  /* Selection is a pale wash, not a lift — there is no elevation to work with
+     on white. The 2px accent edge the handoff pairs with it is already in
+     Rail.module.css and already token-driven, so it needs nothing here. */
+  --row-selected: #eaf0fa;
+
+  /* Text ramp */
+  --text-primary: #16140f;
+  --text-body-strong: #26231d;
+  --text-body: #3a362f;
+  --text-secondary: #3f3b34;
+  --text-tertiary: #6b665d;
+  --text-tertiary-dim: #6b665d;
+  --text-quaternary: #7c766c;
+  --text-quaternary-dim: #857f74;
+  --text-label: #8a8378;
+  --text-dim: #726c62;
+  --text-dimmer: #6f6a60;
+  --text-dimmest: #7c766c;
+  --text-faintest: #8a8378;
+  /* DECISION, not in the handoff: the top-bar spec's placeholder value is
+     dark-only. The ramp table lists placeholders under Dim, so light takes
+     Dim's value. This resolves the contradiction recorded when dark shipped. */
+  --text-placeholder: #726c62;
+
+  /* Semantic. Hue meanings are constant across themes: blue delivery, violet
+     lifecycle, amber attention, red destructive, teal files, green presence. */
+  --accent: #2f5aa8;
+  --code-fg: #1f52ad;
+  --code-bg: #f2efea;
+  --code-border: #e3dfd9;
+  --presence: #2f8a5e;
+  --presence-bg: #e8f4ed;
+  --presence-border: #bfe0cd;
+  --human: #5b3aa8;
+  --human-border: #d9cdf0;
+  --attention: #9a6b1e;
+  --attention-bg: #f9f0dd;
+  --attention-border: #e3cfa4;
+  /* Darker than a mechanical conversion would give: red on white needs more
+     depth than red on black to hold at 11px. */
+  --destructive: #b03a24;
+  --destructive-bg: #fbeeea;
+  --destructive-border: #e6bfb5;
+  --files: #126053;
+  --offline-dot: #c7c0b5;
+  --volume-idle: #b8b0a3;
+  --volume-dead: #cec7bb;
+  --volume-never: #eae6e0;
+
+  /* Warm and light, so the page behind a modal stays legible as context. */
+  --modal-scrim: rgba(48, 42, 32, 0.3);
+  --modal-shadow: 0 18px 50px rgba(60, 52, 40, 0.16);
+}

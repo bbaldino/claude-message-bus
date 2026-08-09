@@ -1,0 +1,120 @@
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: var(--topbar-height);
+  padding: 0 16px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.wordmark {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.hostPill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-quaternary-dim);
+  background: var(--surface-control);
+  border: 1px solid var(--border-control);
+  border-radius: 3px;
+  padding: 3px 7px;
+}
+
+.search {
+  flex: 1;
+  max-width: 340px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-control);
+  border: 1px solid var(--border-control);
+  border-radius: 4px;
+  padding: 5px 10px;
+}
+
+.searchIcon {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--text-placeholder);
+  border-radius: 50%;
+}
+
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  padding: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.searchInput::placeholder {
+  color: var(--text-placeholder);
+}
+
+.searchKey {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dimmer);
+  border: 1px solid var(--border-key);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.livePill {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 12px;
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.livePill.live {
+  color: var(--presence);
+  background: var(--presence-bg);
+  border: 1px solid var(--presence-border);
+}
+
+.livePill.reconnecting {
+  color: var(--attention);
+  background: var(--attention-bg);
+  border: 1px solid var(--attention-border);
+}
+
+.livePill.disconnected {
+  color: var(--destructive);
+  background: var(--destructive-bg);
+  border: 1px solid var(--destructive-border);
+}
+
+.liveDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.themeToggle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary-dim);
+  background: none;
+  border: 1px solid var(--border-control);
+  border-radius: 4px;
+  padding: 4px 9px;
+}

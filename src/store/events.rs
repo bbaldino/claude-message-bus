@@ -42,18 +42,32 @@ impl Store {
         room: Option<&str>,
         detail: Value,
     ) -> anyhow::Result<i64> {
+        let created_at = now_ms();
         let res = sqlx::query(
             "INSERT INTO events (created_at, kind, agent, room, detail_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )
-        .bind(now_ms())
+        .bind(created_at)
         .bind(kind)
         .bind(agent)
         .bind(room)
         .bind(detail.to_string())
         .execute(self.pool())
         .await?;
-        Ok(res.last_insert_rowid())
+        let id = res.last_insert_rowid();
+
+        // Ignored deliberately: an error here means nobody is listening, which is
+        // the normal case for the CLI and for tests.
+        let _ = self.events_tx.send(EventRow {
+            id,
+            created_at,
+            kind: kind.to_string(),
+            agent: agent.map(str::to_string),
+            room: room.map(str::to_string),
+            detail: detail.clone(),
+        });
+
+        Ok(id)
     }
 
     /// Most recent first — what a dashboard wants.
@@ -95,6 +109,32 @@ impl Store {
             .bind(limit)
             .fetch_all(self.pool())
             .await?;
+        Ok(rows.iter().map(event_row).collect())
+    }
+
+    /// Events narrowed by room and/or kind, newest first.
+    ///
+    /// The kind filter is applied here rather than in the browser because the
+    /// whole-bus scope has no natural bound — the table only grows. Live pushed
+    /// events are filtered client-side instead, so toggling a checkbox re-renders
+    /// rather than round-trips.
+    pub async fn events_filtered(
+        &self,
+        room: Option<&str>,
+        kind: Option<&str>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<EventRow>> {
+        let rows = sqlx::query(
+            "SELECT * FROM events
+             WHERE (?1 IS NULL OR room = ?1)
+               AND (?2 IS NULL OR kind = ?2)
+             ORDER BY id DESC LIMIT ?3",
+        )
+        .bind(room)
+        .bind(kind)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
         Ok(rows.iter().map(event_row).collect())
     }
 }

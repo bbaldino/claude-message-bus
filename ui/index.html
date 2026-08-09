@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Resolves and stamps the theme before the stylesheet link (below) can
+         block first paint. This must be inline and synchronous, not the logic
+         in src/theme.ts: an imported module — even eagerly imported — cannot
+         run until after the parser reaches it, which in the built output is
+         after the render-blocking stylesheet link, so the dark :root would
+         already have painted. It duplicates theme.ts's storage key and its
+         stored-choice-beats-system rule by hand; theme.test.ts (via
+         theme.inline.test.ts) asserts the key stays in sync so a rename can't
+         silently reintroduce the flash. Guarded the same way readTheme is: a
+         storage-blocking policy must fall back to the system preference, not
+         throw before anything else on the page has a chance to run. -->
+    <script>
+      ;(function () {
+        var KEY = 'claude-bus.theme'
+        var stored = null
+        try {
+          stored = localStorage.getItem(KEY)
+        } catch (e) {}
+        var theme =
+          stored === 'dark' || stored === 'light'
+            ? stored
+            : window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+              ? 'light'
+              : 'dark'
+        document.documentElement.setAttribute('data-theme', theme)
+      })()
+    </script>
+    <title>claude-bus</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

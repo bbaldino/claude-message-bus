@@ -1,0 +1,209 @@
+.closed {
+  width: var(--dock-width-closed);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--surface-rail);
+  border-left: 1px solid var(--border-primary);
+  padding: 14px 0;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.liveDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--presence);
+  flex-shrink: 0;
+}
+
+/* The open header's dot sits beside a 10px label rather than alone in the
+   40px closed rail, and the handoff pins it a size down from the closed
+   state's 7px: 6px there. */
+.liveDotOpen {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--presence);
+  flex-shrink: 0;
+}
+
+.unseen {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 10px;
+  color: var(--surface-page);
+  background: var(--accent);
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+
+.vertical {
+  writing-mode: vertical-rl;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-label);
+}
+
+.chord {
+  writing-mode: vertical-rl;
+  margin-top: auto;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 10px;
+  color: var(--text-faintest);
+}
+
+.open {
+  width: var(--dock-width-open);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface-rail);
+  border-left: 1px solid var(--border-primary);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-rule);
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-label);
+}
+
+.chordButton {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-quaternary);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  background: var(--surface-recessed);
+  border-bottom: 1px solid var(--border-rule);
+}
+
+.segment {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-quaternary);
+  background: none;
+  border: none;
+  border-radius: 3px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.segmentOn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--surface-page);
+  background: var(--accent);
+  border: none;
+  border-radius: 3px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.kinds {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-quaternary);
+  background: none;
+  border: 1px solid var(--border-control);
+  border-radius: 3px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.kindList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 14px;
+  background: var(--surface-recessed);
+  border-bottom: 1px solid var(--border-rule);
+}
+
+.kindItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-quaternary);
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.eventRow {
+  display: grid;
+  grid-template-columns: 54px 1fr;
+  gap: 2px 8px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.eventRow:hover {
+  background: var(--row-hover-dock);
+}
+
+.eventTime {
+  grid-column: 1;
+  grid-row: 1;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dimmer);
+  font-variant-numeric: tabular-nums;
+}
+
+.eventKind {
+  grid-column: 2;
+  grid-row: 1;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-label);
+}
+
+.eventDetail {
+  grid-column: 2;
+  grid-row: 2;
+  /* A grid item shrinks only to its content's intrinsic width unless told
+     otherwise — `min-width: 0` is what lets it obey the track and wrap
+     instead of overflowing it. */
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-quaternary);
+  /* Compact JSON detail is one long unbroken token with no natural break
+     opportunities; break it within the panel rather than clipping it, same as
+     the handoff's "Long values" guidance for agent names. */
+  word-break: break-all;
+}

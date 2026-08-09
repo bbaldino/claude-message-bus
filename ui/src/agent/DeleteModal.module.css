@@ -1,0 +1,263 @@
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* The scrim comes from a token in theme.css, which has its own light value.
+     Everything in this file is now var(--…). */
+  background: var(--modal-scrim);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-emphasis);
+  border-radius: 8px;
+  /* The shadow comes from a token in theme.css, which has its own light value.
+     The dark scrim allows a softer shadow; the light mode will be warmer. */
+  box-shadow: var(--modal-shadow);
+}
+
+.header {
+  flex: none;
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.subtitle {
+  margin: 8px 0 0;
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-tertiary-dim);
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Same pill geometry and colours as the agent screen's online state (4a) —
+   the handoff pins this to the identical spec, not a fresh one. */
+.pillOnline {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-radius: 12px;
+  padding: 2px 8px;
+  border: 1px solid;
+  color: var(--presence);
+  background: var(--presence-bg);
+  border-color: var(--presence-border);
+}
+
+.body {
+  padding: 16px 20px;
+}
+
+.nameEcho {
+  margin: 0 0 14px;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+  background: var(--surface-recessed);
+  /* The handoff gives #23272e here, which isn't an exact token match.
+     --border-primary (#22262e) is the closest existing token — off by 1 per
+     channel — and is the same substitution already made (and documented) for
+     the agent screen's disabled-delete-button border, which the handoff pins
+     to the same #23272e. Kept consistent rather than mapped two different
+     ways within one task. */
+  border: 1px solid var(--border-primary);
+  border-radius: 5px;
+  padding: 10px 12px;
+}
+
+.willLabel {
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--text-label);
+}
+
+.failed {
+  margin: 0 0 14px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--destructive);
+}
+
+.counts {
+  margin: 0 0 18px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.count {
+  color: var(--destructive);
+  text-align: right;
+}
+
+.label {
+  color: var(--text-secondary);
+}
+
+.secondary {
+  color: var(--text-dim);
+}
+
+.kept {
+  color: var(--text-dim);
+}
+
+.steps {
+  margin: 0 0 18px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 12px;
+}
+
+.stepNum {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+.stepText {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.watchStrip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-recessed);
+  border: 1px solid var(--border-primary);
+  border-radius: 5px;
+}
+
+.watchDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--presence);
+}
+
+.watchText {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--text-tertiary-dim);
+}
+
+.noAction {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-dimmest);
+}
+
+.input {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border-emphasis);
+  border-radius: 5px;
+  padding: 9px 12px;
+  caret-color: var(--accent);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.progress {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 11px;
+  padding: 13px 20px;
+  border-top: 1px solid var(--border-primary);
+  background: var(--surface-modal-footer);
+}
+
+.cancel {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--text-tertiary-dim);
+  background: transparent;
+  border: 1px solid var(--border-emphasis);
+  border-radius: 4px;
+  padding: 6px 13px;
+  cursor: pointer;
+}
+
+.delete {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--destructive);
+  background: var(--destructive-bg);
+  border: 1px solid var(--destructive-border);
+  border-radius: 4px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+
+/* Disabled until the typed name matches exactly. The handoff specifies its
+   own muted destructive pair (#4a3a36 on #1e1614, border #33231f) that has no
+   corresponding token in theme.css; rather than invent a new hex not backed
+   by a token, the same destructive palette is muted with opacity, which reads
+   the same way ("this is still the dangerous action, just unavailable") using
+   only existing tokens. */
+.delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

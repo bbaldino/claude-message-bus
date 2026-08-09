@@ -134,6 +134,50 @@ async fn history_returns_oldest_first_and_respects_limit() {
 }
 
 #[tokio::test]
+async fn history_before_walks_backward_without_gaps_or_overlap() {
+    let (_d, store) = seeded().await;
+    let mut ids = Vec::with_capacity(5);
+    for i in 0..5 {
+        let id = store
+            .append_message("protocol", "caas", &format!("msg{i}"), false, false)
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+
+    // Page 1: the newest two.
+    let page1 = store.history("protocol", 2).await.unwrap();
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1[0].body, "msg3");
+    assert_eq!(page1[1].body, "msg4");
+
+    // Page 2: walk backwards from the oldest id on page 1.
+    let oldest_on_page1 = page1[0].id;
+    let page2 = store
+        .history_before("protocol", oldest_on_page1, 2)
+        .await
+        .unwrap();
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2[0].body, "msg1", "oldest first");
+    assert_eq!(page2[1].body, "msg2");
+
+    // No id repeats across the two pages, and no id is skipped between them.
+    let page1_ids: Vec<i64> = page1.iter().map(|m| m.id).collect();
+    let page2_ids: Vec<i64> = page2.iter().map(|m| m.id).collect();
+    for id in &page2_ids {
+        assert!(
+            !page1_ids.contains(id),
+            "page 2 must not repeat a page 1 id: {page1_ids:?} vs {page2_ids:?}"
+        );
+    }
+    assert_eq!(
+        page2_ids[1] + 1,
+        page1_ids[0],
+        "no gap between the two pages: {page2_ids:?} then {page1_ids:?}"
+    );
+}
+
+#[tokio::test]
 async fn cursor_starts_at_zero_and_advances() {
     let (_d, store) = seeded().await;
     assert_eq!(store.cursor("protocol", "dashboard").await.unwrap(), 0);
@@ -947,5 +991,268 @@ async fn forget_agent_refuses_an_online_agent_and_rolls_the_whole_delete_back() 
         store.cursor("protocol", "caas").await.unwrap(),
         7,
         "the cursor must survive the rollback"
+    );
+}
+
+#[tokio::test]
+async fn message_buckets_place_messages_in_the_right_five_minute_slots() {
+    use claude_bus::store::BucketScope;
+    let (_d, store) = temp_store().await;
+    let now = 1_785_000_000_000i64;
+    let five_min = 300_000i64;
+
+    // Two messages in the newest slot, one three slots back, none elsewhere.
+    for at in [now - 1_000, now - 2_000, now - (3 * five_min) - 1_000] {
+        store
+            .append_message_at("protocol", "caas", "hi", false, false, at)
+            .await
+            .unwrap();
+    }
+
+    let b = store
+        .message_buckets(BucketScope::Room("protocol"), now, five_min, 12)
+        .await
+        .unwrap();
+
+    assert_eq!(b.len(), 12, "always returns exactly `buckets` slots");
+    assert_eq!(b[11], 2, "newest slot is last");
+    assert_eq!(b[8], 1, "three slots back");
+    assert_eq!(b.iter().sum::<i64>(), 3, "and nothing anywhere else");
+}
+
+#[tokio::test]
+async fn message_buckets_ignore_messages_older_than_the_window() {
+    use claude_bus::store::BucketScope;
+    let (_d, store) = temp_store().await;
+    let now = 1_785_000_000_000i64;
+    let five_min = 300_000i64;
+
+    store
+        .append_message_at(
+            "protocol",
+            "caas",
+            "ancient",
+            false,
+            false,
+            now - (13 * five_min),
+        )
+        .await
+        .unwrap();
+
+    let b = store
+        .message_buckets(BucketScope::Room("protocol"), now, five_min, 12)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        b.iter().sum::<i64>(),
+        0,
+        "outside the window contributes nothing"
+    );
+}
+
+#[tokio::test]
+async fn message_buckets_scope_to_one_agent() {
+    use claude_bus::store::BucketScope;
+    let (_d, store) = temp_store().await;
+    let now = 1_785_000_000_000i64;
+    let five_min = 300_000i64;
+
+    store
+        .append_message_at("protocol", "caas", "a", false, false, now - 1_000)
+        .await
+        .unwrap();
+    store
+        .append_message_at("protocol", "dashboard", "b", false, false, now - 1_000)
+        .await
+        .unwrap();
+
+    let caas = store
+        .message_buckets(BucketScope::Agent("caas"), now, five_min, 12)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        caas.iter().sum::<i64>(),
+        1,
+        "only that agent's own messages"
+    );
+}
+
+#[tokio::test]
+async fn a_paused_room_needs_you() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store
+        .append_event(
+            "room_paused",
+            Some("caas"),
+            Some("protocol"),
+            serde_json::json!({"count": 20}),
+        )
+        .await
+        .unwrap();
+
+    let flag = store
+        .room_flag("protocol", &["caas".to_string()])
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(flag, Some(RoomFlag::NeedsYou { exchanges: 20 })),
+        "room_paused carries the exchange count, got {flag:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_resumed_room_no_longer_needs_you() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store
+        .append_event(
+            "room_paused",
+            Some("caas"),
+            Some("protocol"),
+            serde_json::json!({"count": 20}),
+        )
+        .await
+        .unwrap();
+    store
+        .append_event(
+            "resumed",
+            Some("bbaldino"),
+            Some("protocol"),
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+
+    let flag = store
+        .room_flag("protocol", &["caas".to_string()])
+        .await
+        .unwrap();
+
+    assert!(
+        !matches!(flag, Some(RoomFlag::NeedsYou { .. })),
+        "the later resumed clears it, got {flag:?}"
+    );
+}
+
+#[tokio::test]
+async fn rate_limited_does_not_need_you() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    // rate_limited is the send-interval limiter, NOT the exchange cap. The design
+    // handoff conflates them; this test pins the distinction.
+    store
+        .append_event(
+            "rate_limited",
+            Some("caas"),
+            Some("protocol"),
+            serde_json::json!({"retry_in_ms": 420}),
+        )
+        .await
+        .unwrap();
+
+    let flag = store
+        .room_flag("protocol", &["caas".to_string()])
+        .await
+        .unwrap();
+
+    assert!(
+        !matches!(flag, Some(RoomFlag::NeedsYou { .. })),
+        "rate limiting is not a request for a human, got {flag:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_room_whose_members_are_all_offline_with_unread_is_blocked() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store.join_room("protocol", "dashboard").await.unwrap();
+    store
+        .append_message("protocol", "bbaldino", "anyone?", false, true)
+        .await
+        .unwrap();
+    store
+        .append_message("protocol", "bbaldino", "still there?", false, true)
+        .await
+        .unwrap();
+
+    // Nobody online.
+    let flag = store.room_flag("protocol", &[]).await.unwrap();
+
+    match flag {
+        Some(RoomFlag::Blocked { queued, waiting_on }) => {
+            // Messages, not deliveries. Two messages unread by two members is two
+            // things waiting, not four: the rail renders this as "2 queued", and
+            // shipping data rather than sentences only works if the datum means
+            // what the sentence says.
+            assert_eq!(
+                queued, 2,
+                "two messages, however many members have not read them"
+            );
+            assert_eq!(
+                waiting_on,
+                vec!["caas".to_string(), "dashboard".to_string()]
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn queued_counts_distinct_messages_not_per_member_deliveries() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store.join_room("protocol", "dashboard").await.unwrap();
+    let first = store
+        .append_message("protocol", "bbaldino", "anyone?", false, true)
+        .await
+        .unwrap();
+    store
+        .append_message("protocol", "bbaldino", "still there?", false, true)
+        .await
+        .unwrap();
+    // caas has seen the first message; dashboard has seen nothing.
+    store.set_cursor("protocol", "caas", first).await.unwrap();
+
+    let flag = store.room_flag("protocol", &[]).await.unwrap();
+
+    match flag {
+        Some(RoomFlag::Blocked { queued, .. }) => {
+            // Two distinct messages are waiting on somebody. Summing unread across
+            // members — the arithmetic this replaced — would say three: one for
+            // caas plus two for dashboard, double-counting the second message.
+            assert_eq!(queued, 2, "distinct messages, not deliveries");
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_room_with_one_member_online_is_not_blocked() {
+    use claude_bus::store::RoomFlag;
+    let (_d, store) = temp_store().await;
+    store.join_room("protocol", "caas").await.unwrap();
+    store.join_room("protocol", "dashboard").await.unwrap();
+    store
+        .append_message("protocol", "bbaldino", "anyone?", false, true)
+        .await
+        .unwrap();
+
+    let flag = store
+        .room_flag("protocol", &["caas".to_string()])
+        .await
+        .unwrap();
+
+    assert!(
+        !matches!(flag, Some(RoomFlag::Blocked { .. })),
+        "blocked means ALL members are offline, got {flag:?}"
     );
 }

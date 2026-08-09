@@ -1,0 +1,47 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  text-transform: uppercase;
+  border-radius: 3px;
+  border: 1px solid;
+  flex: none;
+}
+
+.sm {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+}
+
+.md {
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  padding: 2px 7px;
+}
+
+/* The human badge carries no fill — the handoff gives it a colour and a border
+   only, unlike the state flags. */
+.human {
+  color: var(--human);
+  border-color: var(--human-border);
+}
+
+.attention {
+  color: var(--attention);
+  background: var(--attention-bg);
+  border-color: var(--attention-border);
+}
+
+.destructive {
+  color: var(--destructive);
+  background: var(--destructive-bg);
+  border-color: var(--destructive-border);
+}
+
+.presence {
+  color: var(--presence);
+  background: var(--presence-bg);
+  border-color: var(--presence-border);
+}

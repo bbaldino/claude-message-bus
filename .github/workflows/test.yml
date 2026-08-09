@@ -3,8 +3,28 @@ name: test
 # Reusable gate. Both publish-image.yml and release-plz.yml `uses:` this so a
 # red main blocks both — no image AND no release PR. Ownership lives here so the
 # two callers can't drift.
+#
+# `pull_request` as well as `workflow_call`, so work on a branch is gated before
+# it reaches main rather than only after. Without it nothing runs on a feature
+# branch at all: release-plz fires on pushes to main, publish-image on tags, and
+# a reusable workflow with no trigger of its own runs only when called. A long
+# branch would otherwise accumulate every change unchecked and meet this gate for
+# the first time at the merge.
+# `workflow_dispatch` is a manual escape hatch, independent of PR events. A push
+# to this branch once produced no run at all — no `synchronize`, and cycling the
+# PR produced no `reopened` either — with Actions enabled, the workflow active,
+# and the same trigger having fired earlier for the PR's `opened` event. Being
+# able to start the gate by hand turns that from "wait and hope" into a check.
+#
+# Dispatching a non-default branch works: `gh workflow run test.yml --ref <branch>`
+# started this gate on a feature branch while the copy on the default branch had
+# no `workflow_dispatch` trigger at all. GitHub's docs say the file must be on the
+# default branch; that is about the Actions UI listing the workflow, not about the
+# API refusing the call. Verified, not assumed.
 on:
   workflow_call:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -21,3 +41,49 @@ jobs:
       - run: cargo +nightly fmt --check
       - run: cargo +stable clippy --all-targets --all-features -- -D warnings
       - run: cargo +stable test --locked
+      # `cargo test` regenerates ui/src/types/ from the Rust structs via ts-rs,
+      # into this job's workspace, and then throws it away. test-ui is a separate
+      # job with its own checkout, so it typechecks the *committed* file. Without
+      # this, renaming a field on api.rs::Agent and forgetting to run `cargo test`
+      # locally leaves CI entirely green while the browser renders `undefined` —
+      # the exact drift generation exists to prevent.
+      - name: generated TypeScript types must match the Rust structs (run `cargo test` and commit)
+        run: git diff --exit-code -- ui/src/types
+
+  test-ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run build
+
+  # Nothing else in CI builds the Dockerfile. publish-image.yml runs on `v*.*.*`
+  # tags only, and release-plz creates the tag *before* that workflow runs — so a
+  # broken Dockerfile yields a git tag and a GitHub Release with no image behind
+  # them. This builds it on every gate run without pushing, which is also the only
+  # thing that exercises the node stage and its .dockerignore interaction.
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Matches publish-image.yml, so the gate builds the same thing that
+          # ships rather than merely something that compiles.
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

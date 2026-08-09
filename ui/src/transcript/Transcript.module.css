@@ -1,0 +1,289 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 13px 24px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.roomName {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.members {
+  font-size: 12px;
+  color: var(--text-quaternary-dim);
+}
+
+.memberPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-basis: 100%;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-quaternary);
+  background: var(--surface-control);
+  border: 1px solid var(--border-control);
+  border-radius: 12px;
+  padding: 3px 9px;
+}
+
+.pillOnline {
+  color: var(--text-secondary);
+}
+
+.pillDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--offline-dot);
+}
+
+.pillOnline .pillDot {
+  background: var(--presence);
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 24px 0;
+  /* Do not remove: Chromium's native scroll anchoring is on by default, and it
+     already shifts `scrollTop` when content is inserted above the viewport —
+     exactly what RoomScreen's own `onScroll` load-older handler also corrects
+     for. With both active, a page of older messages gets corrected twice and
+     the reader lands a full page away from the anchor row. Disabling the
+     browser's anchoring here makes our explicit correction the only one, and
+     keeps behaviour identical on Safari, where scroll anchoring doesn't
+     exist to begin with. */
+  overflow-anchor: none;
+}
+
+.dateDivider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0 6px;
+}
+
+.rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border-rule);
+}
+
+.dateLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dimmer);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 0 18px;
+  padding: 11px 0;
+}
+
+.gutter {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dimmer);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding-top: 2px;
+}
+
+.bodyCol {
+  min-width: 0;
+}
+
+/* The rule sits in the gutter gap rather than indenting the text. */
+.fromHuman {
+  border-left: 2px solid var(--human);
+  margin-left: -12px;
+  padding-left: 10px;
+}
+
+.byline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.author {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.body {
+  font-size: 13.5px;
+  line-height: 1.62;
+  color: var(--text-body);
+  max-width: 76ch;
+  text-wrap: pretty;
+  margin-top: 3px;
+}
+
+.bodyNarrow {
+  max-width: 66ch;
+}
+
+.para {
+  margin: 0 0 10px;
+}
+
+.para:last-child {
+  margin-bottom: 0;
+}
+
+.list {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--code-fg);
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.pre {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--code-fg);
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 4px;
+  padding: 9px 11px;
+  margin: 0 0 10px;
+  overflow-x: auto;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.seq {
+  color: var(--text-dimmer);
+}
+
+.delivered {
+  color: var(--text-dim);
+}
+
+.queued {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--attention);
+}
+
+.queuedDot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--attention);
+}
+
+/* An empty room is a normal state, not an error: one line stating what is
+   true, then stop. */
+.emptyRoom {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.pendingRow {
+  padding: 11px 0 11px 98px;
+}
+
+.pendingBody {
+  font-size: 13.5px;
+  line-height: 1.62;
+  color: var(--text-tertiary-dim);
+  max-width: 76ch;
+  text-wrap: pretty;
+}
+
+.pendingNote {
+  display: block;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-dimmest);
+  margin-top: 3px;
+}
+
+.failedNote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--destructive);
+  margin-top: 3px;
+}
+
+.failedNote button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.newBelow {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--surface-page);
+  background: var(--accent);
+  border: none;
+  border-radius: 12px;
+  padding: 5px 13px;
+  cursor: pointer;
+}

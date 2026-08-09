@@ -1,0 +1,30 @@
+.crashed {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  background: var(--surface-page);
+  text-align: center;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--destructive);
+}
+
+.detail {
+  margin: 0;
+  max-width: 640px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-quaternary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

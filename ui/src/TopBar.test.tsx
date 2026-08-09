@@ -1,0 +1,102 @@
+import { fireEvent, render, screen } from '@testing-library/react'
+import { expect, test, vi } from 'vitest'
+import { TopBar } from './TopBar'
+
+function mockStore(connection: string) {
+  vi.doMock('./useStore', () => ({
+    useStore: () => ({ rail: null, events: [], messages: [], room: null, connection }),
+  }))
+}
+
+test('the live pill reflects each connection state', async () => {
+  for (const [state, label] of [
+    ['live', 'live'],
+    ['reconnecting', 'reconnecting'],
+    ['disconnected', 'disconnected'],
+  ] as const) {
+    vi.resetModules()
+    mockStore(state)
+    const { TopBar: Fresh } = await import('./TopBar')
+    const { unmount } = render(<Fresh />)
+    expect(screen.getByTestId('live-pill').textContent).toBe(label)
+    unmount()
+  }
+})
+
+test('the host pill shows host and version once meta resolves', async () => {
+  vi.resetModules()
+  mockStore('live')
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify({ host: 'hardac', version: '0.3.3' }), {
+      headers: { 'content-type': 'application/json' },
+    }),
+  )
+  const { TopBar: Fresh } = await import('./TopBar')
+  render(<Fresh />)
+  expect(await screen.findByText('hardac · 0.3.3')).toBeDefined()
+})
+
+test('the search placeholder does not promise message search', () => {
+  render(<TopBar />)
+  const input = screen.getByPlaceholderText(/search/)
+  // There is no search endpoint; rooms and agents filter client-side and message
+  // text has no data path. The placeholder must not claim otherwise.
+  expect(input.getAttribute('placeholder')).not.toMatch(/message/i)
+})
+
+test('pressing / focuses the search field', () => {
+  render(<TopBar />)
+  const input = screen.getByPlaceholderText(/search/)
+  expect(document.activeElement).not.toBe(input)
+
+  // dispatchEvent (what fireEvent wraps) returns false when the event was
+  // cancelled — i.e. when the handler called preventDefault, which it must,
+  // or the "/" would land in the field the instant it gains focus.
+  const notCancelled = fireEvent.keyDown(window, { key: '/' })
+  expect(notCancelled).toBe(false)
+  expect(document.activeElement).toBe(input)
+})
+
+test('pressing / does not steal the keystroke while a different text field has focus', () => {
+  // Mirrors the dock's equivalent test for its own chord: the check has to be
+  // `isTypingTarget`, shared with every other global shortcut, not a
+  // component-local re-implementation that only knows about its own field.
+  render(
+    <>
+      <input data-testid="field" />
+      <TopBar />
+    </>,
+  )
+  const field = screen.getByTestId('field')
+  field.focus()
+  const notCancelled = fireEvent.keyDown(field, { key: '/', bubbles: true })
+  expect(notCancelled).toBe(true)
+  expect(document.activeElement).toBe(field)
+})
+
+test('pressing / while the search field already has focus does not steal the keystroke', () => {
+  render(<TopBar />)
+  const input = screen.getByPlaceholderText(/search/)
+  input.focus()
+  expect(document.activeElement).toBe(input)
+
+  // dispatchEvent returns true when nothing cancelled it — the handler must
+  // back off entirely so the browser's normal keydown handling inserts the
+  // character, letting the user type a literal "/" into the box.
+  const notCancelled = fireEvent.keyDown(input, { key: '/' })
+  expect(notCancelled).toBe(true)
+  expect(document.activeElement).toBe(input)
+})
+
+test('the toggle is usable and names the theme it will switch to', async () => {
+  document.documentElement.setAttribute('data-theme', 'dark')
+  localStorage.clear()
+  vi.resetModules()
+  mockStore('live')
+  const { TopBar: Fresh } = await import('./TopBar')
+  render(<Fresh />)
+  const button = screen.getByRole('button', { name: /light|dark/i })
+  expect(button.hasAttribute('disabled')).toBe(false)
+  fireEvent.click(button)
+  expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+})

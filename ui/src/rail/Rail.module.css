@@ -1,0 +1,152 @@
+.rail {
+  background: var(--surface-rail);
+  border-right: 1px solid var(--border-primary);
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.railHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 16px 16px 9px;
+}
+
+.railHeader.agents {
+  padding-top: 22px;
+}
+
+.railLabel {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-label);
+}
+
+.railCount {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dimmest);
+}
+
+.railRows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.railEmpty {
+  padding: 16px;
+  color: var(--text-quaternary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.row {
+  display: block;
+  padding: 8px 9px;
+  border-radius: 5px;
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+
+.row:hover {
+  background: var(--row-hover);
+}
+
+.row.selected {
+  background: var(--row-selected);
+  border-left-color: var(--accent);
+}
+
+.rowLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rowName {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.row.selected .rowName {
+  color: var(--text-primary);
+}
+
+.rowName.empty {
+  color: var(--text-quaternary);
+}
+
+.rowSubtitle {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-quaternary-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row.flagNeedsYou {
+  border-left-color: var(--attention);
+}
+
+.agentRow {
+  padding: 7px 9px;
+}
+
+/* Distinct from .rowName: the agent row's name is mono 400 (identity, not the
+ * emphasis a room name carries) and its colour tracks presence rather than
+ * selection — online #dfe3e8 (--text-body-strong), offline #79818d
+ * (--text-quaternary), per the handoff's agent row spec. */
+.agentName {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.agentName.online {
+  color: var(--text-body-strong);
+}
+
+.agentName.offline {
+  color: var(--text-quaternary);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--offline-dot);
+}
+
+.dot.online {
+  background: var(--presence);
+}
+
+.agentAge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dimmer);
+  width: 26px;
+  text-align: right;
+  flex: none;
+}
+
+.spacer {
+  margin-left: auto;
+}
