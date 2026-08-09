@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/bbaldino/claude-message-bus/compare/v0.3.3...v0.4.0) - 2026-08-09
+
+### Added
+
+- replace the web UI with a TypeScript console
+
+### Other
+
+- phase 1 implementation plan for the TypeScript frontend
+- design for a TypeScript frontend, and retarget the design brief
+- say authority where the code means authority
+- rename human_origin, and say why the gate and label differ
+- clear the online flag before leaving the registry
+
 ## [0.3.3](https://github.com/bbaldino/claude-message-bus/compare/v0.3.2...v0.3.3) - 2026-08-06
 
 ### Added
