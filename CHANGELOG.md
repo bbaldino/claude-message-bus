@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/bbaldino/claude-message-bus/compare/v0.4.0...v0.4.1) - 2026-08-09
+
+### Fixed
+
+- refuse cross-origin websocket handshakes
+
+### Other
+
+- stop a_dm_reaches_a_connected_agent racing an Unread summary
+
 ## [0.4.0](https://github.com/bbaldino/claude-message-bus/compare/v0.3.3...v0.4.0) - 2026-08-09
 
 ### Added
