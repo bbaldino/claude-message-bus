@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::{Router, routing::get};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -356,7 +357,42 @@ async fn human_active(
     "ok"
 }
 
-async fn upgrade(ws: WebSocketUpgrade, State(app): State<App>) -> Response {
+/// The same cross-origin guard the HTML delete form carries, applied to the
+/// websocket handshake — see `web::origin_matches_host`, which this reuses so
+/// the two paths cannot drift.
+///
+/// It matters here for a reason it did not before the web console existed. A
+/// websocket handshake is not subject to CORS: any page a browser loads can open
+/// one to any address it can reach, including `127.0.0.1`, and read and write the
+/// stream. Once the console made a browser a first-class *writer* — registering
+/// with `human: true` and sending — that turned "anything that can reach the
+/// port" into "anything the operator's browser will load". A hostile page needs
+/// no network route to this bus at all; it only needs the operator to visit it.
+///
+/// The asymmetry that makes this work: a browser is *required* to send `Origin`
+/// on a websocket handshake, while a non-browser client does not send one at all.
+/// So a request with **no** `Origin` is allowed — that is `claude-bus agent`,
+/// `chat`, `tail`, and the test harness, all of which could already reach the
+/// port directly, so refusing them would buy nothing and break every agent. A
+/// request *with* an `Origin` is a browser, and it must be a page this bus
+/// served.
+fn origin_permitted(headers: &HeaderMap) -> bool {
+    let get = |h: header::HeaderName| headers.get(h).and_then(|v| v.to_str().ok());
+    match get(header::ORIGIN) {
+        None => true,
+        Some(origin) => {
+            crate::web::origin_matches_host(origin, get(header::HOST).unwrap_or_default())
+        }
+    }
+}
+
+async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(app): State<App>) -> Response {
+    if !origin_permitted(&headers) {
+        // 403 rather than a failed upgrade: the handshake is well-formed, and
+        // the browser's `onerror` says nothing either way, so the status is for
+        // whoever reads the logs.
+        return (StatusCode::FORBIDDEN, "cross-origin websocket refused").into_response();
+    }
     ws.on_upgrade(move |socket| connection(socket, app))
 }
 
@@ -848,5 +884,62 @@ mod event_relay_tests {
             !event_relay_keep_going(&RecvError::Closed),
             "a closed channel (store dropped, i.e. shutdown) must stop the relay"
         );
+    }
+}
+
+#[cfg(test)]
+mod origin_guard_tests {
+    use super::*;
+
+    fn headers(pairs: &[(header::HeaderName, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(k.clone(), v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn a_client_that_sends_no_origin_is_allowed() {
+        // Every CLI client lands here: `agent`, `chat`, `tail`, and the test
+        // harness. Non-browser websocket clients do not send `Origin`, and
+        // refusing them would break every agent on the bus while buying
+        // nothing — they could already reach the port directly.
+        assert!(origin_permitted(&headers(&[(header::HOST, "nas:7777")])));
+        assert!(origin_permitted(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn the_consoles_own_page_is_allowed() {
+        assert!(origin_permitted(&headers(&[
+            (header::ORIGIN, "http://nas:7777"),
+            (header::HOST, "nas:7777"),
+        ])));
+    }
+
+    #[test]
+    fn a_page_from_somewhere_else_is_refused() {
+        // The attack this guard exists for: a websocket handshake is not
+        // subject to CORS, so any page the operator loads can open one to a
+        // bus on 127.0.0.1 and send with human authority. A browser always
+        // sends `Origin`, which is what makes it distinguishable here.
+        assert!(!origin_permitted(&headers(&[
+            (header::ORIGIN, "https://evil.example"),
+            (header::HOST, "127.0.0.1:7777"),
+        ])));
+        assert!(!origin_permitted(&headers(&[
+            (header::ORIGIN, "http://127.0.0.1:9999"),
+            (header::HOST, "127.0.0.1:7777"),
+        ])));
+    }
+
+    #[test]
+    fn a_sandboxed_frames_null_origin_is_refused() {
+        // `null` is what a sandboxed iframe sends. It is not an http(s) origin
+        // and must never match, whatever the host happens to be.
+        assert!(!origin_permitted(&headers(&[
+            (header::ORIGIN, "null"),
+            (header::HOST, "nas:7777"),
+        ])));
     }
 }
