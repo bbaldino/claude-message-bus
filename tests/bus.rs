@@ -4,8 +4,8 @@ use claude_bus::proto::{FromBus, ReplyResult, Target, ToBus};
 use claude_bus::store::Store;
 use common::{
     agent_is_online, connect, connect_human, connect_observer, connect_versioned,
-    flood_continuously, flood_message, next_event, next_non_flood_event, pump_for, send, start_bus,
-    start_bus_with_dir, start_bus_with_guards_dir, start_bus_with_keepalive,
+    flood_continuously, flood_message, next_event, next_message, next_non_flood_event, pump_for,
+    send, start_bus, start_bus_with_dir, start_bus_with_guards_dir, start_bus_with_keepalive,
     start_bus_with_registry, start_bus_with_relayers, start_bus_with_relayers_dir, wait_until,
 };
 
@@ -122,7 +122,11 @@ async fn a_dm_reaches_a_connected_agent() {
         other => panic!("expected Sent, got {other:?}"),
     }
 
-    match next_event(&mut b).await {
+    // `next_message`, not `next_event`: the bus may interleave an `Unread`
+    // summary on this connection ahead of the fan-out, and which lands first is
+    // timing-dependent. The claim under test is that the DM reaches a connected
+    // agent — not that it is the very next frame.
+    match next_message(&mut b).await {
         FromBus::Message {
             from, text, room, ..
         } => {

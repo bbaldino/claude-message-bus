@@ -568,6 +568,29 @@ pub async fn next_event(ws: &mut Ws) -> FromBus {
     }
 }
 
+/// The next `Message` on this connection, skipping control frames that may be
+/// interleaved ahead of it.
+///
+/// Deliberately separate from `next_event` rather than a change to it: several
+/// tests assert on exact frame *ordering*, and making the shared helper skip
+/// frames would silently weaken them. Use this only where the test's subject is
+/// "a message arrives", not "this frame arrives next".
+///
+/// The interleaving is real and timing-dependent — the bus can deliver an
+/// `Unread` summary on the same connection, and which lands first depends on
+/// scheduling. Asserting on the very next frame made
+/// `a_dm_reaches_a_connected_agent` fail under CPU contention with
+/// "expected Message, got Unread". A sleep would only widen the window; skipping
+/// non-`Message` frames is what actually expresses the assertion.
+pub async fn next_message(ws: &mut Ws) -> FromBus {
+    loop {
+        let event = next_event(ws).await;
+        if matches!(event, FromBus::Message { .. }) {
+            return event;
+        }
+    }
+}
+
 /// Like `next_event`, but skips over the flood of `FromBus::Message` events
 /// from "attacker" that the routing-queue-pressure tests push through
 /// `Registry::send_to` directly. Those exist only to occupy the queue while
