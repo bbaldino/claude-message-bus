@@ -352,7 +352,13 @@ export function RoomScreen() {
   return (
     <div className={styles.screen}>
       {railRoom && <RoomHeader room={railRoom} agents={rail?.agents ?? []} />}
-      <RoomTabs view={view} onView={setView} count={filesFailed ? null : (files?.length ?? null)} />
+      <RoomTabs
+        view={view}
+        onView={setView}
+        count={filesFailed ? null : (files?.length ?? null)}
+        hidden={railRoom?.hidden ?? false}
+        onHidden={(h) => room && void store.setHidden(room, h)}
+      />
       {/* Not gated on `view`: a failed read is worth surfacing without
           requiring the tab to be opened, the same reasoning that puts the
           count in the tab label itself. */}

@@ -41,3 +41,12 @@ export const fetchDeletionPreview = (name: string) =>
 
 export const fetchRoomFiles = (room: string) =>
   getJson<RoomFile[]>(`/api/rooms/${encodeURIComponent(room)}/files`)
+
+export const setRoomHidden = (room: string, hidden: boolean) =>
+  fetch(`/api/rooms/${encodeURIComponent(room)}/hidden`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ hidden }),
+  }).then((r) => {
+    if (!r.ok) throw new Error(`hide failed: ${r.status}`)
+  })

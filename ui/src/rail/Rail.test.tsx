@@ -12,13 +12,14 @@ import type { RailAgent } from '../types/RailAgent'
 
 const rail: RailSummary = {
   rooms: [
-    { name: 'quiet', members: ['a'], lastActivity: 9, buckets: [0], flag: null },
+    { name: 'quiet', members: ['a'], lastActivity: 9, buckets: [0], flag: null, hidden: false },
     {
       name: 'stuck',
       members: ['a'],
       lastActivity: 1,
       buckets: [1],
       flag: { kind: 'needsYou', exchanges: 20 },
+      hidden: false,
     },
     {
       name: 'waiting',
@@ -26,6 +27,7 @@ const rail: RailSummary = {
       lastActivity: 2,
       buckets: [1],
       flag: { kind: 'blocked', queued: 2, waitingOn: ['caas'] },
+      hidden: false,
     },
   ],
   agents: [
@@ -204,7 +206,14 @@ test('a shared ticker re-derives relative age on an interval, with no store upda
 })
 
 test('a room with no last activity renders its name as silent', () => {
-  renderRoomRow({ name: 'ghost', members: ['a'], lastActivity: null, buckets: [0], flag: null })
+  renderRoomRow({
+    name: 'ghost',
+    members: ['a'],
+    lastActivity: null,
+    buckets: [0],
+    flag: null,
+    hidden: false,
+  })
   expect(screen.getByTestId('room-name').classList.contains(styles.empty)).toBe(true)
 })
 
@@ -215,6 +224,7 @@ test('a room name with special characters is percent-encoded in its link', () =>
     lastActivity: 5,
     buckets: [0],
     flag: null,
+    hidden: false,
   })
   expect(container.querySelector('a')?.getAttribute('href')).toBe('/rooms/dm%3Aa%7Cb')
 })
@@ -242,6 +252,7 @@ test('a room and an agent sharing a name are each selected only on their own rou
     lastActivity: 1,
     buckets: [0],
     flag: null,
+    hidden: false,
   }
   const agent: RailAgent = {
     name: 'shared',

@@ -72,6 +72,7 @@ test('the delivery preview counts the room members, not every agent', () => {
           lastActivity: null,
           buckets: [],
           flag: null,
+          hidden: false,
         },
       ],
       agents: [
@@ -124,7 +125,14 @@ test('alone in the room, the preview does not count the operator as a recipient'
     sendAs: 'bbaldino',
     rail: {
       rooms: [
-        { name: 'protocol', members: ['bbaldino'], lastActivity: null, buckets: [], flag: null },
+        {
+          name: 'protocol',
+          members: ['bbaldino'],
+          lastActivity: null,
+          buckets: [],
+          flag: null,
+          hidden: false,
+        },
       ],
       agents: [
         {

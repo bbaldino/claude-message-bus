@@ -1,6 +1,6 @@
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { beforeEach, expect, test, vi } from 'vitest'
-import { renderWithStore } from '../testing/fakeStore'
+import { renderWithStore, storeActions } from '../testing/fakeStore'
 import type { State } from '../data/store'
 import { RoomScreen } from './RoomScreen'
 import styles from './Transcript.module.css'
@@ -25,7 +25,14 @@ beforeEach(() => {
 const base: Partial<State> = {
   rail: {
     rooms: [
-      { name: 'protocol', members: ['caas', 'hub'], lastActivity: 5, buckets: [1], flag: null },
+      {
+        name: 'protocol',
+        members: ['caas', 'hub'],
+        lastActivity: 5,
+        buckets: [1],
+        flag: null,
+        hidden: false,
+      },
     ],
     agents: [
       {
@@ -143,7 +150,16 @@ test('the transcript body stays wide when the dock is closed', () => {
 })
 
 const emptyRoomRail = {
-  rooms: [{ name: 'protocol', members: ['caas'], lastActivity: 5, buckets: [1], flag: null }],
+  rooms: [
+    {
+      name: 'protocol',
+      members: ['caas'],
+      lastActivity: 5,
+      buckets: [1],
+      flag: null,
+      hidden: false,
+    },
+  ],
   agents: [
     {
       name: 'caas',
@@ -314,4 +330,50 @@ test('a message from an agent no longer in the rail shows its bare name', async 
     ],
   })
   expect(await screen.findByText('departed')).toBeDefined()
+})
+
+test('the tab bar offers hide for a visible room and unhide for a hidden one', async () => {
+  renderWithStore(<RoomScreen />, {
+    room: 'protocol',
+    roomLoad: 'ready',
+    rail: {
+      rooms: [
+        {
+          name: 'protocol',
+          members: [],
+          lastActivity: null,
+          buckets: [],
+          flag: null,
+          hidden: false,
+        },
+      ],
+      agents: [],
+    },
+    messages: [],
+  })
+  expect(await screen.findByRole('button', { name: 'hide' })).toBeDefined()
+  expect(screen.queryByRole('button', { name: 'unhide' })).toBeNull()
+})
+
+test('clicking hide asks the store to hide this room', async () => {
+  renderWithStore(<RoomScreen />, {
+    room: 'protocol',
+    roomLoad: 'ready',
+    rail: {
+      rooms: [
+        {
+          name: 'protocol',
+          members: [],
+          lastActivity: null,
+          buckets: [],
+          flag: null,
+          hidden: false,
+        },
+      ],
+      agents: [],
+    },
+    messages: [],
+  })
+  fireEvent.click(await screen.findByRole('button', { name: 'hide' }))
+  expect(storeActions.setHidden).toHaveBeenCalledWith('protocol', true)
 })

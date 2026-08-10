@@ -8,10 +8,14 @@ export function RoomTabs({
   view,
   onView,
   count,
+  hidden,
+  onHidden,
 }: {
   view: 'transcript' | 'files'
   onView: (v: 'transcript' | 'files') => void
   count: number | null
+  hidden: boolean
+  onHidden: (hidden: boolean) => void
 }) {
   return (
     <div className={styles.tabs}>
@@ -26,6 +30,9 @@ export function RoomTabs({
         onClick={() => onView('files')}
       >
         {count === null ? 'files' : `files · ${count}`}
+      </button>
+      <button className={styles.hideToggle} onClick={() => onHidden(!hidden)}>
+        {hidden ? 'unhide' : 'hide'}
       </button>
     </div>
   )

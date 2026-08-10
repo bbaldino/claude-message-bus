@@ -37,6 +37,7 @@ export const storeActions = {
   setDraft: vi.fn(),
   retry: vi.fn(),
   discard: vi.fn(),
+  setHidden: vi.fn(),
 }
 
 let current: State = emptyState

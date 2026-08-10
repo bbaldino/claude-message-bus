@@ -85,6 +85,7 @@ export function createStore(deps: {
     close(): void
     isConnected(): boolean
   }
+  setRoomHidden: (room: string, hidden: boolean) => Promise<void>
 }) {
   let state: State = {
     rail: null,
@@ -538,5 +539,14 @@ export function createStore(deps: {
     // out the rest of the poll interval; it fails soft the same way the timer
     // does, and the poll remains the backstop if it fails.
     refreshRail,
+    async setHidden(room: string, hidden: boolean) {
+      // Refresh rather than patch the local rail: the bus is the source of
+      // truth for the flag, and a message may have unhidden the room since the
+      // last poll. `refreshRail` already exists for exactly this — the delete
+      // flow calls it so the rail reflects a change it just made rather than
+      // waiting out the 25s interval.
+      await deps.setRoomHidden(room, hidden)
+      await refreshRail()
+    },
   }
 }

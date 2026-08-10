@@ -8,6 +8,10 @@ import type { RailSummary } from '../types/RailSummary'
 const emptyRail: RailSummary = { rooms: [], agents: [] }
 const noMessages = async () => []
 const noEvents = async () => []
+// None of the tests in this file exercise the hide control — it lives in its
+// own suite (Transcript.test.tsx). This is just the required dep, satisfied
+// with a no-op so every `createStore` call here keeps compiling.
+const noSetHidden = async () => {}
 
 function fakeLive() {
   const handlers: Record<string, (p: unknown) => void> = {}
@@ -67,6 +71,7 @@ beforeEach(() => {
 // passing their own object to `createStore` directly.
 function makeStore(overrides: Partial<Parameters<typeof createStore>[0]> = {}) {
   return createStore({
+    setRoomHidden: noSetHidden,
     live,
     fetchRail: async () => emptyRail,
     fetchMessages: noMessages,
@@ -84,6 +89,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 test('a pushed event lands in the log', () => {
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -105,6 +111,7 @@ test('a pushed event lands in the log', () => {
 
 test('a presence push flips an agent online', () => {
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -136,6 +143,7 @@ test('a presence push flips an agent online', () => {
 
 test('a dropped socket surfaces as disconnected', () => {
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -148,6 +156,7 @@ test('a dropped socket surfaces as disconnected', () => {
 
 test('a pushed message is normalised into the stored message shape', () => {
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -175,6 +184,7 @@ test('a pushed message for another room never enters the transcript', () => {
   // arriving. They must not land in a transcript that has just been cleared for
   // a different room — they would read as current traffic in the wrong place.
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -196,6 +206,7 @@ test('a pushed message for another room never enters the transcript', () => {
 
 test('selecting null clears the room and unwatches, without watching anything new', () => {
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -213,6 +224,7 @@ test('selecting null clears the room and unwatches, without watching anything ne
 
 test('subscribers are notified when state changes', () => {
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -233,6 +245,7 @@ test('selecting a room loads its history and its events', async () => {
     { id: 9, kind: 'message_sent', agent: 'caas', room: 'protocol', detail: {}, createdAt: 1 },
   ]
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live: fakeLive(),
     participant,
     fetchRail: async () => emptyRail,
@@ -247,6 +260,7 @@ test('selecting a room loads its history and its events', async () => {
 test('a live event for the open room lands in roomEvents, one for another room does not', () => {
   const live = fakeLive()
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -281,6 +295,7 @@ test('a live event for the open room lands in roomEvents, one for another room d
 test('loadOlder prepends a page and stops when a short page comes back', async () => {
   let call = 0
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live: fakeLive(),
     participant,
     fetchRail: async () => emptyRail,
@@ -319,6 +334,7 @@ test('selecting null while a room load is in flight leaves state cleared, not re
   // selected, and only resolves afterwards.
   let resolveMessages: (messages: ReturnType<typeof msg>[]) => void = () => {}
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live: fakeLive(),
     participant,
     fetchRail: async () => emptyRail,
@@ -348,6 +364,7 @@ test('a room load that rejects after a newer selection has landed does not stamp
   // now-settled 'ready' state with 'failed'.
   let rejectProtocol: (err: unknown) => void = () => {}
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live: fakeLive(),
     participant,
     fetchRail: async () => emptyRail,
@@ -383,6 +400,7 @@ test('loadOlder in flight when the room changes clears loadingOlder and a later 
     createdAt: id,
   })
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live: fakeLive(),
     participant,
     fetchRail: async () => emptyRail,
@@ -434,6 +452,7 @@ test('an interleaved start()/stop()/start() during the initial fetch leaves no l
         queueMicrotask(() => resolve(emptyRail))
       })
     const store = createStore({
+      setRoomHidden: noSetHidden,
       live,
       fetchRail,
       fetchMessages: noMessages,
@@ -468,6 +487,7 @@ test('a reconnect after a failed room load repairs the transcript', async () => 
     { id: 9, kind: 'message_sent', agent: 'caas', room: 'protocol', detail: {}, createdAt: 1 },
   ]
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -495,6 +515,7 @@ test('a reconnect after a failed room load repairs the transcript', async () => 
 test('a healthy reconnect does not refetch a transcript that already loaded', async () => {
   let call = 0
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -520,6 +541,7 @@ test('a healthy reconnect does not refetch a transcript that already loaded', as
 test('a reconnect repair is a no-op when no room is selected', async () => {
   let call = 0
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -539,6 +561,7 @@ test('a reconnect repair is a no-op when no room is selected', async () => {
 test('re-rendering at live (no transition) does not repair anything', async () => {
   let call = 0
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -574,6 +597,7 @@ test('a reconnect repair racing a newer room switch does not overwrite it', asyn
   let resolveRepair: (messages: ReturnType<typeof msg>[]) => void = () => {}
   let protocolCalls = 0
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     participant,
     fetchRail: async () => emptyRail,
@@ -844,6 +868,7 @@ test('a send after the participant socket closes re-registers on a new socket in
 
   const realParticipant = createParticipant('ws://x/ws')
   const store = createStore({
+    setRoomHidden: noSetHidden,
     live,
     fetchRail: async () => emptyRail,
     fetchMessages: noMessages,

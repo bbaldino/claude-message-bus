@@ -6,7 +6,16 @@ import { renderWithStore, setStoreState } from '../testing/fakeStore'
 import { RoomScreen } from './RoomScreen'
 
 const rail = {
-  rooms: [{ name: 'protocol', members: ['caas'], lastActivity: 5, buckets: [1], flag: null }],
+  rooms: [
+    {
+      name: 'protocol',
+      members: ['caas'],
+      lastActivity: 5,
+      buckets: [1],
+      flag: null,
+      hidden: false,
+    },
+  ],
   agents: [
     {
       name: 'caas',
