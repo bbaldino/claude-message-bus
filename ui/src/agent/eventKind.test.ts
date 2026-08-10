@@ -17,3 +17,11 @@ test('an unknown kind falls back rather than throwing', () => {
   // New bus events must render, not crash a screen.
   expect(kindTone('something_new')).toBe('accent')
 })
+
+test('room_hidden and room_unhidden get the lifecycle family, not the delivery fallback', () => {
+  // Added by the hide-rooms feature after the mapping above was written, so
+  // both kinds fell through to the `accent` fallback and rendered in delivery
+  // blue right beside `message_sent` — indistinguishable from an actual send.
+  expect(kindTone('room_hidden')).toBe('human') // violet — lifecycle
+  expect(kindTone('room_unhidden')).toBe('human') // violet — lifecycle
+})
