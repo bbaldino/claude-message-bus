@@ -714,6 +714,17 @@ pub(crate) struct HiddenBody {
 /// list. A read of "what is in this room" is answerable for a room with nothing
 /// in it; a write to a room that does not exist is not a request that can be
 /// honoured.
+///
+/// Existence and change are two separate questions, checked in that order.
+/// `room_exists` alone decides the 404 — `set_room_hidden`'s own `Ok(false)`
+/// no longer means "no such room" (see its doc comment), so conflating the
+/// two here would 404 a hide of a room that is already in the requested
+/// state. Only a real transition, reported by `set_room_hidden`'s `Ok(true)`,
+/// may append an event: an event for a hide (or unhide) that did not happen
+/// would be a forged record, the same failure `agent_delete`'s unknown-name
+/// guard exists to prevent. The status stays 204 either way — the caller
+/// asked for a state and got it; only the event is wrong for a no-op, not
+/// the response.
 pub(crate) async fn room_set_hidden(
     State(app): State<App>,
     Path(name): Path<String>,
@@ -728,6 +739,12 @@ pub(crate) async fn room_set_hidden(
         if !crate::web::origin_matches_host(origin, host) {
             return StatusCode::FORBIDDEN;
         }
+    }
+
+    match app.store.room_exists(&name).await {
+        Ok(true) => {}
+        Ok(false) => return StatusCode::NOT_FOUND,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
     }
 
     match app.store.set_room_hidden(&name, body.hidden).await {
@@ -746,7 +763,7 @@ pub(crate) async fn room_set_hidden(
             }
             StatusCode::NO_CONTENT
         }
-        Ok(false) => StatusCode::NOT_FOUND,
+        Ok(false) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

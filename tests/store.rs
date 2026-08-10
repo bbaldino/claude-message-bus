@@ -1301,6 +1301,33 @@ async fn a_message_unhides_the_room() {
     assert!(!row.hidden, "a message must bring a hidden room back");
 }
 
+/// Before this feature, the INSERT into `messages` was the last fallible step
+/// in `append_message_at`. Simulates the unhide `UPDATE` that runs after it
+/// failing — by dropping the `hidden` column out from under an open `Store` —
+/// and asserts the send is still reported as a success. Propagating that
+/// failure with `?` (the old behaviour) would report a stored message as a
+/// failed send and invite a retry that duplicates it.
+#[tokio::test]
+async fn a_failed_unhide_does_not_fail_the_message_send() {
+    let (_d, store) = temp_store().await;
+    store.ensure_room("protocol").await.unwrap();
+    sqlx::query("ALTER TABLE rooms DROP COLUMN hidden")
+        .execute(store.pool_for_test())
+        .await
+        .unwrap();
+
+    let result = store
+        .append_message("protocol", "caas", "hello", false, false)
+        .await;
+    assert!(
+        result.is_ok(),
+        "a failed unhide must not turn a stored message into a reported send failure: {result:?}"
+    );
+
+    let rows = store.history("protocol", 10).await.unwrap();
+    assert_eq!(rows.len(), 1, "the message must still be stored");
+}
+
 #[tokio::test]
 async fn a_message_to_a_visible_room_leaves_it_visible() {
     // Guards against "fixing" the above with an unconditional UPDATE that also
@@ -1319,4 +1346,47 @@ async fn a_message_to_a_visible_room_leaves_it_visible() {
         .find(|r| r.name == "protocol")
         .unwrap();
     assert!(!row.hidden);
+}
+
+/// The deployed bus's volume already holds a `rooms` table without this
+/// column — the same real case `is_human` and `version` each have their own
+/// migration test for, which `rooms.hidden` skipped when the feature landed.
+/// Without the migration, `rooms()`'s `SELECT name, mode, hidden FROM rooms`
+/// errors outright against the old shape: a 500 on `/api/rail` and a blank
+/// console, worse than a mere degradation.
+#[tokio::test]
+async fn the_migration_adds_the_hidden_column_to_an_older_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("bus.db");
+    {
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.display()))
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE rooms (
+               name TEXT PRIMARY KEY, mode TEXT NOT NULL DEFAULT 'discuss',
+               created_at INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO rooms (name, mode, created_at) VALUES ('protocol', 'discuss', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
+
+    let store = Store::open(dir.path()).await.unwrap();
+
+    let rooms = store.rooms().await.unwrap();
+    let protocol = rooms.iter().find(|r| r.name == "protocol").unwrap();
+    assert!(
+        !protocol.hidden,
+        "a pre-existing room comes back visible on upgrade"
+    );
+    assert_eq!(
+        protocol.mode, "discuss",
+        "existing data must survive the migration"
+    );
 }

@@ -518,12 +518,20 @@ impl Store {
         Ok(out)
     }
 
-    /// Set or clear a room's hidden flag. `Ok(false)` means no such room —
-    /// deliberately not an error, and deliberately not an insert: the caller
-    /// turns it into a 404, and creating the row here would let a typo conjure
-    /// a hidden room that then appears in the rail's count.
+    /// Set or clear a room's hidden flag, guarded on the value so a call that
+    /// asks for the state the room is already in touches no row.
+    ///
+    /// `Ok(true)` means the flag actually flipped. `Ok(false)` covers two
+    /// different situations the caller must not conflate: no such room, and a
+    /// room that was already in the requested state. Existence is `room_exists`'s
+    /// job, checked by the caller before this runs — this method only ever
+    /// reports whether a real transition happened, which is what decides
+    /// whether a `room_hidden`/`room_unhidden` event may be written. Without
+    /// the value guard, `rows_affected` reads 1 whether or not anything
+    /// changed, and a repeated hide (or an unhide of a room never hidden)
+    /// would append an event for a transition that never occurred.
     pub async fn set_room_hidden(&self, room: &str, hidden: bool) -> anyhow::Result<bool> {
-        let res = sqlx::query("UPDATE rooms SET hidden = ?2 WHERE name = ?1")
+        let res = sqlx::query("UPDATE rooms SET hidden = ?2 WHERE name = ?1 AND hidden != ?2")
             .bind(room)
             .bind(hidden as i64)
             .execute(self.pool())
@@ -577,10 +585,21 @@ impl Store {
         // whose only activity is a `room_joined` is not a conversation being
         // missed, and unhiding on every event would make the feature useless for
         // any room with members.
-        sqlx::query("UPDATE rooms SET hidden = 0 WHERE name = ?1 AND hidden = 1")
+        //
+        // Log-and-continue, not `?`: the INSERT above has already committed, so
+        // propagating a failure here would report a stored message as a failed
+        // send and invite a retry that duplicates it. Before this feature the
+        // INSERT was the last fallible step in this function; this keeps that
+        // property, matching how the API handler already treats a failed
+        // `append_event` — best-effort, logged, and never turned into a
+        // reported failure for a write that already happened.
+        if let Err(e) = sqlx::query("UPDATE rooms SET hidden = 0 WHERE name = ?1 AND hidden = 1")
             .bind(room)
             .execute(self.pool())
-            .await?;
+            .await
+        {
+            eprintln!("unhide of {room} on new message was not recorded: {e}");
+        }
         Ok(res.last_insert_rowid())
     }
 

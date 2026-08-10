@@ -2466,3 +2466,102 @@ async fn a_cross_origin_hide_is_refused() {
     .await;
     assert_eq!(res, 403);
 }
+
+#[tokio::test]
+async fn hiding_a_room_writes_exactly_one_event_naming_the_room_and_no_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.ensure_room("protocol").await.unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let res = common::post_json(
+        port,
+        "/api/rooms/protocol/hidden",
+        serde_json::json!({ "hidden": true }),
+    )
+    .await;
+    assert_eq!(res, 204);
+
+    let events = common::get_json(port, "/api/events?room=protocol&kind=room_hidden").await;
+    let hidden = events.as_array().unwrap();
+    assert_eq!(
+        hidden.len(),
+        1,
+        "exactly one room_hidden event, got: {events}"
+    );
+    assert_eq!(hidden[0]["room"], "protocol");
+    assert!(
+        hidden[0]["agent"].is_null(),
+        "a manual hide is not attributed to any agent: {events}"
+    );
+}
+
+/// A double-click (or a retried POST) asking for a state the room is already
+/// in must not forge a second event — the same reasoning `agent_deleted`'s
+/// unknown-name guard applies to a delete that removed no row. Without the
+/// value guard on the store's `UPDATE`, `rows_affected` reads 1 whether or
+/// not the flag actually changed, so the handler cannot tell a real
+/// transition from a no-op and writes a `room_hidden` for both.
+#[tokio::test]
+async fn hiding_an_already_hidden_room_writes_no_second_event() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.ensure_room("protocol").await.unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let first = common::post_json(
+        port,
+        "/api/rooms/protocol/hidden",
+        serde_json::json!({ "hidden": true }),
+    )
+    .await;
+    assert_eq!(first, 204);
+    let second = common::post_json(
+        port,
+        "/api/rooms/protocol/hidden",
+        serde_json::json!({ "hidden": true }),
+    )
+    .await;
+    assert_eq!(
+        second, 204,
+        "the caller asked for a state and got it, even though nothing changed"
+    );
+
+    let events = common::get_json(port, "/api/events?room=protocol&kind=room_hidden").await;
+    assert_eq!(
+        events.as_array().unwrap().len(),
+        1,
+        "a repeated hide must not forge a second event: {events}"
+    );
+}
+
+/// Symmetric with the hide case: unhiding a room that was never hidden is a
+/// no-op state-wise, and must not forge a `room_unhidden` claiming a
+/// transition that never happened.
+#[tokio::test]
+async fn unhiding_a_never_hidden_room_writes_no_event() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.ensure_room("protocol").await.unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let res = common::post_json(
+        port,
+        "/api/rooms/protocol/hidden",
+        serde_json::json!({ "hidden": false }),
+    )
+    .await;
+    assert_eq!(res, 204);
+
+    let events = common::get_json(port, "/api/events?room=protocol&kind=room_unhidden").await;
+    assert!(
+        events.as_array().unwrap().is_empty(),
+        "unhiding a room that was never hidden must forge no event: {events}"
+    );
+}
