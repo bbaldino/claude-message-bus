@@ -254,6 +254,58 @@ pub async fn get_status(port: u16, path: &str) -> u16 {
     status_of(&raw)
 }
 
+/// Minimal HTTP/1.1 POST with a JSON body, matching `delete_raw`'s shape.
+/// `origin` is the `Origin` header to send, or `None` to send none at all —
+/// the same distinction `delete_raw` draws for the DELETE path.
+async fn post_json_raw(
+    port: u16,
+    path: &str,
+    body: serde_json::Value,
+    origin: Option<&str>,
+) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let payload = body.to_string();
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let mut req = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+         Content-Length: {len}\r\nConnection: close\r\n",
+        len = payload.len(),
+    );
+    if let Some(o) = origin {
+        req.push_str(&format!("Origin: {o}\r\n"));
+    }
+    req.push_str("\r\n");
+    req.push_str(&payload);
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = String::new();
+    s.read_to_string(&mut buf).await.unwrap();
+    buf
+}
+
+/// POST `path` with a JSON body and no `Origin` header — like curl, which
+/// state-changing routes must allow since such a caller could already reach
+/// the port directly. Returns just the numeric status code.
+pub async fn post_json(port: u16, path: &str, body: serde_json::Value) -> u16 {
+    let raw = post_json_raw(port, path, body, None).await;
+    status_of(&raw)
+}
+
+/// Same as `post_json`, but with an explicit `Origin` header — for asserting
+/// a cross-origin refusal on a state-changing POST, the same distinction
+/// `delete_with_origin` draws for the DELETE path. Returns just the numeric
+/// status code.
+pub async fn post_json_with_origin(
+    port: u16,
+    path: &str,
+    body: serde_json::Value,
+    origin: &str,
+) -> u16 {
+    let raw = post_json_raw(port, path, body, Some(origin)).await;
+    status_of(&raw)
+}
+
 /// Pull the numeric status code off a raw HTTP response's status line.
 fn status_of(raw: &str) -> u16 {
     raw.split_whitespace()

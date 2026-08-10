@@ -108,6 +108,7 @@ pub struct RailRoom {
     #[ts(type = "Array<number>")]
     pub buckets: Vec<i64>,
     pub flag: Option<RoomFlagDto>,
+    pub hidden: bool,
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -199,6 +200,7 @@ pub(crate) async fn rail(State(app): State<App>) -> Result<Json<RailSummary>, St
             last_activity,
             buckets,
             flag,
+            hidden: r.hidden,
         });
     }
 
@@ -693,4 +695,58 @@ pub(crate) async fn events(
             })
             .collect(),
     ))
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct HiddenBody {
+    hidden: bool,
+}
+
+/// Hide or unhide a room.
+///
+/// The same cross-origin guard the delete path carries, for the same reason: a
+/// state-changing POST reachable from a browser against a bus that binds
+/// `0.0.0.0` with no authentication. A request with no `Origin` is allowed —
+/// those callers could already reach the port directly.
+///
+/// 404 for an unknown room, deliberately the opposite of
+/// `GET /api/rooms/{name}/files`, which answers an unknown room with an empty
+/// list. A read of "what is in this room" is answerable for a room with nothing
+/// in it; a write to a room that does not exist is not a request that can be
+/// honoured.
+pub(crate) async fn room_set_hidden(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<HiddenBody>,
+) -> StatusCode {
+    if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
+        let host = headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if !crate::web::origin_matches_host(origin, host) {
+            return StatusCode::FORBIDDEN;
+        }
+    }
+
+    match app.store.set_room_hidden(&name, body.hidden).await {
+        Ok(true) => {
+            let kind = if body.hidden {
+                "room_hidden"
+            } else {
+                "room_unhidden"
+            };
+            if let Err(e) = app
+                .store
+                .append_event(kind, None, Some(&name), serde_json::json!({}))
+                .await
+            {
+                eprintln!("{kind} event for {name} was not recorded: {e}");
+            }
+            StatusCode::NO_CONTENT
+        }
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }

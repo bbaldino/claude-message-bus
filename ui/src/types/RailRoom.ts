@@ -5,4 +5,4 @@ export type RailRoom = { name: string, members: Array<string>, lastActivity: num
 /**
  * Twelve five-minute slots, oldest first.
  */
-buckets: Array<number>, flag: RoomFlagDto | null, };
+buckets: Array<number>, flag: RoomFlagDto | null, hidden: boolean, };

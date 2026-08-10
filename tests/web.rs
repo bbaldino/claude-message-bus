@@ -2386,3 +2386,83 @@ async fn room_files_survives_a_key_with_awkward_characters() {
     assert_eq!(body[0]["key"], "reports/q3 summary.txt");
     assert!(body[0]["contentType"].is_null());
 }
+
+#[tokio::test]
+async fn hiding_a_room_is_reflected_in_the_rail() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.ensure_room("protocol").await.unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let res = common::post_json(
+        port,
+        "/api/rooms/protocol/hidden",
+        serde_json::json!({ "hidden": true }),
+    )
+    .await;
+    assert_eq!(res, 204);
+
+    let rail = common::get_json(port, "/api/rail").await;
+    let room = rail["rooms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "protocol")
+        .unwrap();
+    assert_eq!(
+        room["hidden"], true,
+        "the rail must ship the flag, not filter the room out"
+    );
+}
+
+#[tokio::test]
+async fn the_rail_still_contains_a_hidden_room() {
+    // The server ships data, the client writes the sentence. Filtering here
+    // would force a second call just to learn how many were filtered.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.ensure_room("protocol").await.unwrap();
+        store.set_room_hidden("protocol", true).await.unwrap();
+    }
+    let port = start(dir.path()).await;
+    let rail = common::get_json(port, "/api/rail").await;
+    assert_eq!(rail["rooms"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn hiding_an_unknown_room_is_a_404_and_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+    let res = common::post_json(
+        port,
+        "/api/rooms/nope/hidden",
+        serde_json::json!({ "hidden": true }),
+    )
+    .await;
+    assert_eq!(res, 404);
+    let rail = common::get_json(port, "/api/rail").await;
+    assert!(rail["rooms"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_cross_origin_hide_is_refused() {
+    // Same class as the delete form: a state-changing POST reachable from a
+    // browser against a bus that binds 0.0.0.0 with no authentication.
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store.ensure_room("protocol").await.unwrap();
+    }
+    let port = start(dir.path()).await;
+    let res = common::post_json_with_origin(
+        port,
+        "/api/rooms/protocol/hidden",
+        serde_json::json!({ "hidden": true }),
+        "https://evil.example",
+    )
+    .await;
+    assert_eq!(res, 403);
+}

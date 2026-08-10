@@ -40,7 +40,10 @@ use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
 use axum::response::Html;
-use axum::{Router, routing::get};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 
 use crate::bus::{App, Relayers};
 use crate::store::AgentRow;
@@ -311,6 +314,7 @@ pub fn routes() -> Router<App> {
         .route("/api/meta", get(api::meta))
         .route("/api/rooms/{name}/messages", get(api::room_messages))
         .route("/api/rooms/{name}/files", get(api::room_files))
+        .route("/api/rooms/{name}/hidden", post(api::room_set_hidden))
         .route("/api/events", get(api::events))
         .route("/app", get(assets::app_root))
         // `/app/` is registered separately and deliberately: matchit requires a
