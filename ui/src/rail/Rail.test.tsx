@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, test, vi } from 'vitest'
 import { renderWithStore } from '../testing/fakeStore'
@@ -298,4 +298,73 @@ test('a query matching only agents still shows the (empty) rooms section as norm
 test('an empty query shows every room and agent with no "nothing matched" message', () => {
   renderRail('')
   expect(screen.queryByText(/nothing matched/)).toBeNull()
+})
+
+test('a hidden room is out of the list, and the footer says how many', () => {
+  renderWithStore(<Rail />, {
+    rail: {
+      rooms: [
+        {
+          name: 'visible',
+          members: [],
+          lastActivity: null,
+          buckets: [],
+          flag: null,
+          hidden: false,
+        },
+        { name: 'tidied', members: [], lastActivity: null, buckets: [], flag: null, hidden: true },
+      ],
+      agents: [],
+    },
+  })
+  expect(screen.getByText('visible')).toBeDefined()
+  expect(screen.queryByText('tidied')).toBeNull()
+  expect(screen.getByText(/1 hidden/)).toBeDefined()
+})
+
+test('expanding the footer reveals them', () => {
+  renderWithStore(<Rail />, {
+    rail: {
+      rooms: [
+        { name: 'tidied', members: [], lastActivity: null, buckets: [], flag: null, hidden: true },
+      ],
+      agents: [],
+    },
+  })
+  fireEvent.click(screen.getByText(/1 hidden/))
+  expect(screen.getByText('tidied')).toBeDefined()
+})
+
+test('with nothing hidden there is no affordance at all', () => {
+  // The console does not advertise a state that does not exist.
+  renderWithStore(<Rail />, {
+    rail: {
+      rooms: [
+        {
+          name: 'visible',
+          members: [],
+          lastActivity: null,
+          buckets: [],
+          flag: null,
+          hidden: false,
+        },
+      ],
+      agents: [],
+    },
+  })
+  expect(screen.queryByText(/hidden/)).toBeNull()
+})
+
+test('the volume strip caption survives', () => {
+  // `last 60 min` captions the strips in every row. The spec originally put the
+  // hidden count in its place; it is a footer instead precisely so this stays.
+  renderWithStore(<Rail />, {
+    rail: {
+      rooms: [
+        { name: 'tidied', members: [], lastActivity: null, buckets: [], flag: null, hidden: true },
+      ],
+      agents: [],
+    },
+  })
+  expect(screen.getByText('last 60 min')).toBeDefined()
 })

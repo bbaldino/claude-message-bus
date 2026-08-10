@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useStore } from '../useStore'
 import type { RailAgent } from '../types/RailAgent'
 import type { RailRoom } from '../types/RailRoom'
@@ -40,6 +41,9 @@ export function Rail({ query = '' }: { query?: string }) {
   const now = useTicker(1000)
   const trimmedQuery = query.trim()
   const rooms = sortRooms((rail?.rooms ?? []).filter((r) => matches(r.name, query)))
+  const [showHidden, setShowHidden] = useState(false)
+  const visibleRooms = rooms.filter((r) => !r.hidden)
+  const hiddenRooms = rooms.filter((r) => r.hidden)
   const agents = sortAgents((rail?.agents ?? []).filter((a) => matches(a.name, query)))
   const online = agents.filter((a) => a.online).length
   // Only for a search that matches nothing at all — a query that matches
@@ -64,10 +68,25 @@ export function Rail({ query = '' }: { query?: string }) {
         <span className={styles.railCount}>last 60 min</span>
       </div>
       <div className={styles.railRows}>
-        {rooms.map((r) => (
+        {visibleRooms.map((r) => (
           <RoomRow key={r.name} room={r} />
         ))}
       </div>
+
+      {hiddenRooms.length > 0 && (
+        <>
+          <button className={styles.hiddenToggle} onClick={() => setShowHidden(!showHidden)}>
+            {hiddenRooms.length} hidden {showHidden ? '▴' : '▾'}
+          </button>
+          {showHidden && (
+            <div className={styles.railRows}>
+              {hiddenRooms.map((r) => (
+                <RoomRow key={r.name} room={r} dimmed />
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       <div className={`${styles.railHeader} ${styles.agents}`} data-testid="agents-header">
         <span className={styles.railLabel}>agents</span>

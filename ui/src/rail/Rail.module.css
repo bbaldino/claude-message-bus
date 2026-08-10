@@ -150,3 +150,24 @@
 .spacer {
   margin-left: auto;
 }
+
+.hiddenToggle {
+  display: block;
+  width: 100%;
+  padding: 6px 9px;
+  border: none;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 11px;
+  text-align: left;
+  color: var(--text-dimmest);
+}
+
+.hiddenToggle:hover {
+  color: var(--text-dim);
+}
+
+.rowHidden {
+  opacity: 0.55;
+}

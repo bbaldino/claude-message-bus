@@ -19,7 +19,7 @@ function subtitle(room: RailRoom): string {
   return `waiting on ${room.flag.waitingOn.join(', ')} · ${room.flag.queued} queued, 0 delivered`
 }
 
-export function RoomRow({ room }: { room: RailRoom }) {
+export function RoomRow({ room, dimmed = false }: { room: RailRoom; dimmed?: boolean }) {
   // `useMatch` against the room route family, not a bare `useParams` name
   // comparison: a room and an agent can share a name, and `useParams` alone
   // can't tell which route is active, so both would render selected on either
@@ -32,7 +32,7 @@ export function RoomRow({ room }: { room: RailRoom }) {
   return (
     <Link
       to={`/rooms/${encodeURIComponent(room.name)}`}
-      className={`${styles.row} ${selected ? styles.selected : ''} ${flagClass}`}
+      className={`${styles.row} ${selected ? styles.selected : ''} ${flagClass} ${dimmed ? styles.rowHidden : ''}`}
     >
       <div className={styles.rowLine}>
         <span className={`${styles.rowName} ${silent ? styles.empty : ''}`} data-testid="room-name">
