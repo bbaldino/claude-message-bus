@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/bbaldino/claude-message-bus/compare/v0.4.1...v0.5.0) - 2026-08-10
+
+### Added
+
+- document the hidden flag's semantics on RoomRow
+
+### Other
+
+- pin a_failed_unhide_does_not_fail_the_message_send to one connection
+- fix the two small cosmetic findings from the hide-rooms review
+- surface a failed hide near the control instead of swallowing it
+- close the store and endpoint findings from the hide-rooms review
+- put hidden rooms behind a footer toggle in the rail
+- add the hide control to the room screen
+- add POST /api/rooms/{name}/hidden
+- add a hidden flag to rooms
+- implementation plan for hiding rooms
+- design for hiding rooms from the rail
+
 ## [0.4.1](https://github.com/bbaldino/claude-message-bus/compare/v0.4.0...v0.4.1) - 2026-08-09
 
 ### Fixed
