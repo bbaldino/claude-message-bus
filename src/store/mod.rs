@@ -35,6 +35,23 @@ pub struct RoomRow {
     pub name: String,
     pub mode: String,
     pub members: Vec<String>,
+    /// Tidied out of the console's rail. A **display flag only** — the room, its
+    /// messages, its files and its events are all untouched, and there is no room
+    /// deletion anywhere in this codebase.
+    ///
+    /// Cleared by `append_message_at`, and by nothing else: a message is what
+    /// brings a hidden room back. Deliberately not events, files or presence — a
+    /// room whose only activity is a `room_joined` is not a conversation being
+    /// missed, and unhiding on every event would make the flag useless for any
+    /// room with members.
+    ///
+    /// One consequence worth knowing: a room paused by the exchange cap cannot
+    /// unhide itself, because `GuardVerdict::Paused` returns before the message is
+    /// ever appended. A hidden room can therefore sit needing a human with no
+    /// signal in the rail beyond its count.
+    ///
+    /// `rooms()` returns hidden rooms like any other. Filtering is the client's
+    /// job — it needs the whole list to say how many are hidden.
     pub hidden: bool,
 }
 
