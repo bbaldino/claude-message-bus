@@ -35,6 +35,7 @@ pub struct RoomRow {
     pub name: String,
     pub mode: String,
     pub members: Vec<String>,
+    pub hidden: bool,
 }
 
 /// What deleting an agent would remove, for display before it happens.
@@ -184,6 +185,8 @@ impl Store {
         self.add_column_if_missing("messages", "human", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         self.add_column_if_missing("agents", "version", "TEXT")
+            .await?;
+        self.add_column_if_missing("rooms", "hidden", "INTEGER NOT NULL DEFAULT 0")
             .await?;
         Ok(())
     }
@@ -498,7 +501,7 @@ impl Store {
     }
 
     pub async fn rooms(&self) -> anyhow::Result<Vec<RoomRow>> {
-        let rows = sqlx::query("SELECT name, mode FROM rooms ORDER BY name")
+        let rows = sqlx::query("SELECT name, mode, hidden FROM rooms ORDER BY name")
             .fetch_all(&self.pool)
             .await?;
         let mut out = Vec::with_capacity(rows.len());
@@ -509,9 +512,23 @@ impl Store {
                 name,
                 mode: r.get("mode"),
                 members,
+                hidden: r.get::<i64, _>("hidden") != 0,
             });
         }
         Ok(out)
+    }
+
+    /// Set or clear a room's hidden flag. `Ok(false)` means no such room —
+    /// deliberately not an error, and deliberately not an insert: the caller
+    /// turns it into a 404, and creating the row here would let a typo conjure
+    /// a hidden room that then appears in the rail's count.
+    pub async fn set_room_hidden(&self, room: &str, hidden: bool) -> anyhow::Result<bool> {
+        let res = sqlx::query("UPDATE rooms SET hidden = ?2 WHERE name = ?1")
+            .bind(room)
+            .bind(hidden as i64)
+            .execute(self.pool())
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     pub async fn append_message(
@@ -553,6 +570,17 @@ impl Store {
         .bind(human)
         .execute(self.pool())
         .await?;
+        // A message brings a hidden room back. Guarded on `hidden = 1` so the
+        // normal case affects zero rows — this is the send path.
+        //
+        // Only a message does this. Not events, not files, not presence: a room
+        // whose only activity is a `room_joined` is not a conversation being
+        // missed, and unhiding on every event would make the feature useless for
+        // any room with members.
+        sqlx::query("UPDATE rooms SET hidden = 0 WHERE name = ?1 AND hidden = 1")
+            .bind(room)
+            .execute(self.pool())
+            .await?;
         Ok(res.last_insert_rowid())
     }
 

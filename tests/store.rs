@@ -1256,3 +1256,67 @@ async fn a_room_with_one_member_online_is_not_blocked() {
         "blocked means ALL members are offline, got {flag:?}"
     );
 }
+
+#[tokio::test]
+async fn hiding_a_room_sets_the_flag_and_rooms_reports_it() {
+    let (_d, store) = temp_store().await;
+    store.ensure_room("protocol").await.unwrap();
+    assert!(store.set_room_hidden("protocol", true).await.unwrap());
+    let row = store
+        .rooms()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == "protocol")
+        .unwrap();
+    assert!(row.hidden, "rooms() must report the flag it was just given");
+}
+
+#[tokio::test]
+async fn hiding_a_room_that_does_not_exist_reports_it_rather_than_creating_one() {
+    // The caller turns this false into a 404. If this created the room instead,
+    // a typo would conjure a hidden room that then shows in the rail's count.
+    let (_d, store) = temp_store().await;
+    assert!(!store.set_room_hidden("no-such-room", true).await.unwrap());
+    assert!(store.rooms().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_message_unhides_the_room() {
+    // The whole point of the feature's "comes back on its own" half.
+    let (_d, store) = temp_store().await;
+    store.ensure_room("protocol").await.unwrap();
+    store.set_room_hidden("protocol", true).await.unwrap();
+    store
+        .append_message("protocol", "caas", "hello", false, false)
+        .await
+        .unwrap();
+    let row = store
+        .rooms()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == "protocol")
+        .unwrap();
+    assert!(!row.hidden, "a message must bring a hidden room back");
+}
+
+#[tokio::test]
+async fn a_message_to_a_visible_room_leaves_it_visible() {
+    // Guards against "fixing" the above with an unconditional UPDATE that also
+    // has to be correct for the 99% case.
+    let (_d, store) = temp_store().await;
+    store.ensure_room("protocol").await.unwrap();
+    store
+        .append_message("protocol", "caas", "hello", false, false)
+        .await
+        .unwrap();
+    let row = store
+        .rooms()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == "protocol")
+        .unwrap();
+    assert!(!row.hidden);
+}
