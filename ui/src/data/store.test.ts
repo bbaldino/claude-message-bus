@@ -912,3 +912,45 @@ test('a send after the participant socket closes re-registers on a new socket in
   await secondSend
   expect(store.getState().pending).toHaveLength(0)
 })
+
+// `store.setHidden` itself had no test at all before this. The two below
+// cover the happy path — POST, then a rail refresh so the flag it just set is
+// what the console actually shows — and the rejection path, which is what
+// `RoomScreen`'s own `.catch` (Transcript.test.tsx: "a failed hide is
+// surfaced near the control") depends on: `setHidden` must let a rejection
+// from `deps.setRoomHidden` reach the caller rather than swallowing it, and
+// must not refresh the rail off a call that never happened.
+test('setHidden posts the flag, then refreshes the rail', async () => {
+  const setRoomHidden = vi.fn(async () => {})
+  let fetchRailCalls = 0
+  const store = makeStore({
+    setRoomHidden,
+    fetchRail: async () => {
+      fetchRailCalls += 1
+      return emptyRail
+    },
+  })
+
+  await store.setHidden('protocol', true)
+
+  expect(setRoomHidden).toHaveBeenCalledWith('protocol', true)
+  expect(fetchRailCalls).toBe(1)
+})
+
+test('a rejected setHidden propagates to the caller and does not refresh the rail', async () => {
+  const setRoomHidden = vi.fn(async () => {
+    throw new Error('hide failed: 500')
+  })
+  let fetchRailCalls = 0
+  const store = makeStore({
+    setRoomHidden,
+    fetchRail: async () => {
+      fetchRailCalls += 1
+      return emptyRail
+    },
+  })
+
+  await expect(store.setHidden('protocol', true)).rejects.toThrow('hide failed: 500')
+  // A rail refresh here would claim the rail reflects a change that never happened.
+  expect(fetchRailCalls).toBe(0)
+})

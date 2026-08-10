@@ -37,7 +37,13 @@ export const storeActions = {
   setDraft: vi.fn(),
   retry: vi.fn(),
   discard: vi.fn(),
-  setHidden: vi.fn(),
+  // Resolved by default, matching the real `Promise<void>` signature: `RoomScreen`
+  // now chains `.catch` onto this call, and a bare `vi.fn()` here resolves to
+  // `undefined` rather than a promise, which throws when `.catch` is called on it
+  // — every existing hide test would break on the very call this file exists to
+  // let them make. Tests that want the failure path override with
+  // `mockRejectedValueOnce`.
+  setHidden: vi.fn().mockResolvedValue(undefined),
 }
 
 let current: State = emptyState

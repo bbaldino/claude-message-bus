@@ -377,3 +377,35 @@ test('clicking hide asks the store to hide this room', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'hide' }))
   expect(storeActions.setHidden).toHaveBeenCalledWith('protocol', true)
 })
+
+// Before the fix, `store.setHidden`'s rejection had no catch anywhere between
+// here and the click handler: the tab bar kept reading `hide`, the rail stayed
+// unchanged, and nothing told the operator the request failed at all —
+// indistinguishable from a click that did nothing. Mirrors DeleteModal.tsx's
+// own test for the same class of bug on the delete path.
+test('a failed hide is surfaced near the control, not swallowed', async () => {
+  storeActions.setHidden.mockRejectedValueOnce(new Error('hide failed: 500'))
+  renderWithStore(<RoomScreen />, {
+    room: 'protocol',
+    roomLoad: 'ready',
+    rail: {
+      rooms: [
+        {
+          name: 'protocol',
+          members: [],
+          lastActivity: null,
+          buckets: [],
+          flag: null,
+          hidden: false,
+        },
+      ],
+      agents: [],
+    },
+    messages: [],
+  })
+  fireEvent.click(await screen.findByRole('button', { name: 'hide' }))
+  expect(await screen.findByText('the hide failed: hide failed: 500')).toBeDefined()
+  // And the control itself must not silently claim success: still offering
+  // `hide`, not `unhide`, since the rail never changed.
+  expect(screen.getByRole('button', { name: 'hide' })).toBeDefined()
+})

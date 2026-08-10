@@ -93,6 +93,11 @@ export function RoomScreen() {
   const [view, setView] = useState<'transcript' | 'files'>('transcript')
   const [files, setFiles] = useState<RoomFile[] | null>(null)
   const [filesFailed, setFilesFailed] = useState(false)
+  // Mirrors DeleteModal.tsx's `deleteError`: `store.setHidden` throws on any
+  // non-OK response, and with no catch here the operator saw the tab bar
+  // still reading `hide`, the rail unchanged, and no message at all —
+  // indistinguishable from a click that did nothing.
+  const [hideError, setHideError] = useState<string | null>(null)
 
   // Fetched when the room opens, not when the tab is clicked: the count lives
   // in the tab label, and a lazy fetch could not fill it.
@@ -357,12 +362,24 @@ export function RoomScreen() {
         onView={setView}
         count={filesFailed ? null : (files?.length ?? null)}
         hidden={railRoom?.hidden ?? false}
-        onHidden={(h) => room && void store.setHidden(room, h)}
+        onHidden={(h) => {
+          if (!room) return
+          setHideError(null)
+          void store.setHidden(room, h).catch((e: unknown) => {
+            setHideError(e instanceof Error ? e.message : String(e))
+          })
+        }}
       />
       {/* Not gated on `view`: a failed read is worth surfacing without
           requiring the tab to be opened, the same reasoning that puts the
           count in the tab label itself. */}
       {filesFailed && <p className={filesStyles.failed}>could not read the file list</p>}
+      {/* Same tone and placement as the files-list failure above, and the same
+          reasoning DeleteModal.tsx applies to a failed delete: the dialog
+          looked unchanged after the only irreversible action on the page
+          failed, so this surfaces right beside the control that triggered it
+          rather than staying silent. */}
+      {hideError && <p className={filesStyles.failed}>the hide failed: {hideError}</p>}
       {/* The transcript stays mounted (merely hidden) rather than being
           unmounted on tab switch: `scroller`/`content` and every effect above
           that depends on them assume this node's lifetime spans the whole
