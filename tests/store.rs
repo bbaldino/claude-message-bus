@@ -1307,10 +1307,23 @@ async fn a_message_unhides_the_room() {
 /// and asserts the send is still reported as a success. Propagating that
 /// failure with `?` (the old behaviour) would report a stored message as a
 /// failed send and invite a retry that duplicates it.
+///
+/// Opens its own `Store` with a single-connection pool rather than using
+/// `temp_store()`. Dropping a column out from under a *live* pool is not
+/// something any production code path does — `migrate` runs once against a
+/// pool nothing else has touched yet — and this test intentionally does it
+/// anyway. Pinning the pool to one connection means the `ALTER` below and
+/// every statement after it are provably the same connection, so what the
+/// test is proving (a failed unhide doesn't fail the send) doesn't ride on
+/// pool routing being exercised the same way twice.
 #[tokio::test]
 async fn a_failed_unhide_does_not_fail_the_message_send() {
-    let (_d, store) = temp_store().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_with_max_connections(dir.path(), 1)
+        .await
+        .unwrap();
     store.ensure_room("protocol").await.unwrap();
+
     sqlx::query("ALTER TABLE rooms DROP COLUMN hidden")
         .execute(store.pool_for_test())
         .await

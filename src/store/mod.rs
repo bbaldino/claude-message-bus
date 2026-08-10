@@ -139,6 +139,21 @@ pub fn now_ms() -> i64 {
 
 impl Store {
     pub async fn open(dir: &Path) -> anyhow::Result<Self> {
+        Self::open_with_max_connections(dir, 5).await
+    }
+
+    /// Test-only: `open`, but with the pool's connection ceiling as a parameter.
+    ///
+    /// Exists for tests that need every statement after `open` pinned to one
+    /// connection — see `a_failed_unhide_does_not_fail_the_message_send`, which
+    /// mutates the schema out from under a live `Store` and does not want pool
+    /// routing as a variable in what it's proving. `#[doc(hidden)]` for the same
+    /// reason as `pool_for_test`: production code has no business calling this.
+    #[doc(hidden)]
+    pub async fn open_with_max_connections(
+        dir: &Path,
+        max_connections: u32,
+    ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(dir).context("creating data dir")?;
         let blobs_dir = dir.join("blobs");
         std::fs::create_dir_all(&blobs_dir).context("creating blobs dir")?;
@@ -147,7 +162,7 @@ impl Store {
             .filename(dir.join("bus.db"))
             .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(max_connections)
             .connect_with(opts)
             .await
             .context("opening sqlite")?;
