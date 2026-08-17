@@ -889,6 +889,36 @@ async fn the_agents_tool_reports_each_agents_version() {
     );
 }
 
+/// The `agents` tool used to render `format!("{}@{}", a.name, a.host)`, which is
+/// a string no agent is registered under. An agent following the documented
+/// discovery path read that name and sent to it; `Send` accepted it, derived a
+/// DM room from it, and enrolled a member that could never connect. Messages
+/// queued forever behind a 204.
+///
+/// The name field must be exactly what a caller can address.
+#[tokio::test]
+async fn the_agents_tool_reports_the_addressable_name_not_name_at_host() {
+    let (_dir, port) = common::start_bus().await;
+
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "solo");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    wait_until_online(port, "solo").await;
+
+    let text = call_tool(&mut a, 60, "agents", serde_json::json!({})).await;
+
+    assert!(
+        text.contains("solo"),
+        "the agent must appear at all: {text}"
+    );
+    assert!(
+        !text.contains("solo@"),
+        "must not compose a name@host that nothing is registered under — that string \
+         is what a caller will paste into `send`: {text}"
+    );
+}
+
 #[test]
 fn instructions_extend_relayed_authority_to_this_repository() {
     // The gap a worker agent actually reported: `human="true"` authenticated that a

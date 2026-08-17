@@ -356,8 +356,19 @@ impl rmcp::ServerHandler for Handler {
                     agents
                         .into_iter()
                         .map(|a| {
+                            // `name` and `host` are separate fields, deliberately. Composing
+                            // them reads as a single name — and it is the shape
+                            // `Registry::attach` really does hand out on a cross-host
+                            // collision, so there is nothing to tell the two apart. An agent
+                            // that read the composed form and sent to it created a DM room
+                            // enrolling a member that had never registered, and its messages
+                            // queued forever.
+                            //
+                            // When a name genuinely is qualified this renders
+                            // `foo@bar — bar — …`. The repetition is the honest outcome; a
+                            // rule to suppress it would reintroduce the ambiguity.
                             format!(
-                                "{}@{} — {} — {}",
+                                "{} — {} — {} — {}",
                                 a.name,
                                 a.host,
                                 if a.online { "online" } else { "offline" },
