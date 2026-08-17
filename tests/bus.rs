@@ -141,9 +141,23 @@ async fn a_dm_reaches_a_connected_agent() {
 #[tokio::test]
 async fn a_message_to_an_offline_agent_reports_queued_not_delivered() {
     // This is the POC 3 correction: never tell the model "delivered" when it wasn't.
+    //
+    // `ghost` must actually register (then disconnect) rather than being an
+    // agent name nobody ever used: since the DM-target-validation fix, a
+    // never-registered target is refused outright, and that refusal is
+    // covered by its own test. This test's subject is specifically an agent
+    // that is known but currently offline.
     let (_d, port) = start_bus().await;
     let mut a = connect(port, "caas").await;
     next_event(&mut a).await;
+
+    let mut ghost = connect(port, "ghost").await;
+    next_event(&mut ghost).await; // Registered
+    drop(ghost);
+    assert!(
+        wait_until(|| async { !agent_is_online(port, "ghost").await }).await,
+        "ghost never went offline within the deadline"
+    );
 
     send(
         &mut a,
@@ -2850,4 +2864,115 @@ async fn unwatching_one_room_leaves_another_watched() {
         }
     }
     assert!(saw, "unwatching a must not disturb b");
+}
+
+#[tokio::test]
+async fn a_dm_to_an_agent_that_never_registered_is_refused_and_creates_no_room() {
+    // The bug this exists for: the `agents` tool used to report `name@host`, an
+    // agent sent to that, and the bus created a room enrolling a member that
+    // could never connect. The room's ABSENCE matters as much as the error —
+    // a refusal that still created the room would leave the same ghost behind.
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    let _ = next_event(&mut a).await; // Registered
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent {
+                name: "homelab-health@hardac".into(),
+            },
+            text: "hello".into(),
+            done: false,
+        },
+    )
+    .await;
+
+    match next_event(&mut a).await {
+        FromBus::Error { req_id, message } => {
+            assert_eq!(req_id, Some(1));
+            assert!(
+                message.contains("homelab-health@hardac"),
+                "the error must name the target that was refused: {message}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+
+    let rooms: serde_json::Value = common::get_json(port, "/api/rail").await;
+    assert!(
+        rooms["rooms"].as_array().unwrap().is_empty(),
+        "a refused DM must create no room: {rooms}"
+    );
+}
+
+#[tokio::test]
+async fn the_refusal_suggests_the_bare_name_when_the_target_looks_qualified() {
+    // The observed failure was a NEARLY right name. "no such agent" would leave
+    // the sender no better off; naming the candidate closes the loop.
+    let (_d, port) = start_bus().await;
+    let mut health = connect(port, "homelab-health").await;
+    let _ = next_event(&mut health).await;
+    let mut a = connect(port, "caas").await;
+    let _ = next_event(&mut a).await;
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Agent {
+                name: "homelab-health@hardac".into(),
+            },
+            text: "hello".into(),
+            done: false,
+        },
+    )
+    .await;
+
+    match next_event(&mut a).await {
+        FromBus::Error { message, .. } => assert!(
+            message.contains("did you mean") && message.contains("\"homelab-health\""),
+            "must name the real agent behind the qualified string: {message}"
+        ),
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_dm_to_a_known_but_offline_agent_still_queues() {
+    // THE REGRESSION THAT WOULD MATTER MOST. Queuing for an offline agent is the
+    // entire point of the bus. "Unknown" must mean never registered, never
+    // "not currently connected" — a liveness check here would destroy it.
+    let (_d, port) = start_bus().await;
+    let mut gone = connect(port, "gone").await;
+    let _ = next_event(&mut gone).await;
+    drop(gone);
+    assert!(
+        common::wait_until(|| async { !common::agent_is_online(port, "gone").await }).await,
+        "the agent never went offline within the deadline"
+    );
+
+    let mut a = connect(port, "caas").await;
+    let _ = next_event(&mut a).await;
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 3,
+            target: Target::Agent {
+                name: "gone".into(),
+            },
+            text: "hello".into(),
+            done: false,
+        },
+    )
+    .await;
+
+    match next_event(&mut a).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { queued_for, .. },
+            ..
+        } => assert_eq!(queued_for, vec!["gone".to_string()]),
+        other => panic!("expected Sent, got {other:?}"),
+    }
 }

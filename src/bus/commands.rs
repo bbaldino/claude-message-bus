@@ -102,6 +102,53 @@ pub(crate) async fn handle(
         } => {
             let room = rooms::resolve(&target, me);
 
+            // An unknown DM target is refused here, before the delivery guards.
+            // A malformed request must not consume exchange-cap budget, and must
+            // not come back as `RateLimited` — that would send the caller away to
+            // retry something that can never work.
+            //
+            // Existence, not liveness: an offline agent still has its row, and
+            // queuing for it is the point of the bus. Only `Target::Agent` is
+            // checked — rooms auto-create legitimately, and that is how a room
+            // comes into being at all.
+            if let Target::Agent { name } = &target {
+                let known = match app.store.agent_exists(name).await {
+                    Ok(known) => known,
+                    Err(e) => {
+                        eprintln!("could not check whether agent {name} exists: {e}");
+                        let _ = control_tx.try_send(FromBus::Error {
+                            req_id: Some(req_id),
+                            message: "could not verify the target agent".to_string(),
+                        });
+                        return;
+                    }
+                };
+                if !known {
+                    // The observed failure was a nearly-right name, so name the
+                    // candidate rather than only the mistake.
+                    let suggestion = match name.split_once('@') {
+                        Some((bare, _)) if app.store.agent_exists(bare).await.unwrap_or(false) => {
+                            format!("; did you mean {bare:?}?")
+                        }
+                        _ => "; call `agents` for the list".to_string(),
+                    };
+                    let _ = app
+                        .store
+                        .append_event(
+                            "send_refused",
+                            Some(me),
+                            None,
+                            json!({ "target": name, "reason": "unknown_agent" }),
+                        )
+                        .await;
+                    let _ = control_tx.try_send(FromBus::Error {
+                        req_id: Some(req_id),
+                        message: format!("no agent named {name:?}{suggestion}"),
+                    });
+                    return;
+                }
+            }
+
             // `is_human` here, deliberately NOT the relayer-expanded `has_human_authority`
             // computed further down. The two look like the same question and are not:
             // this gate asks whether a person is actually present, while that label

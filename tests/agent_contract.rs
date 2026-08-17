@@ -271,6 +271,18 @@ async fn send_reports_queued_when_the_recipient_is_offline() {
     // The POC 3 correction, asserted at the tool boundary the model actually sees.
     let (_dir, port) = common::start_bus().await;
 
+    // `nobody` must actually register (then disconnect) rather than being an
+    // agent name nobody ever used: since the DM-target-validation fix, a
+    // never-registered target is refused outright. This test's subject is
+    // specifically a known-but-currently-offline recipient.
+    let mut nobody = common::connect(port, "nobody").await;
+    common::next_event(&mut nobody).await; // Registered
+    drop(nobody);
+    assert!(
+        common::wait_until(|| async { !common::agent_is_online(port, "nobody").await }).await,
+        "nobody never went offline within the deadline"
+    );
+
     let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "lonely");
     initialize(&mut a).await;
     a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))

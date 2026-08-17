@@ -154,6 +154,19 @@ async fn a_send_records_delivery_outcome_per_recipient() {
     let mut a = connect(port, "caas").await;
     next_event(&mut a).await; // Registered
 
+    // `ghost` must actually register (then disconnect) rather than being an
+    // agent name nobody ever used: since the DM-target-validation fix, a
+    // never-registered target is refused before a `message_sent` event is
+    // ever written. This test's subject is delivery-outcome recording for a
+    // known-but-offline recipient.
+    let mut ghost = connect(port, "ghost").await;
+    next_event(&mut ghost).await; // Registered
+    drop(ghost);
+    assert!(
+        wait_until(|| async { !common::agent_is_online(port, "ghost").await }).await,
+        "ghost never went offline within the deadline"
+    );
+
     send(
         &mut a,
         &ToBus::Send {

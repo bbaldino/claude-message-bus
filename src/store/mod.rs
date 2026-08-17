@@ -390,6 +390,19 @@ impl Store {
         Ok(row.is_some())
     }
 
+    /// Whether any agent has ever registered under this exact name.
+    ///
+    /// Existence, deliberately not liveness. Queuing for an offline agent is the
+    /// whole point of the bus, so a `Send` target is checked against this rather
+    /// than against the registry — an agent that has gone away still has its row.
+    pub async fn agent_exists(&self, name: &str) -> anyhow::Result<bool> {
+        let row = sqlx::query("SELECT 1 FROM agents WHERE name = ?1")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
     /// Drop every room membership held by `agent`.
     ///
     /// Used for humans only. An agent's membership is durable — that is what makes
