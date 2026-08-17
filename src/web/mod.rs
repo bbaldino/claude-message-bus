@@ -141,6 +141,14 @@ fn summarize(kind: &str, detail: &serde_json::Value) -> String {
             Some(ms) => format!("retry in {ms}ms"),
             None => String::new(),
         },
+        "send_refused" => {
+            let target = text("target");
+            if target.is_empty() {
+                String::new()
+            } else {
+                format!("no agent named {target}")
+            }
+        }
         "file_stored" => {
             let key = text("key");
             match num("size") {
@@ -1054,6 +1062,22 @@ mod tests {
         let s = summarize("something_new", &json!({"a": 1}));
         assert!(s.contains("\"a\""), "{s}");
         assert_eq!(summarize("something_new", &json!({})), "");
+    }
+
+    #[test]
+    fn a_send_refusal_summary_names_the_target() {
+        // send_refused is the 14th event kind and, without an arm here, falls
+        // through to raw JSON like any kind this function has never heard of
+        // — exactly the failure mode `an_unknown_kind_falls_back_to_json_rather_than_hiding_it`
+        // exists to make tolerable, but not desirable for an event this
+        // branch elevated to a first-class audit row.
+        let d = json!({"target": "nobody", "reason": "unknown_agent"});
+        let s = summarize("send_refused", &d);
+        assert!(s.contains("nobody"), "{s}");
+        assert!(
+            !s.trim_start().starts_with('{'),
+            "must be the human-readable summary, not raw JSON: {s}"
+        );
     }
 
     #[test]

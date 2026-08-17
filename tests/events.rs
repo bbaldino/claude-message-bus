@@ -191,6 +191,95 @@ async fn a_send_records_delivery_outcome_per_recipient() {
     assert_eq!(sent[0].detail["delivered_to"].as_array().unwrap().len(), 0);
 }
 
+// The refusal itself is reviewed and covered by a manual check, but the audit
+// row is the whole point of that fix: "an audit row is what would have
+// surfaced it" is what this test exists to hold true. Covers both wordings
+// the refusal can produce — the no-`@` case that points at the `agents`
+// tool, and the `@`-suffixed case that suggests the bare name when it's
+// actually registered — plus the event fields (kind, actor, `room = None`,
+// `detail.target`) that make the refusal visible in the log regardless of
+// which wording fired.
+#[tokio::test]
+async fn a_dm_to_an_unknown_agent_is_refused_and_recorded() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    next_event(&mut a).await; // Registered
+
+    // No-`@` wording: nothing before an `@` to suggest, so the error points
+    // at the `agents` tool instead.
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent {
+                name: "nobody".into(),
+            },
+            text: "hello".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut a).await {
+        FromBus::Error { message, .. } => {
+            assert!(
+                message.contains("; call `agents` for the list"),
+                "expected the no-@ wording, got {message:?}"
+            );
+        }
+        other => panic!("expected an Error refusing the send, got {other:?}"),
+    }
+
+    // `@`-suffixed wording: `ghost` is actually registered, so the error
+    // suggests the bare name rather than falling back to `agents`.
+    let mut ghost = connect(port, "ghost").await;
+    next_event(&mut ghost).await; // Registered
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Agent {
+                name: "ghost@otherhost".into(),
+            },
+            text: "hello".into(),
+            done: false,
+        },
+    )
+    .await;
+    match next_event(&mut a).await {
+        FromBus::Error { message, .. } => {
+            assert!(
+                message.contains(r#"did you mean "ghost"?"#),
+                "expected the @ wording suggesting the bare name, got {message:?}"
+            );
+        }
+        other => panic!("expected an Error refusing the send, got {other:?}"),
+    }
+
+    let store = Store::open(&store_dir).await.unwrap();
+    let refused = store.events_of_kind("send_refused", 10).await.unwrap();
+    assert_eq!(refused.len(), 2, "both refusals must be recorded");
+
+    // events_of_kind is newest-first, so index 0 is the "ghost@otherhost" send.
+    assert_eq!(refused[0].kind, "send_refused");
+    assert_eq!(refused[0].agent.as_deref(), Some("caas"));
+    assert!(
+        refused[0].room.is_none(),
+        "a refused DM has no room: {:?}",
+        refused[0].room
+    );
+    assert_eq!(refused[0].detail["target"], "ghost@otherhost");
+
+    assert_eq!(refused[1].kind, "send_refused");
+    assert_eq!(refused[1].agent.as_deref(), Some("caas"));
+    assert!(
+        refused[1].room.is_none(),
+        "a refused DM has no room: {:?}",
+        refused[1].room
+    );
+    assert_eq!(refused[1].detail["target"], "nobody");
+}
+
 // The write discipline's first, non-negotiable rule: a logging failure must never fail
 // the operation being logged. `append_event`'s result is discarded with `let _ =` at
 // every one of its ten call sites specifically so that a broken event log can never
