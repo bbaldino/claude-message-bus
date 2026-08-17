@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/bbaldino/claude-message-bus/compare/v0.5.0...v0.5.1) - 2026-08-17
+
+### Fixed
+
+- cover the send_refused audit row with a test and a summary
+- refuse a DM to an agent that has never registered
+- report the addressable agent name from the agents tool
+
+### Other
+
+- implementation plan for DM target validation
+- design for DM target validation and the agents tool's name
+
 ## [0.5.0](https://github.com/bbaldino/claude-message-bus/compare/v0.4.1...v0.5.0) - 2026-08-10
 
 ### Added
