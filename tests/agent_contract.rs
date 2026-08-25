@@ -989,7 +989,24 @@ async fn the_bridge_tells_a_relayer_session_about_its_grant() {
     a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
         .await;
 
-    let note = a.next_notification("notifications/claude/channel").await;
+    // Discriminate on `meta.kind`, not frame position: an `Unread` summary
+    // shares this same notification method (see `an_ordinary_session_gets_no_grant_notice`
+    // below) and could legitimately arrive ahead of the grant notice, so
+    // asserting on the very first frame would be fragile in the other
+    // direction. Skip `unread` as harmless reconnect infra and require the
+    // grant notice to show up somewhere in the stream.
+    let note = loop {
+        let note = a.next_notification("notifications/claude/channel").await;
+        if note["params"]["meta"]["kind"].as_str() == Some("unread") {
+            continue;
+        }
+        break note;
+    };
+    assert_eq!(
+        note["params"]["meta"]["kind"].as_str(),
+        Some("relayer_grant"),
+        "a relayer must receive the grant notice: {note:?}"
+    );
     let content = note["params"]["content"].as_str().expect("content");
     assert!(
         content.contains("human=\"true\""),
@@ -1003,9 +1020,15 @@ async fn the_bridge_tells_a_relayer_session_about_its_grant() {
 
 #[tokio::test]
 async fn an_ordinary_session_gets_no_grant_notice() {
-    // Asserting an absence: register a non-relayer, then send it a real message and
-    // require that the FIRST channel notification is that message. A relayer notice
-    // would arrive ahead of it and fail this deterministically — no sleeping.
+    // Asserting an absence: register a non-relayer, then send it a real message,
+    // and require that no channel notification ever carries a grant notice.
+    //
+    // Discriminating on `meta.kind` rather than frame order (which the plan
+    // originally called for) makes this both stronger and more accurate: a
+    // grant notice is caught wherever it lands in the stream, not just if it
+    // happens to arrive first, and a legitimate `Unread` summary — which
+    // shares this same notification method (see `FromBus::Unread` in
+    // `src/agent/bridge.rs`) — can no longer fail the test just for existing.
     let (_dir, port) = common::start_bus().await;
 
     let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "tester");
@@ -1029,10 +1052,25 @@ async fn an_ordinary_session_gets_no_grant_notice() {
     )
     .await;
 
-    let note = a.next_notification("notifications/claude/channel").await;
-    assert_eq!(
-        note["params"]["content"].as_str().unwrap(),
-        "the-only-notification",
-        "an ordinary agent's first notification must be the message, not a grant notice"
-    );
+    loop {
+        let note = a.next_notification("notifications/claude/channel").await;
+        let kind = note["params"]["meta"]["kind"].as_str();
+        assert_ne!(
+            kind,
+            Some("relayer_grant"),
+            "an ordinary agent must not receive a grant notice: {note:?}"
+        );
+        if kind == Some("unread") {
+            // Harmless reconnect infra, not what this test is about; keep
+            // reading until the real message (no `kind` at all — see the
+            // `Message` arm of `dispatch`) shows up.
+            continue;
+        }
+        assert_eq!(
+            note["params"]["content"].as_str().unwrap(),
+            "the-only-notification",
+            "an ordinary agent's message notification must be the message, not something else"
+        );
+        break;
+    }
 }

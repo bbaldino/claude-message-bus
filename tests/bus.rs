@@ -2984,7 +2984,7 @@ async fn a_relayer_is_told_that_it_holds_the_grant() {
     // grant lives in bus config and `Registered` never mentioned it, while the
     // instructions say human="false" means "another agent sent this" — a correct
     // inference for every agent except a relayer, which cannot tell it is one.
-    let (_d, port) = common::start_bus_with_relayers(["hub".to_string()]).await;
+    let (_d, port) = start_bus_with_relayers(["hub".to_string()]).await;
 
     let mut hub = connect(port, "hub").await;
     match next_event(&mut hub).await {
@@ -3016,7 +3016,7 @@ async fn a_renamed_collision_holds_no_grant() {
     // `Relayers::contains` matches the EFFECTIVE name, so a second connection
     // claiming a relayer's name is renamed and gets no authority. The notice must
     // track the live grant, not the name that was asked for.
-    let (_d, port) = common::start_bus_with_relayers(["hub".to_string()]).await;
+    let (_d, port) = start_bus_with_relayers(["hub".to_string()]).await;
 
     let mut first = connect(port, "hub").await;
     let _ = next_event(&mut first).await;
