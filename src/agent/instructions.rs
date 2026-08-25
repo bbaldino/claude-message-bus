@@ -67,6 +67,10 @@ pub fn for_agent(name: &str) -> String {
          call `send` with done=true rather than acknowledging endlessly — an exchange that \
          never terminates costs real money.\n\
          \n\
+         `done` says whose move it is, in both directions. A message that arrives with \
+         done=\"false\" — the default — means the sender expects a reply, so reply. \
+         done=\"true\" means the topic is settled and nothing is required of you.\n\
+         \n\
          Because your terminal does not display outbound message text, briefly state what \
          you sent in your visible reply so your human can follow both halves.\n\
          \n\

@@ -1074,3 +1074,58 @@ async fn an_ordinary_session_gets_no_grant_notice() {
         break;
     }
 }
+
+#[tokio::test]
+async fn the_send_schema_defines_both_directions_of_done() {
+    // The schema defined only `true`. `false` is the default every unspecified send
+    // carries, and nothing said what it conveyed — so two readings coexisted, one
+    // telling a receiver to reply and the other to wait.
+    // No bus: `tools/list` is answered by the handler alone. The existing
+    // tools-list test in this file points at `ws://127.0.0.1:1/ws` for exactly
+    // that reason — follow it rather than starting a bus this test never uses.
+    let mut a = InProcessAgent::start("ws://127.0.0.1:1/ws", "tester");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    a.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/list", "params": {}
+    }))
+    .await;
+
+    let res = a.next_json().await;
+    let tools = res["result"]["tools"].as_array().expect("tools");
+    let send_tool = tools
+        .iter()
+        .find(|t| t["name"] == "send")
+        .expect("the send tool must exist");
+    let done = send_tool["inputSchema"]["properties"]["done"]["description"]
+        .as_str()
+        .expect("done must be described");
+    assert!(
+        done.contains("false"),
+        "must define the false case, which the old description never mentioned: {done}"
+    );
+    assert!(
+        done.contains("other side"),
+        "must explain whose move it is, not just the settled case: {done}"
+    );
+}
+
+#[test]
+fn instructions_teach_what_done_obliges_on_receipt() {
+    // The receive side was absent entirely: a model was handed done="false" in its
+    // channel meta with nothing anywhere telling it what that required.
+    let mut a = Agent::start();
+    let res = initialize_subprocess(&mut a);
+    let instructions = res["result"]["instructions"]
+        .as_str()
+        .expect("instructions");
+    assert!(
+        instructions.contains("done=\"false\""),
+        "must name the attribute as it actually arrives: {instructions}"
+    );
+    assert!(
+        instructions.contains("expects a reply") || instructions.contains("expect a reply"),
+        "must say what done=\"false\" obliges the receiver to do: {instructions}"
+    );
+}

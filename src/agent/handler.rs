@@ -129,7 +129,7 @@ impl rmcp::ServerHandler for Handler {
                             "to": { "type": "string", "description": "Recipient agent name (direct message)" },
                             "room": { "type": "string", "description": "Room name (broadcast to members)" },
                             "text": { "type": "string", "description": "The message body" },
-                            "done": { "type": "boolean", "description": "Mark the topic settled; no reply expected" }
+                            "done": { "type": "boolean", "description": "true when the topic is settled and no reply is expected. Omit it or pass false when you expect a reply — the next move is then the other side's." }
                         },
                         "required": ["text"]
                     })),
