@@ -15,7 +15,8 @@ mod common;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use common::{InProcessAgent, initialize};
+use claude_bus::proto::{Target, ToBus};
+use common::{InProcessAgent, connect, initialize, next_event, send};
 
 struct Agent {
     child: Child,
@@ -976,5 +977,62 @@ fn instructions_give_the_terminal_human_the_final_word() {
     assert!(
         instructions.contains("they win"),
         "the operative rule — not just its rationale — must be pinned: {instructions}"
+    );
+}
+
+#[tokio::test]
+async fn the_bridge_tells_a_relayer_session_about_its_grant() {
+    let (_dir, port) = common::start_bus_with_relayers(["tester".to_string()]).await;
+
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "tester");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+
+    let note = a.next_notification("notifications/claude/channel").await;
+    let content = note["params"]["content"].as_str().expect("content");
+    assert!(
+        content.contains("human=\"true\""),
+        "must state how its messages are stamped: {content}"
+    );
+    assert!(
+        content.contains("attribute") || content.contains("quote"),
+        "must tell it to attribute its human's words explicitly: {content}"
+    );
+}
+
+#[tokio::test]
+async fn an_ordinary_session_gets_no_grant_notice() {
+    // Asserting an absence: register a non-relayer, then send it a real message and
+    // require that the FIRST channel notification is that message. A relayer notice
+    // would arrive ahead of it and fail this deterministically — no sleeping.
+    let (_dir, port) = common::start_bus().await;
+
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "tester");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    wait_until_online(port, "tester").await;
+
+    let mut sender = connect(port, "sender").await;
+    let _ = next_event(&mut sender).await;
+    send(
+        &mut sender,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent {
+                name: "tester".into(),
+            },
+            text: "the-only-notification".into(),
+            done: false,
+        },
+    )
+    .await;
+
+    let note = a.next_notification("notifications/claude/channel").await;
+    assert_eq!(
+        note["params"]["content"].as_str().unwrap(),
+        "the-only-notification",
+        "an ordinary agent's first notification must be the message, not a grant notice"
     );
 }

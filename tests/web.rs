@@ -1307,7 +1307,7 @@ async fn posting_the_delete_refuses_an_agent_that_came_online_after_the_confirm_
     // then be about a different agent than the one the POST targets, and the
     // test would pass or fail for reasons unrelated to the liveness re-check.
     match common::next_event(&mut ws).await {
-        FromBus::Registered { name } => assert_eq!(
+        FromBus::Registered { name, .. } => assert_eq!(
             name, "caas",
             "reconnect must own the bare name, not a collision suffix"
         ),

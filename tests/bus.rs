@@ -14,7 +14,7 @@ async fn registering_confirms_the_effective_name() {
     let (_d, port) = start_bus().await;
     let mut ws = connect(port, "caas").await;
     match next_event(&mut ws).await {
-        FromBus::Registered { name } => assert_eq!(name, "caas"),
+        FromBus::Registered { name, .. } => assert_eq!(name, "caas"),
         other => panic!("expected Registered, got {other:?}"),
     }
 }
@@ -29,7 +29,7 @@ async fn a_second_register_on_one_connection_is_refused_and_identity_is_unchange
     let (_d, port) = start_bus().await;
     let mut ws = connect(port, "caas").await;
     match next_event(&mut ws).await {
-        FromBus::Registered { name } => assert_eq!(name, "caas"),
+        FromBus::Registered { name, .. } => assert_eq!(name, "caas"),
         other => panic!("expected Registered, got {other:?}"),
     }
 
@@ -808,7 +808,7 @@ async fn a_full_routing_queue_does_not_starve_the_connections_own_replies() {
 
     let mut victim = connect(port, "victim").await;
     let name = match next_event(&mut victim).await {
-        FromBus::Registered { name } => name,
+        FromBus::Registered { name, .. } => name,
         other => panic!("expected Registered, got {other:?}"),
     };
 
@@ -905,7 +905,7 @@ async fn a_full_routing_queue_does_not_swallow_the_pause_notification_or_its_res
 
     let mut a = connect(port, "caas").await;
     let name = match next_event(&mut a).await {
-        FromBus::Registered { name } => name,
+        FromBus::Registered { name, .. } => name,
         other => panic!("expected Registered, got {other:?}"),
     };
 
@@ -1295,7 +1295,7 @@ async fn a_real_agents_registration_and_membership_are_unaffected_by_a_concurren
 
     let mut caas = connect(port, "caas").await;
     match next_event(&mut caas).await {
-        FromBus::Registered { name } => assert_eq!(name, "caas"),
+        FromBus::Registered { name, .. } => assert_eq!(name, "caas"),
         other => panic!("expected Registered, got {other:?}"),
     }
     send(
@@ -2974,5 +2974,74 @@ async fn a_dm_to_a_known_but_offline_agent_still_queues() {
             ..
         } => assert_eq!(queued_for, vec!["gone".to_string()]),
         other => panic!("expected Sent, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_relayer_is_told_that_it_holds_the_grant() {
+    // hub relayed a human's deploy authorisation and told the recipient the message
+    // carried human="false". It carried human="true". hub had no way to know: the
+    // grant lives in bus config and `Registered` never mentioned it, while the
+    // instructions say human="false" means "another agent sent this" — a correct
+    // inference for every agent except a relayer, which cannot tell it is one.
+    let (_d, port) = common::start_bus_with_relayers(["hub".to_string()]).await;
+
+    let mut hub = connect(port, "hub").await;
+    match next_event(&mut hub).await {
+        FromBus::Registered { name, relayer } => {
+            assert_eq!(name, "hub");
+            assert!(
+                relayer,
+                "the configured relayer must be told it holds the grant"
+            );
+        }
+        other => panic!("expected Registered, got {other:?}"),
+    }
+
+    let mut worker = connect(port, "worker").await;
+    match next_event(&mut worker).await {
+        FromBus::Registered { name, relayer } => {
+            assert_eq!(name, "worker");
+            assert!(
+                !relayer,
+                "an ordinary agent must not be told it holds a grant"
+            );
+        }
+        other => panic!("expected Registered, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_renamed_collision_holds_no_grant() {
+    // `Relayers::contains` matches the EFFECTIVE name, so a second connection
+    // claiming a relayer's name is renamed and gets no authority. The notice must
+    // track the live grant, not the name that was asked for.
+    let (_d, port) = common::start_bus_with_relayers(["hub".to_string()]).await;
+
+    let mut first = connect(port, "hub").await;
+    let _ = next_event(&mut first).await;
+
+    let mut second = connect(port, "hub").await;
+    match next_event(&mut second).await {
+        FromBus::Registered { name, relayer } => {
+            assert_eq!(name, "hub#2", "a same-host collision is renamed");
+            assert!(!relayer, "the renamed connection must hold no grant");
+        }
+        other => panic!("expected Registered, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_registered_frame_without_the_field_still_parses() {
+    // The partial-rollout case, which nothing else covers: a new client against an
+    // old bus. Without serde(default) this fails to parse and every agent breaks.
+    let frame: FromBus =
+        serde_json::from_str(r#"{"type":"registered","name":"hub"}"#).expect("must parse");
+    match frame {
+        FromBus::Registered { name, relayer } => {
+            assert_eq!(name, "hub");
+            assert!(!relayer, "absent on the wire must mean no grant");
+        }
+        other => panic!("expected Registered, got {other:?}"),
     }
 }

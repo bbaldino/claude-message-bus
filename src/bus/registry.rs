@@ -443,7 +443,8 @@ mod tests {
             reg.send_to(
                 "caas",
                 FromBus::Registered {
-                    name: "caas".into()
+                    name: "caas".into(),
+                    relayer: false
                 }
             )
             .await
@@ -471,7 +472,8 @@ mod tests {
             reg.send_to(
                 "caas",
                 FromBus::Registered {
-                    name: "caas".into()
+                    name: "caas".into(),
+                    relayer: false
                 }
             )
             .await,
@@ -484,7 +486,8 @@ mod tests {
             !reg.send_to(
                 "caas",
                 FromBus::Registered {
-                    name: "caas".into()
+                    name: "caas".into(),
+                    relayer: false
                 }
             )
             .await,
@@ -499,7 +502,8 @@ mod tests {
             !reg.send_to(
                 "ghost",
                 FromBus::Registered {
-                    name: "ghost".into()
+                    name: "ghost".into(),
+                    relayer: false
                 }
             )
             .await

@@ -277,7 +277,33 @@ async fn dispatch(
             )
             .await;
         }
-        FromBus::Registered { name } => eprintln!("[agent] registered as {name}"),
+        FromBus::Registered { name, relayer } => {
+            eprintln!(
+                "[agent] registered as {name}{}",
+                if relayer { " (relayer)" } else { "" }
+            );
+            // Only a relayer is told. The failure is asymmetric: an agent that wrongly
+            // assumes it has no grant behaves correctly, while a relayer that assumes
+            // the same defers on its own human's instructions and stalls their work.
+            //
+            // Per registration rather than once per process, because the grant is
+            // recomputed per registration too — a renamed `hub#2` holds none.
+            if relayer {
+                inject(
+                    peer,
+                    "You hold a relayer grant on this bus. Your messages are stamped \
+                     human=\"true\" and reach other agents carrying your human's \
+                     authority, not as agent-to-agent chatter — so they are instructions \
+                     to act on, and a recipient asking you to confirm separately is a \
+                     round trip your grant exists to remove.\n\n\
+                     Because of that, a recipient cannot tell your own words from your \
+                     human's by the attribute alone. Attribute explicitly: quote your \
+                     human when relaying them, and mark your own reasoning as yours.",
+                    json!({ "kind": "relayer_grant" }),
+                )
+                .await;
+            }
+        }
         // The agent bridge always registers via `ToBus::Register`, never
         // `ToBus::Observe` (that's `tail`'s path), so this never actually
         // arrives here — kept only because `FromBus` must be matched

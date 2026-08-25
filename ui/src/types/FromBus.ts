@@ -14,7 +14,22 @@ import type { RoomUnread } from "./RoomUnread";
  * union generated, a rename in this file breaks the TypeScript build instead of
  * producing a silent `undefined` that passes every gate.
  */
-export type FromBus = { "type": "registered", name: string, } | { "type": "observing", name: string, } | { "type": "reply", req_id: number, result: ReplyResult, } | { "type": "message", id: number, room: string, from: string, text: string, done: boolean, 
+export type FromBus = { "type": "registered", name: string, 
+/**
+ * Whether this connection holds a relayer grant — its sends are stamped with
+ * its human's authority (`human="true"`).
+ *
+ * The bus is the only party that knows: the grant lives in configuration, and
+ * `Relayers::contains` matches the effective name, so a renamed collision holds
+ * no grant. Without this field an agent can only infer its own provenance from
+ * instructions that say `human="false"` means "another agent sent this" — right
+ * for every agent except a relayer, which is exactly the one that cannot tell.
+ *
+ * Absent on the wire means `false`, for the same reason `Register::human` has a
+ * default: Claude Code spawns a stdio MCP server once at session start and never
+ * respawns it, so a client that predates a new bus keeps parsing this frame.
+ */
+relayer: boolean, } | { "type": "observing", name: string, } | { "type": "reply", req_id: number, result: ReplyResult, } | { "type": "message", id: number, room: string, from: string, text: string, done: boolean, 
 /**
  * Set by the bus from the sending connection, never by the sender. Absent on
  * the wire means `false` so an agent binary that predates this field keeps

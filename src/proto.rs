@@ -238,12 +238,24 @@ pub enum ReplyResult {
 pub enum FromBus {
     Registered {
         name: String,
+        /// Whether this connection holds a relayer grant — its sends are stamped with
+        /// its human's authority (`human="true"`).
+        ///
+        /// The bus is the only party that knows: the grant lives in configuration, and
+        /// `Relayers::contains` matches the effective name, so a renamed collision holds
+        /// no grant. Without this field an agent can only infer its own provenance from
+        /// instructions that say `human="false"` means "another agent sent this" — right
+        /// for every agent except a relayer, which is exactly the one that cannot tell.
+        ///
+        /// Absent on the wire means `false`, for the same reason `Register::human` has a
+        /// default: Claude Code spawns a stdio MCP server once at session start and never
+        /// respawns it, so a client that predates a new bus keeps parsing this frame.
+        #[serde(default)]
+        relayer: bool,
     },
     /// Acknowledges an `Observe`. The counterpart to `Registered`, on the
     /// same control channel — see `Observe`.
-    Observing {
-        name: String,
-    },
+    Observing { name: String },
     Reply {
         #[ts(type = "number")]
         req_id: u64,
@@ -267,14 +279,9 @@ pub enum FromBus {
     /// connection, not per room — see `RoomUnread` — so a reconnecting
     /// agent's own control-plane queue can never be exhausted by the number
     /// of rooms it happens to belong to.
-    Unread {
-        rooms: Vec<RoomUnread>,
-    },
+    Unread { rooms: Vec<RoomUnread> },
     /// The exchange cap tripped for this room.
-    Paused {
-        room: String,
-        reason: String,
-    },
+    Paused { room: String, reason: String },
     Error {
         #[ts(type = "number | null")]
         req_id: Option<u64>,

@@ -589,6 +589,7 @@ async fn connection(socket: WebSocket, app: App) {
                     me = Some(effective.clone());
                     let _ = control_tx.try_send(FromBus::Registered {
                         name: effective.clone(),
+                        relayer: app.relayers.contains(&effective),
                     });
                     send_unread_summaries(&app, &effective, &control_tx).await;
                     app.registry
