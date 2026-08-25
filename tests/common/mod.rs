@@ -58,7 +58,13 @@ impl InProcessAgent {
         let (to_agent, from_agent, agent_stdin, agent_stdout) = Self::pipes();
         let bus_url = bus_url.into();
         let name = name.into();
-        let task = tokio::spawn(Self::run(agent_stdin, agent_stdout, bus_url, name));
+        let task = tokio::spawn(Self::run(
+            agent_stdin,
+            agent_stdout,
+            bus_url,
+            name,
+            claude_bus::agent::bridge::Liveness::default(),
+        ));
         Self {
             to_agent,
             from_agent,
@@ -90,7 +96,41 @@ impl InProcessAgent {
             .enable_all()
             .build()
             .expect("build agent runtime");
-        runtime.spawn(Self::run(agent_stdin, agent_stdout, bus_url, name));
+        runtime.spawn(Self::run(
+            agent_stdin,
+            agent_stdout,
+            bus_url,
+            name,
+            claude_bus::agent::bridge::Liveness::default(),
+        ));
+        Self {
+            to_agent,
+            from_agent,
+            runner: Some(Runner::Isolated(runtime)),
+        }
+    }
+
+    /// Same as `start_isolated`, but with an injectable liveness cadence.
+    pub fn start_isolated_with_liveness(
+        bus_url: impl Into<String>,
+        name: impl Into<String>,
+        liveness: claude_bus::agent::bridge::Liveness,
+    ) -> Self {
+        let (to_agent, from_agent, agent_stdin, agent_stdout) = Self::pipes();
+        let bus_url = bus_url.into();
+        let name = name.into();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("build agent runtime");
+        runtime.spawn(Self::run(
+            agent_stdin,
+            agent_stdout,
+            bus_url,
+            name,
+            liveness,
+        ));
         Self {
             to_agent,
             from_agent,
@@ -123,8 +163,15 @@ impl InProcessAgent {
         agent_stdout: tokio::io::DuplexStream,
         bus_url: String,
         name: String,
+        liveness: claude_bus::agent::bridge::Liveness,
     ) {
-        if let Err(e) = claude_bus::agent::run_on((agent_stdin, agent_stdout), bus_url, name).await
+        if let Err(e) = claude_bus::agent::run_on_with_liveness(
+            (agent_stdin, agent_stdout),
+            bus_url,
+            name,
+            liveness,
+        )
+        .await
         {
             eprintln!("[InProcessAgent] run_on exited with an error: {e}");
         }
@@ -176,6 +223,22 @@ impl Drop for InProcessAgent {
             None => {}
         }
     }
+}
+
+/// The bridge is spawned only after the MCP handshake completes
+/// (`src/agent/mod.rs:52-64`), so every test driving an `InProcessAgent` has
+/// to perform it first or it is testing nothing at all.
+pub async fn initialize(a: &mut InProcessAgent) -> serde_json::Value {
+    a.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "harness", "version": "1" }
+        }
+    }))
+    .await;
+    a.next_json().await
 }
 
 /// Common plumbing behind all the `start_bus*` variants below: bind an

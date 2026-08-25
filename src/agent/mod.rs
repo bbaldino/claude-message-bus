@@ -30,6 +30,21 @@ where
     T: IntoTransport<RoleServer, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
+    run_on_with_liveness(transport, bus_url, name, bridge::Liveness::default()).await
+}
+
+/// Same as `run_on`, but with an injectable liveness cadence so tests don't
+/// have to wait out the production 30s/90s.
+pub async fn run_on_with_liveness<T, E, A>(
+    transport: T,
+    bus_url: String,
+    name: String,
+    liveness: bridge::Liveness,
+) -> anyhow::Result<()>
+where
+    T: IntoTransport<RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
     eprintln!("[agent] starting as \"{name}\", bus={bus_url}");
 
     let (to_bus, rx) = mpsc::unbounded_channel::<ToBus>();
@@ -60,6 +75,7 @@ where
             .or_else(|| env.cwd())
             .unwrap_or_else(|| ".".to_string()),
         session_id: env.var("CLAUDE_CODE_SESSION_ID"),
+        liveness,
     };
     tokio::spawn(bridge::run(cfg, rx, ack_tx, peer, pending));
 

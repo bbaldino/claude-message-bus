@@ -23,6 +23,7 @@ pub struct BridgeConfig {
     pub host: String,
     pub cwd: String,
     pub session_id: Option<String>,
+    pub liveness: Liveness,
 }
 
 /// A connection that stayed up at least this long resets the backoff to its
@@ -30,6 +31,34 @@ pub struct BridgeConfig {
 /// wait up to 30s to reconnect just because of a stale prior outage.
 const STABLE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(60);
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
+
+/// How often the bridge pings the bus, and how long it waits for any inbound
+/// frame before deciding the connection is dead.
+///
+/// Injected the way the bus injects `Keepalive`, and for the same reason: the
+/// production cadence is minutes, so a test that used it would have to sleep
+/// for minutes.
+///
+/// The client pings rather than only listening. Relying on the bus's pings
+/// alone would need no ticker at all, but it would couple this timeout to the
+/// peer's configured cadence — and that cadence is configurable
+/// (`Keepalive::new`). Anyone lengthening the bus's ping interval past this
+/// timeout would turn every idle connection into a reconnect loop, with
+/// nothing in either file to warn them.
+#[derive(Clone, Copy, Debug)]
+pub struct Liveness {
+    pub ping_interval: Duration,
+    pub idle_timeout: Duration,
+}
+
+impl Default for Liveness {
+    fn default() -> Self {
+        Self {
+            ping_interval: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(90),
+        }
+    }
+}
 
 pub async fn run(
     cfg: BridgeConfig,
@@ -76,6 +105,13 @@ async fn connect_once(
     sink.send(Message::text(serde_json::to_string(&register)?))
         .await?;
 
+    // Checked on a ticker rather than by racing a timer against the read, so
+    // the granularity is one interval: detection lands within
+    // `idle_timeout + ping_interval`.
+    let mut liveness_ticker = tokio::time::interval(cfg.liveness.ping_interval);
+    liveness_ticker.tick().await; // skip the immediate first tick
+    let mut last_inbound = tokio::time::Instant::now();
+
     loop {
         tokio::select! {
             outbound = rx.recv() => {
@@ -84,6 +120,10 @@ async fn connect_once(
             }
             inbound = stream.next() => {
                 let Some(msg) = inbound else { return Ok(()) };
+                // Any frame, not specifically a pong: it is strictly more
+                // information, and a busy connection must not trip the timer
+                // just because a pong queued behind a burst of messages.
+                last_inbound = tokio::time::Instant::now();
                 let Ok(text) = msg?.into_text() else { continue };
                 if text.trim().is_empty() { continue }
                 let event: FromBus = match serde_json::from_str(&text) {
@@ -91,6 +131,21 @@ async fn connect_once(
                     Err(e) => { eprintln!("[agent] unparseable from bus: {e}: {text}"); continue }
                 };
                 dispatch(event, peer, pending, tx).await;
+            }
+            _ = liveness_ticker.tick() => {
+                // Checked before pinging, so a connection already known to be
+                // dead is not written into first.
+                if last_inbound.elapsed() > cfg.liveness.idle_timeout {
+                    eprintln!(
+                        "[agent] no traffic from the bus in {:?}, assuming the connection is dead",
+                        cfg.liveness.idle_timeout
+                    );
+                    anyhow::bail!("no traffic from the bus in {:?}", cfg.liveness.idle_timeout);
+                }
+                // The ping is also a write, so a dead socket eventually fails
+                // here on its own — a second detection path that does not
+                // depend on the timer above.
+                sink.send(Message::Ping(Vec::new().into())).await?;
             }
         }
     }

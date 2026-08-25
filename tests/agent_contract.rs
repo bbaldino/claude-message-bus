@@ -15,7 +15,7 @@ mod common;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use common::InProcessAgent;
+use common::{InProcessAgent, initialize};
 
 struct Agent {
     child: Child,
@@ -69,19 +69,6 @@ fn initialize_subprocess(a: &mut Agent) -> serde_json::Value {
         }
     }));
     a.next_json()
-}
-
-async fn initialize(a: &mut InProcessAgent) -> serde_json::Value {
-    a.send(serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": { "name": "harness", "version": "1" }
-        }
-    }))
-    .await;
-    a.next_json().await
 }
 
 // Real subprocess: proves the shipped binary parses `agent --bus ... --name
