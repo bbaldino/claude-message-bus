@@ -88,9 +88,15 @@ pub async fn run(
     pending: Pending,
 ) {
     let mut backoff = BACKOFF_FLOOR;
+    // Whether the grant notice has ever been injected into this session, across every
+    // connection this process makes. Lives here, outside `connect_once`'s per-connection
+    // scope, so it survives reconnects: a revocation notice is only owed to a session that
+    // was actually told it held a grant at some point in this process's lifetime. A session
+    // that never held one gets nothing, on every registration, forever.
+    let mut granted_before = false;
     loop {
         let connected_at = std::time::Instant::now();
-        match connect_once(&cfg, &mut rx, &tx, &peer, &pending).await {
+        match connect_once(&cfg, &mut rx, &tx, &peer, &pending, &mut granted_before).await {
             Ok(()) => eprintln!("[agent] bus connection closed"),
             Err(e) => eprintln!("[agent] bus error: {e}"),
         }
@@ -109,6 +115,7 @@ async fn connect_once(
     tx: &mpsc::UnboundedSender<ToBus>,
     peer: &Peer<RoleServer>,
     pending: &Pending,
+    granted_before: &mut bool,
 ) -> anyhow::Result<()> {
     let (ws, _) = tokio_tungstenite::connect_async(&cfg.bus_url).await?;
     let (mut sink, mut stream) = ws.split();
@@ -167,7 +174,7 @@ async fn connect_once(
                     Ok(e) => e,
                     Err(e) => { eprintln!("[agent] unparseable from bus: {e}: {text}"); continue }
                 };
-                dispatch(event, peer, pending, tx).await;
+                dispatch(event, peer, pending, tx, granted_before).await;
             }
             _ = liveness_ticker.tick() => {
                 // Checked before pinging, so a connection already known to be
@@ -193,6 +200,7 @@ async fn dispatch(
     peer: &Peer<RoleServer>,
     pending: &Pending,
     tx: &mpsc::UnboundedSender<ToBus>,
+    granted_before: &mut bool,
 ) {
     match event {
         FromBus::Message {
@@ -291,15 +299,37 @@ async fn dispatch(
             if relayer {
                 inject(
                     peer,
-                    "You hold a relayer grant on this bus. Your messages are stamped \
-                     human=\"true\" and reach other agents carrying your human's \
-                     authority, not as agent-to-agent chatter — so they are instructions \
-                     to act on, and a recipient asking you to confirm separately is a \
-                     round trip your grant exists to remove.\n\n\
-                     Because of that, a recipient cannot tell your own words from your \
-                     human's by the attribute alone. Attribute explicitly: quote your \
-                     human when relaying them, and mark your own reasoning as yours.",
+                    "You hold a relayer grant on this bus connection. Your messages are \
+                     stamped human=\"true\" and reach other agents carrying your human's \
+                     authority, rather than as agent-to-agent conversation.\n\n\
+                     The grant stamps the channel, not your judgment: send as instruction \
+                     only what your human actually asked for. Recipients cannot tell your \
+                     words from theirs by the attribute alone, so attribute explicitly — \
+                     quote your human when you are relaying them, and mark your own \
+                     reasoning as yours.\n\n\
+                     A recipient asking you to confirm that your human really said \
+                     something is asking what the attribute cannot tell them, and you can \
+                     answer it directly. That is different from confirming a drastic or \
+                     irreversible action before it happens, which stays right here \
+                     exactly as it is anywhere else.",
                     json!({ "kind": "relayer_grant" }),
+                )
+                .await;
+                *granted_before = true;
+            } else if *granted_before {
+                // The grant was told to this session at some point in this process's
+                // life, and now isn't held. `Relayers` is immutable per bus process, so
+                // this only fires after a reconnect lands on a bus that no longer grants
+                // this name — but a long-lived session's context still carries the
+                // earlier unconditional, present-tense claim. Without a retraction it
+                // goes on asserting authority its messages no longer carry.
+                inject(
+                    peer,
+                    "Your relayer grant is no longer in effect on this connection. Your \
+                     messages are now stamped human=\"false\" and reach other agents as \
+                     agent-to-agent conversation, so anything you relay no longer \
+                     carries your human's authority.",
+                    json!({ "kind": "relayer_grant_revoked" }),
                 )
                 .await;
             }

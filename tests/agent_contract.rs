@@ -14,9 +14,13 @@ mod common;
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use claude_bus::proto::{Target, ToBus};
+use claude_bus::proto::{FromBus, Target, ToBus};
 use common::{InProcessAgent, connect, initialize, next_event, send};
+use futures_util::{SinkExt, StreamExt};
+use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::Message;
 
 struct Agent {
     child: Child,
@@ -1013,8 +1017,8 @@ async fn the_bridge_tells_a_relayer_session_about_its_grant() {
         "must state how its messages are stamped: {content}"
     );
     assert!(
-        content.contains("attribute") || content.contains("quote"),
-        "must tell it to attribute its human's words explicitly: {content}"
+        content.contains("quote your human"),
+        "must pin the actual obligation, not just the general idea of attribution: {content}"
     );
 }
 
@@ -1073,6 +1077,93 @@ async fn an_ordinary_session_gets_no_grant_notice() {
         );
         break;
     }
+}
+
+/// A minimal hand-rolled bus, in the same spirit as `bridge_liveness.rs`'s
+/// `silent_bus`/`chatty_bus`: it speaks just enough of the real wire protocol for
+/// `dispatch` to react to, standing in for a bus behavior the real bus cannot
+/// reproduce in a test. Here, that behavior is a revoked relayer grant — the real
+/// bus's `Relayers` is immutable for its whole process lifetime (revoking a grant
+/// means restarting the bus with a different config), so no real bus can answer
+/// `Registered` two different ways for the same name within one test.
+///
+/// First connection answers `Registered { relayer: true }` and then closes, which
+/// forces the bridge's own reconnect loop to fire — exactly as a real bus dropping
+/// the connection would. Second connection answers `Registered { relayer: false }`
+/// and stays up so the test can read the notification it produces.
+async fn bus_that_revokes_after_one_connection(name: &str) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let name = name.to_string();
+    let connections = std::sync::Arc::new(AtomicUsize::new(0));
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let name = name.clone();
+            let connections = connections.clone();
+            tokio::spawn(async move {
+                let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                let (mut sink, mut stream) = ws.split();
+                // Wait for the bridge's `ToBus::Register` before answering, same as a
+                // real bus would.
+                let _ = stream.next().await;
+                let first = connections.fetch_add(1, Ordering::SeqCst) == 0;
+                let registered = FromBus::Registered {
+                    name,
+                    relayer: first,
+                };
+                let _ = sink
+                    .send(Message::text(serde_json::to_string(&registered).unwrap()))
+                    .await;
+                if first {
+                    // Dropping `sink`/`stream` here sends a close frame, which is what
+                    // pushes the bridge's reconnect loop into its next attempt.
+                    return;
+                }
+                std::future::pending::<()>().await;
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn a_revoked_grant_gets_a_retraction_notice() {
+    let port = bus_that_revokes_after_one_connection("tester").await;
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "tester");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+
+    let grant = a.next_notification("notifications/claude/channel").await;
+    assert_eq!(
+        grant["params"]["meta"]["kind"].as_str(),
+        Some("relayer_grant"),
+        "the first connection holds the grant: {grant:?}"
+    );
+
+    // Only fires once the bridge's reconnect loop notices the first connection
+    // closed and lands on the second, so this also proves the revocation flag
+    // survives a reconnect rather than resetting per-connection.
+    let revoked = a.next_notification("notifications/claude/channel").await;
+    assert_eq!(
+        revoked["params"]["meta"]["kind"].as_str(),
+        Some("relayer_grant_revoked"),
+        "the second connection, without the grant, must retract it: {revoked:?}"
+    );
+    let content = revoked["params"]["content"].as_str().expect("content");
+    assert!(
+        content.contains("human=\"false\""),
+        "must state how its messages are now stamped: {content}"
+    );
+    assert!(
+        content.contains("no longer carries your human's authority"),
+        "must say the authority itself, not just the stamp, is gone: {content}"
+    );
 }
 
 #[tokio::test]
