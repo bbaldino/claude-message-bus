@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/bbaldino/claude-message-bus/compare/v0.5.1...v0.5.2) - 2026-08-25
+
+### Fixed
+
+- close the bridge-liveness review's four findings
+- deduplicate start_isolated onto start_isolated_with_liveness
+- the agent bridge detects a connection that has gone silent
+
+### Other
+
+- implementation plan for agent bridge liveness
+- design for the agent bridge detecting a dead connection
+
 ## [0.5.1](https://github.com/bbaldino/claude-message-bus/compare/v0.5.0...v0.5.1) - 2026-08-17
 
 ### Fixed
