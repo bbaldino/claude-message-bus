@@ -88,26 +88,11 @@ impl InProcessAgent {
     /// `ack_advances_the_cursor_so_reconnect_reports_only_genuinely_unseen_messages`
     /// depends on to see its dropped agent go offline.
     pub fn start_isolated(bus_url: impl Into<String>, name: impl Into<String>) -> Self {
-        let (to_agent, from_agent, agent_stdin, agent_stdout) = Self::pipes();
-        let bus_url = bus_url.into();
-        let name = name.into();
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("build agent runtime");
-        runtime.spawn(Self::run(
-            agent_stdin,
-            agent_stdout,
+        Self::start_isolated_with_liveness(
             bus_url,
             name,
             claude_bus::agent::bridge::Liveness::default(),
-        ));
-        Self {
-            to_agent,
-            from_agent,
-            runner: Some(Runner::Isolated(runtime)),
-        }
+        )
     }
 
     /// Same as `start_isolated`, but with an injectable liveness cadence.
