@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/bbaldino/claude-message-bus/compare/v0.5.2...v0.5.3) - 2026-08-25
+
+### Added
+
+- tell a relayer that it holds the grant
+
+### Fixed
+
+- separate the relayer channel from the relayer's judgment, and retract a revoked grant
+- give `done` one meaning, and teach it on the receive side
+- harden the grant-notice tests against notification ordering
+
+### Other
+
+- implementation plan for agent self-knowledge
+- design for telling agents about their own bus semantics
+
 ## [0.5.2](https://github.com/bbaldino/claude-message-bus/compare/v0.5.1...v0.5.2) - 2026-08-25
 
 ### Fixed
