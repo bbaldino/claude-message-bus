@@ -74,7 +74,12 @@ async fn chatty_bus() -> (u16, mpsc::UnboundedReceiver<()>) {
                             }
                         }
                         msg = stream.next() => {
-                            if msg.is_none() { return }
+                            // Anything but a well-formed frame ends the
+                            // connection: `is_none()` alone let a persistent
+                            // `Some(Err(_))` (e.g. a protocol error tungstenite
+                            // keeps handing back) spin this loop instead of
+                            // tearing the connection down.
+                            if !matches!(msg, Some(Ok(_))) { return }
                         }
                     }
                 }

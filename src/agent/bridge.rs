@@ -45,6 +45,26 @@ const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 /// (`Keepalive::new`). Anyone lengthening the bus's ping interval past this
 /// timeout would turn every idle connection into a reconnect loop, with
 /// nothing in either file to warn them.
+///
+/// Detection is bounded by `idle_timeout + ping_interval + longest_dispatch`,
+/// not just the first two terms. `last_inbound` is set before the frame is
+/// parsed and dispatched, so a slow `dispatch` (it awaits
+/// `peer.send_notification()`, an unbounded write to the MCP transport if the
+/// session has stopped reading) can only delay detection, never cause a false
+/// positive — the clock for the *next* idle window doesn't start until
+/// dispatch returns and the loop is back in `select!`.
+///
+/// Neither the ping in the ticker arm nor the register/outbound writes in the
+/// other `select!` arms are wrapped in a timeout. A peer that advertises a
+/// zero receive window can park any of those sends indefinitely; the loop
+/// never re-enters `select!`, so the idle check never runs and the give-up
+/// path never fires — the one way this mechanism can defeat itself. Not the
+/// bug this branch was built to catch (a lost FIN leaves the send buffer
+/// drainable, and a 2-byte ping fits for a very long time), and not a
+/// regression: the outbound arm always had this shape. Left unwrapped
+/// anyway — the fix is a timeout on every send, which is a bigger change
+/// than this doc comment. `connect_async` has the same unbounded-wait
+/// property and is out of scope for the same reason.
 #[derive(Clone, Copy, Debug)]
 pub struct Liveness {
     pub ping_interval: Duration,
@@ -107,7 +127,24 @@ async fn connect_once(
 
     // Checked on a ticker rather than by racing a timer against the read, so
     // the granularity is one interval: detection lands within
-    // `idle_timeout + ping_interval`.
+    // `idle_timeout + ping_interval` (see `Liveness` for the fuller bound).
+    //
+    // Left at the default `MissedTickBehavior::Burst` rather than set to
+    // `Delay`. A burst can genuinely happen: the loop busy for longer than
+    // `ping_interval` while inbound frames keep resetting `last_inbound`
+    // produces a run of queued ticks once it comes up for air. That's
+    // harmless here — the bus's read loop drops `Ping` on its catch-all arm
+    // and counts nothing toward its own timeout, tungstenite answers each
+    // one with a pong, and a burst can't cause a false teardown because only
+    // the *first* firing checks the deadline; it bails only if the
+    // connection is genuinely stale, and every firing after that finds
+    // `last_inbound` already fresh. `Delay` would instead push detection out
+    // by a full extra interval after any busy period — the wrong trade for a
+    // ticker whose entire reason to exist is detecting a stale connection.
+    // The bus makes the same call but splits the two duties across separate
+    // tickers (`Delay` on its pinger, `Burst` on its timeout checker,
+    // `src/bus/mod.rs`); the bridge merges ping and check into this one
+    // ticker, so it keeps `Burst`.
     let mut liveness_ticker = tokio::time::interval(cfg.liveness.ping_interval);
     liveness_ticker.tick().await; // skip the immediate first tick
     let mut last_inbound = tokio::time::Instant::now();

@@ -211,7 +211,7 @@ impl Drop for InProcessAgent {
 }
 
 /// The bridge is spawned only after the MCP handshake completes
-/// (`src/agent/mod.rs:52-64`), so every test driving an `InProcessAgent` has
+/// (`src/agent/mod.rs:65-80`), so every test driving an `InProcessAgent` has
 /// to perform it first or it is testing nothing at all.
 pub async fn initialize(a: &mut InProcessAgent) -> serde_json::Value {
     a.send(serde_json::json!({
