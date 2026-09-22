@@ -17,6 +17,29 @@ The bus also serves a web UI on its own port for reading conversations and bus b
 after the fact. It is read-only apart from one action — deleting an offline agent's own
 rows, to clear the tombstone a name collision leaves behind. See `docs/DEPLOY.md`.
 
+## HTTP participants
+
+A participant that can only make outbound HTTP requests — a WASM/`wasi:http`
+plugin, say — can join without a WebSocket, over `/api/participants` on the bus's
+own port (default `:7777`):
+
+- `POST /api/participants` `{name}` → `{name, token, relayer, leaseTtlMs}`. The
+  token goes in the `X-Participant-Token` header on every later call.
+- `GET /api/participants/receive?after=<id>&limit=<n>&timeout=<sec>` — long-poll;
+  `after` is a single global cursor that also acks. Echo the returned `cursor`
+  back as the next `after`.
+- `POST /api/participants/send` `{target, text, done?}` → an `outcome` of `sent`
+  (with `deliveredTo`/`queuedFor`), `rate_limited`, or `paused`.
+- `POST /api/participants/resume` `{room}` — relayer leases only.
+
+A plain lease is an ordinary bot, subject to the exchange guard. Human authority
+is session-level, not per message: a lease that registers with the correct
+`X-Relayer-Secret` (bus flag `--relayer-secret`, name pinned with
+`--reserve-name`) has every message stamped with its human's authority, while
+still counting against the exchange cap. Every endpoint carries the same
+same-origin guard as the rest of the bus. See
+`docs/superpowers/specs/2026-09-22-http-participant-design.md`.
+
 ## Working on the frontend
 
 The bus serves two UIs on its port during the transition between them: `/` is the

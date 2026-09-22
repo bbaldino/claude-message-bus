@@ -3,6 +3,7 @@
 
 pub(crate) mod commands;
 pub mod delivery;
+pub mod participant;
 pub mod registry;
 pub mod rooms;
 
@@ -22,6 +23,7 @@ use tokio::sync::mpsc;
 use crate::proto::{FromBus, ReplyResult, RoomUnread, ToBus};
 use crate::store::Store;
 use delivery::Guards;
+use participant::{Leases, ParticipantConfig};
 use registry::Registry;
 
 /// How often the bus pings each connected client, and how long it waits for
@@ -141,9 +143,15 @@ pub(crate) struct App {
     pub(crate) guards: Guards,
     pub(crate) keepalive: Keepalive,
     pub(crate) relayers: Relayers,
+    pub(crate) participants: Leases,
 }
 
-pub async fn serve(port: u16, data_dir: PathBuf, relayers: Relayers) -> anyhow::Result<()> {
+pub async fn serve(
+    port: u16,
+    data_dir: PathBuf,
+    relayers: Relayers,
+    participants: ParticipantConfig,
+) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     eprintln!("claude-bus listening on 0.0.0.0:{port}");
     // Auditable through `make bus-logs`: a mistyped `--relayer` (e.g. the equals form,
@@ -163,6 +171,7 @@ pub async fn serve(port: u16, data_dir: PathBuf, relayers: Relayers) -> anyhow::
         Keepalive::default(),
         Registry::new(),
         relayers,
+        participants,
     )
     .await
 }
@@ -199,6 +208,7 @@ pub async fn serve_on_with_keepalive(
         keepalive,
         Registry::new(),
         Relayers::default(),
+        ParticipantConfig::default(),
     )
     .await
 }
@@ -216,6 +226,7 @@ pub async fn serve_on_full(
     keepalive: Keepalive,
     registry: Registry,
     relayers: Relayers,
+    participants: ParticipantConfig,
 ) -> anyhow::Result<()> {
     let store = Store::open(&data_dir).await?;
     // A bus that is only now starting has no live connections, so any row left claiming
@@ -248,6 +259,7 @@ pub async fn serve_on_full(
         guards,
         keepalive,
         relayers,
+        participants: Leases::new(participants),
     };
     // Events reach observers through the store's broadcast channel, so every
     // append is fanned out regardless of which call site produced it.
@@ -302,6 +314,44 @@ pub async fn serve_on_full(
                             break;
                         }
                     }
+                }
+            }
+        });
+    }
+
+    // Sweep expired HTTP participant leases. An HTTP participant has no socket
+    // whose close signals departure, so a lease that stops polling is how it goes
+    // away — detached from the registry (so `send_to` starts reporting `queued`)
+    // and recorded as disconnected, with the same registry-is-authority model the
+    // WS teardown uses. Only a genuine expiry fires an event; renewals are silent,
+    // so the console dot and the audit log don't flap on the poll cadence.
+    {
+        let registry = app.registry.clone();
+        let store = app.store.clone();
+        let leases = app.participants.clone();
+        let ttl = leases.cfg().lease_ttl;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval((ttl / 4).max(Duration::from_millis(25)));
+            loop {
+                tick.tick().await;
+                for (_token, name) in leases.expired().await {
+                    registry.detach(&name).await;
+                    registry
+                        .notify_presence(FromBus::Presence {
+                            name: name.clone(),
+                            host: "http".into(),
+                            online: false,
+                            last_seen: crate::store::now_ms(),
+                        })
+                        .await;
+                    let _ = store
+                        .append_event(
+                            "agent_disconnected",
+                            Some(&name),
+                            None,
+                            json!({ "reason": "lease_expired" }),
+                        )
+                        .await;
                 }
             }
         });
@@ -650,7 +700,17 @@ async fn connection(socket: WebSocket, app: App) {
                     continue;
                 };
 
-                commands::handle(&app, &name, cmd, &control_tx, is_human).await;
+                commands::handle(
+                    &app,
+                    &name,
+                    cmd,
+                    &control_tx,
+                    commands::Authority {
+                        human_present: is_human,
+                        relayer: false,
+                    },
+                )
+                .await;
             }
             _ = timeout_ticker.tick() => {
                 if last_pong.elapsed() > app.keepalive.pong_timeout {

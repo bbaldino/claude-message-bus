@@ -1403,3 +1403,44 @@ async fn the_migration_adds_the_hidden_column_to_an_older_database() {
         "existing data must survive the migration"
     );
 }
+
+#[tokio::test]
+async fn undelivered_for_participant_merges_rooms_in_id_order_and_respects_cursors() {
+    let (_d, store) = temp_store().await;
+
+    store.join_room("a", "raven").await.unwrap();
+    store.join_room("b", "raven").await.unwrap();
+    let m1 = store
+        .append_message("a", "caas", "a1", false, false)
+        .await
+        .unwrap();
+    let m2 = store
+        .append_message("b", "dash", "b1", false, false)
+        .await
+        .unwrap();
+    let _own = store
+        .append_message("a", "raven", "mine", false, true)
+        .await
+        .unwrap();
+
+    let all = store
+        .undelivered_for_participant("raven", 100)
+        .await
+        .unwrap();
+    let ids: Vec<i64> = all.iter().map(|m| m.id).collect();
+    assert_eq!(
+        ids,
+        vec![m1, m2],
+        "own message excluded, merged in id order"
+    );
+
+    // Ack past m1 in room a; only b1 remains.
+    store.set_cursor("a", "raven", m1).await.unwrap();
+    let rest = store
+        .undelivered_for_participant("raven", 100)
+        .await
+        .unwrap();
+    assert_eq!(rest.iter().map(|m| m.id).collect::<Vec<_>>(), vec![m2]);
+
+    assert_eq!(store.member_rooms("raven").await.unwrap().len(), 2);
+}

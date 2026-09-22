@@ -16,6 +16,20 @@ use crate::proto::{
 };
 use crate::store::now_ms;
 
+/// What authority a connection's command carries.
+///
+/// `human_present` means a person is actually at the keyboard — it, and only it,
+/// exempts the exchange guard and clears a pause. `relayer` means the connection
+/// speaks with a human's authority (label only): its messages are stamped human,
+/// but the guards still apply. Keeping the two apart is the whole point (see the
+/// long note in the `Send` arm): authority is delegable by configuration,
+/// attendance is not.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Authority {
+    pub human_present: bool,
+    pub relayer: bool,
+}
+
 async fn known_rooms(app: &App) -> String {
     match app.store.rooms().await {
         Ok(rooms) if !rooms.is_empty() => rooms
@@ -27,12 +41,242 @@ async fn known_rooms(app: &App) -> String {
     }
 }
 
+/// The typed result of a send, shared by the WS command arm and the HTTP
+/// participant endpoint. Each transport formats it its own way (control-channel
+/// frames vs. a JSON `outcome`), but the decision — and every store write behind
+/// it — is made once, here.
+pub(crate) enum SendOutcome {
+    Sent {
+        room: String,
+        msg_id: i64,
+        delivered_to: Vec<String>,
+        queued_for: Vec<String>,
+    },
+    RateLimited {
+        retry_in_ms: i64,
+    },
+    Paused {
+        room: String,
+        count: u32,
+        reason: String,
+    },
+    /// A `Target::Agent` with no such agent. Carries the caller-facing message
+    /// (including a "did you mean" suggestion); the `send_refused` event is
+    /// already recorded.
+    UnknownAgent {
+        message: String,
+    },
+    /// A storage or verification failure — nothing was sent.
+    Error {
+        message: String,
+    },
+}
+
+/// Perform a send: resolve the room, refuse an unknown DM target, run the
+/// delivery guards, persist, fan out to members and observers, and record the
+/// audit events. Returns a typed outcome; writes no wire frames of its own, so
+/// both the WS arm and the HTTP endpoint can render it.
+///
+/// `authority.human_present` is what the guard consults — deliberately NOT the
+/// relayer-expanded `has_human_authority` used as the message *label*. The two
+/// look like one question and are not: the gate asks whether a person is present
+/// (which zeroes the exchange counter and un-pauses the room), while the label
+/// asks whose authority the message carries. Authority is delegable by
+/// configuration (a relayer, or a secret-proven HTTP lease); attendance is not,
+/// because the bus cannot tell whether a relayer is passing on a human's words
+/// or composing its own. Collapsing the two would silently delete the exchange
+/// cap for relayed conversations. A relayer un-pauses through `Resume` instead.
+pub(crate) async fn do_send(
+    app: &App,
+    me: &str,
+    target: Target,
+    text: String,
+    done: bool,
+    authority: Authority,
+) -> SendOutcome {
+    let room = rooms::resolve(&target, me);
+
+    // An unknown DM target is refused before the guards: a malformed request must
+    // not consume exchange-cap budget or come back as `RateLimited`, which would
+    // send the caller off to retry something that can never work. Existence, not
+    // liveness — an offline agent still has its row, and queuing for it is the
+    // point of the bus. Only `Target::Agent` is checked; rooms auto-create.
+    if let Target::Agent { name } = &target {
+        let known = match app.store.agent_exists(name).await {
+            Ok(known) => known,
+            Err(e) => {
+                eprintln!("could not check whether agent {name} exists: {e}");
+                return SendOutcome::Error {
+                    message: "could not verify the target agent".to_string(),
+                };
+            }
+        };
+        if !known {
+            let suggestion = match name.split_once('@') {
+                Some((bare, _)) if app.store.agent_exists(bare).await.unwrap_or(false) => {
+                    format!("; did you mean {bare:?}?")
+                }
+                _ => "; call `agents` for the list".to_string(),
+            };
+            let _ = app
+                .store
+                .append_event(
+                    "send_refused",
+                    Some(me),
+                    None,
+                    json!({ "target": name, "reason": "unknown_agent" }),
+                )
+                .await;
+            return SendOutcome::UnknownAgent {
+                message: format!("no agent named {name:?}{suggestion}"),
+            };
+        }
+    }
+
+    let cleared_pause = match app
+        .guards
+        .check(&room, me, now_ms(), authority.human_present)
+        .await
+    {
+        GuardVerdict::Allow { cleared_pause } => cleared_pause,
+        GuardVerdict::RateLimited { retry_in_ms } => {
+            let _ = app
+                .store
+                .append_event(
+                    "rate_limited",
+                    Some(me),
+                    Some(&room),
+                    json!({ "retry_in_ms": retry_in_ms }),
+                )
+                .await;
+            return SendOutcome::RateLimited { retry_in_ms };
+        }
+        GuardVerdict::Paused { count } => {
+            let _ = app
+                .store
+                .append_event(
+                    "room_paused",
+                    Some(me),
+                    Some(&room),
+                    json!({ "count": count }),
+                )
+                .await;
+            let reason = format!(
+                "{count} messages in this room with no human input. \
+                 Tell your human, and call resume once they say to continue."
+            );
+            return SendOutcome::Paused {
+                room,
+                count,
+                reason,
+            };
+        }
+    };
+
+    // The label the message carries: the connection's own presence, a relay
+    // grant (config), or a secret-proven HTTP lease. Never anything in the
+    // payload. Wider than the gate above, on purpose — see this function's doc.
+    let has_human_authority =
+        authority.human_present || authority.relayer || app.relayers.contains(me);
+
+    // A DM auto-creates its room and enrolls both sides.
+    let _ = app.store.join_room(&room, me).await;
+    if let Target::Agent { name } = &target {
+        let _ = app.store.join_room(&room, name).await;
+    }
+
+    let msg_id = match app
+        .store
+        .append_message(&room, me, &text, done, has_human_authority)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            return SendOutcome::Error {
+                message: e.to_string(),
+            };
+        }
+    };
+
+    let members = app.store.room_members(&room).await.unwrap_or_default();
+    let mut delivered_to = Vec::new();
+    let mut queued_for = Vec::new();
+    for member in members.iter().filter(|m| m.as_str() != me) {
+        let event = FromBus::Message {
+            id: msg_id,
+            room: room.clone(),
+            from: me.to_string(),
+            text: text.clone(),
+            done,
+            human: has_human_authority,
+        };
+        if app.registry.send_to(member, event).await {
+            delivered_to.push(member.clone());
+        } else {
+            queued_for.push(member.clone());
+        }
+    }
+
+    // Observers are spectators: a separate fan-out that never touches
+    // delivered/queued, since an observer was never a party to the send.
+    app.registry
+        .notify_watchers(
+            &room,
+            FromBus::Message {
+                id: msg_id,
+                room: room.clone(),
+                from: me.to_string(),
+                text,
+                done,
+                human: has_human_authority,
+            },
+        )
+        .await;
+
+    let _ = app
+        .store
+        .append_event(
+            "message_sent",
+            Some(me),
+            Some(&room),
+            json!({
+                "msg_id": msg_id,
+                "delivered_to": &delivered_to,
+                "queued_for": &queued_for,
+                "done": done,
+            }),
+        )
+        .await;
+
+    // A human message that lifted a pause is recorded so `Store::room_flag`
+    // stops deriving "needs you". Appended after the message stores, so it can
+    // never claim a resume for a send that failed.
+    if cleared_pause {
+        let _ = app
+            .store
+            .append_event(
+                "resumed",
+                Some(me),
+                Some(&room),
+                json!({ "via": "human_message", "msg_id": msg_id }),
+            )
+            .await;
+    }
+
+    SendOutcome::Sent {
+        room,
+        msg_id,
+        delivered_to,
+        queued_for,
+    }
+}
+
 pub(crate) async fn handle(
     app: &App,
     me: &str,
     cmd: ToBus,
     control_tx: &registry::Sender,
-    is_human: bool,
+    authority: Authority,
 ) {
     match cmd {
         ToBus::Register { .. } => {}
@@ -100,254 +344,64 @@ pub(crate) async fn handle(
             text,
             done,
         } => {
-            let room = rooms::resolve(&target, me);
-
-            // An unknown DM target is refused here, before the delivery guards.
-            // A malformed request must not consume exchange-cap budget, and must
-            // not come back as `RateLimited` — that would send the caller away to
-            // retry something that can never work.
-            //
-            // Existence, not liveness: an offline agent still has its row, and
-            // queuing for it is the point of the bus. Only `Target::Agent` is
-            // checked — rooms auto-create legitimately, and that is how a room
-            // comes into being at all.
-            if let Target::Agent { name } = &target {
-                let known = match app.store.agent_exists(name).await {
-                    Ok(known) => known,
-                    Err(e) => {
-                        eprintln!("could not check whether agent {name} exists: {e}");
-                        let _ = control_tx.try_send(FromBus::Error {
-                            req_id: Some(req_id),
-                            message: "could not verify the target agent".to_string(),
-                        });
-                        return;
-                    }
-                };
-                if !known {
-                    // The observed failure was a nearly-right name, so name the
-                    // candidate rather than only the mistake.
-                    let suggestion = match name.split_once('@') {
-                        Some((bare, _)) if app.store.agent_exists(bare).await.unwrap_or(false) => {
-                            format!("; did you mean {bare:?}?")
-                        }
-                        _ => "; call `agents` for the list".to_string(),
-                    };
-                    let _ = app
-                        .store
-                        .append_event(
-                            "send_refused",
-                            Some(me),
-                            None,
-                            json!({ "target": name, "reason": "unknown_agent" }),
-                        )
-                        .await;
-                    let _ = control_tx.try_send(FromBus::Error {
-                        req_id: Some(req_id),
-                        message: format!("no agent named {name:?}{suggestion}"),
-                    });
-                    return;
-                }
-            }
-
-            // `is_human` here, deliberately NOT the relayer-expanded `has_human_authority`
-            // computed further down. The two look like the same question and are not:
-            // this gate asks whether a person is actually present, while that label
-            // asks whose authority the message carries. Authority is delegable by
-            // configuration — that is exactly what `--relayer` grants — but attendance
-            // is not, because the bus cannot tell whether a relayer is passing on words
-            // a human typed or composing its own. A relayer does both.
-            //
-            // It matters because the `is_human` branch of `check` does not merely permit
-            // the send: it zeroes the exchange counter and un-pauses the room. If a relay
-            // grant counted as human here, a relayer talking to an agent would reset the
-            // counter on every message, the cap could never trip, and the one property
-            // this guard exists to provide would be gone — for the exact pairing most
-            // able to run away unattended.
-            //
-            // A relayer is not stuck: it clears a pause through `Resume`, which is an
-            // explicit, audited action rather than an implicit side effect of speaking.
-            //
-            // `cleared_pause` is carried down to just after the send lands, where it
-            // becomes a `resumed` event. See `GuardVerdict::Allow`: the guard knows a
-            // pause was lifted, the event log is the only durable record of it, and
-            // `Store::room_flag` reads that log to decide whether the rail still says
-            // "needs you". Deliberately not written here at verdict time — a send that
-            // then fails to store never happened, and must not leave a `resumed`
-            // behind claiming a human unblocked the room.
-            let cleared_pause = match app.guards.check(&room, me, now_ms(), is_human).await {
-                GuardVerdict::Allow { cleared_pause } => cleared_pause,
-                GuardVerdict::RateLimited { retry_in_ms } => {
-                    let _ = app
-                        .store
-                        .append_event(
-                            "rate_limited",
-                            Some(me),
-                            Some(&room),
-                            json!({ "retry_in_ms": retry_in_ms }),
-                        )
-                        .await;
-                    let _ = control_tx.try_send(FromBus::Error {
-                        req_id: Some(req_id),
-                        message: format!("rate limited; retry in {retry_in_ms} ms"),
-                    });
-                    return;
-                }
-                GuardVerdict::Paused { count } => {
-                    let _ = app
-                        .store
-                        .append_event(
-                            "room_paused",
-                            Some(me),
-                            Some(&room),
-                            json!({ "count": count }),
-                        )
-                        .await;
-                    let pause_reason = format!(
-                        "{count} messages in this room with no human input. \
-                         Tell your human, and call resume once they say to continue."
-                    );
-                    // The channel event is what informs the model
-                    // conversationally; the Error below is what resolves the
-                    // outstanding `send` request so it doesn't sit blocked
-                    // for the full 10s timeout and get misreported as the
-                    // bus being unreachable.
-                    let _ = control_tx.try_send(FromBus::Paused {
-                        room: room.clone(),
-                        reason: pause_reason.clone(),
-                    });
-                    let _ = control_tx.try_send(FromBus::Error {
-                        req_id: Some(req_id),
-                        message: format!(
-                            "send blocked: room \"{room}\" is paused ({pause_reason}) \
-                             The bus itself is reachable — this is the exchange-cap pause, \
-                             not an outage. Call resume once your human says to continue."
-                        ),
-                    });
-                    return;
-                }
-            };
-
-            // One binding, three uses (the row, the member fan-out, the observer
-            // fan-out): the connection's own origin, or a relay grant that lives in
-            // the bus's configuration. Never anything the sender put in the payload.
-            //
-            // Named for authority rather than origin, and that is the whole point: a
-            // relayed message carries a human's authority but need not have come from
-            // a human at all — a relayer composes plenty of its own prose. `is_human`
-            // is the only value in this function that literally means "a person typed
-            // this", which is why it, and not this, is what the gate above consults.
-            //
-            // Deliberately wider than the `is_human` handed to `guards.check` above,
-            // and the difference is load-bearing rather than an oversight — see that
-            // call for the reasoning. In short: this labels a message that has already
-            // passed the gate; that decides whether the message exists at all. Making
-            // the two agree by widening the gate would silently delete the exchange
-            // cap for relayed conversations.
-            let has_human_authority = is_human || app.relayers.contains(me);
-
-            // A DM auto-creates its room and enrolls both sides.
-            let _ = app.store.join_room(&room, me).await;
-            if let Target::Agent { name } = &target {
-                let _ = app.store.join_room(&room, name).await;
-            }
-
-            let msg_id = match app
-                .store
-                .append_message(&room, me, &text, done, has_human_authority)
-                .await
-            {
-                Ok(id) => id,
-                Err(e) => {
-                    let _ = control_tx.try_send(FromBus::Error {
-                        req_id: Some(req_id),
-                        message: e.to_string(),
-                    });
-                    return;
-                }
-            };
-
-            let members = app.store.room_members(&room).await.unwrap_or_default();
-            let mut delivered_to = Vec::new();
-            let mut queued_for = Vec::new();
-            for member in members.iter().filter(|m| m.as_str() != me) {
-                let event = FromBus::Message {
-                    id: msg_id,
-                    room: room.clone(),
-                    from: me.to_string(),
-                    text: text.clone(),
-                    done,
-                    human: has_human_authority,
-                };
-                if app.registry.send_to(member, event).await {
-                    delivered_to.push(member.clone());
-                } else {
-                    queued_for.push(member.clone());
-                }
-            }
-
-            // Observers watching this room get the same event, but they are
-            // spectators: this is a separate fan-out from the member loop
-            // above and never touches `delivered_to`/`queued_for` — an
-            // observer was never a party to the `send`, so it must not be
-            // able to influence what the sender is told was delivered vs.
-            // queued.
-            app.registry
-                .notify_watchers(
-                    &room,
-                    FromBus::Message {
-                        id: msg_id,
-                        room: room.clone(),
-                        from: me.to_string(),
-                        text,
-                        done,
-                        human: has_human_authority,
-                    },
-                )
-                .await;
-
-            let _ = app
-                .store
-                .append_event(
-                    "message_sent",
-                    Some(me),
-                    Some(&room),
-                    json!({
-                        "msg_id": msg_id,
-                        "delivered_to": &delivered_to,
-                        "queued_for": &queued_for,
-                        "done": done,
-                    }),
-                )
-                .await;
-
-            // The room was paused and this human's message lifted it (see
-            // `GuardVerdict::Allow`). `ToBus::Resume` is not the only way a pause
-            // ends — it is the rarest — so without this the log would record every
-            // pause and only some of the resumes, and `Store::room_flag` would leave
-            // "needs you" on a room the operator had already unblocked by typing in
-            // it. Appended after the message is stored, so it can never claim a
-            // resume for a send that failed.
-            if cleared_pause {
-                let _ = app
-                    .store
-                    .append_event(
-                        "resumed",
-                        Some(me),
-                        Some(&room),
-                        json!({ "via": "human_message", "msg_id": msg_id }),
-                    )
-                    .await;
-            }
-
-            let _ = control_tx.try_send(FromBus::Reply {
-                req_id,
-                result: ReplyResult::Sent {
+            // The send core is shared with the HTTP participant path via
+            // `do_send`; this arm only translates the typed outcome onto the WS
+            // wire (control-channel frames). Every store write — the message
+            // itself and the `message_sent`/`rate_limited`/`room_paused`/
+            // `send_refused`/`resumed` events — happens inside `do_send`, so both
+            // transports produce an identical audit trail.
+            match do_send(app, me, target, text, done, authority).await {
+                SendOutcome::Sent {
                     room,
                     msg_id,
                     delivered_to,
                     queued_for,
-                },
-            });
+                } => {
+                    let _ = control_tx.try_send(FromBus::Reply {
+                        req_id,
+                        result: ReplyResult::Sent {
+                            room,
+                            msg_id,
+                            delivered_to,
+                            queued_for,
+                        },
+                    });
+                }
+                SendOutcome::RateLimited { retry_in_ms } => {
+                    let _ = control_tx.try_send(FromBus::Error {
+                        req_id: Some(req_id),
+                        message: format!("rate limited; retry in {retry_in_ms} ms"),
+                    });
+                }
+                SendOutcome::Paused {
+                    room,
+                    count: _,
+                    reason,
+                } => {
+                    // The channel event informs the model conversationally; the
+                    // Error resolves the outstanding `send` so it doesn't block
+                    // for the full 10s timeout and get misreported as the bus
+                    // being unreachable.
+                    let _ = control_tx.try_send(FromBus::Paused {
+                        room: room.clone(),
+                        reason: reason.clone(),
+                    });
+                    let _ = control_tx.try_send(FromBus::Error {
+                        req_id: Some(req_id),
+                        message: format!(
+                            "send blocked: room \"{room}\" is paused ({reason}) \
+                             The bus itself is reachable — this is the exchange-cap pause, \
+                             not an outage. Call resume once your human says to continue."
+                        ),
+                    });
+                }
+                SendOutcome::UnknownAgent { message } | SendOutcome::Error { message } => {
+                    let _ = control_tx.try_send(FromBus::Error {
+                        req_id: Some(req_id),
+                        message,
+                    });
+                }
+            }
         }
 
         ToBus::History {

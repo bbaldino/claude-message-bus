@@ -35,6 +35,7 @@ async fn start_with_relayers(dir: &std::path::Path, names: &[&str]) -> u16 {
             claude_bus::bus::Keepalive::default(),
             claude_bus::bus::registry::Registry::new(),
             relayers,
+            claude_bus::bus::participant::ParticipantConfig::default(),
         )
         .await
         .unwrap()
@@ -60,6 +61,7 @@ async fn start_with_cap(dir: &std::path::Path, cap: u32) -> u16 {
             claude_bus::bus::Keepalive::default(),
             claude_bus::bus::registry::Registry::new(),
             claude_bus::bus::Relayers::default(),
+            claude_bus::bus::participant::ParticipantConfig::default(),
         )
         .await
         .unwrap()
