@@ -319,6 +319,44 @@ pub async fn serve_on_full(
         });
     }
 
+    // Sweep expired HTTP participant leases. An HTTP participant has no socket
+    // whose close signals departure, so a lease that stops polling is how it goes
+    // away — detached from the registry (so `send_to` starts reporting `queued`)
+    // and recorded as disconnected, with the same registry-is-authority model the
+    // WS teardown uses. Only a genuine expiry fires an event; renewals are silent,
+    // so the console dot and the audit log don't flap on the poll cadence.
+    {
+        let registry = app.registry.clone();
+        let store = app.store.clone();
+        let leases = app.participants.clone();
+        let ttl = leases.cfg().lease_ttl;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval((ttl / 4).max(Duration::from_millis(25)));
+            loop {
+                tick.tick().await;
+                for (_token, name) in leases.expired().await {
+                    registry.detach(&name).await;
+                    registry
+                        .notify_presence(FromBus::Presence {
+                            name: name.clone(),
+                            host: "http".into(),
+                            online: false,
+                            last_seen: crate::store::now_ms(),
+                        })
+                        .await;
+                    let _ = store
+                        .append_event(
+                            "agent_disconnected",
+                            Some(&name),
+                            None,
+                            json!({ "reason": "lease_expired" }),
+                        )
+                        .await;
+                }
+            }
+        });
+    }
+
     let router = Router::new()
         .route("/ws", get(upgrade))
         .route("/human-active", axum::routing::post(human_active))

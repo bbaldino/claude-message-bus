@@ -291,3 +291,21 @@ async fn a_relayer_can_resume() {
     .await;
     assert_eq!(status, 204);
 }
+
+#[tokio::test]
+async fn a_lease_that_stops_polling_goes_offline() {
+    let cfg = ParticipantConfig {
+        lease_ttl: std::time::Duration::from_millis(150),
+        ..Default::default()
+    };
+    let (_d, port, _p) = common::start_bus_with_participants_dir(cfg).await;
+    post_json_headers(port, "/api/participants", json!({"name":"raven"}), &[]).await;
+    assert!(
+        common::agent_is_online(port, "raven").await,
+        "raven is online right after registering"
+    );
+    assert!(
+        common::wait_until(|| async { !common::agent_is_online(port, "raven").await }).await,
+        "raven should go offline once its lease expires with no polling"
+    );
+}
