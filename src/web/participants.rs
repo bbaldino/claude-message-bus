@@ -18,7 +18,18 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::bus::App;
-use crate::bus::participant::RelayerDecision;
+use crate::bus::commands::{Authority, SendOutcome, do_send};
+use crate::bus::participant::{LeaseHandle, RelayerDecision};
+use crate::proto::Target;
+
+/// The lease behind an `X-Participant-Token`, renewing it, or `None` when the
+/// header is missing or the token is unknown/expired.
+pub(crate) async fn token_lease(app: &App, headers: &HeaderMap) -> Option<LeaseHandle> {
+    let token = headers
+        .get("x-participant-token")
+        .and_then(|v| v.to_str().ok())?;
+    app.participants.touch(token).await
+}
 
 /// No `Origin` (a non-browser client) is allowed; a browser `Origin` must name
 /// this bus. Mirrors `bus::origin_permitted` and `web::api`'s delete guard.
@@ -123,4 +134,100 @@ pub(crate) async fn register(
         lease_ttl_ms: app.participants.cfg().lease_ttl.as_millis() as u64,
     })
     .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SendRequest {
+    target: Target,
+    text: String,
+    #[serde(default)]
+    done: bool,
+}
+
+/// The wire form of `commands::SendOutcome`'s deliverable cases. camelCase
+/// fields, discriminated by `outcome`. `UnknownAgent`/`Error` are not here —
+/// they become a 422 with the message, not a normal outcome.
+#[derive(serde::Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub(crate) enum SendOutcomeDto {
+    Sent {
+        room: String,
+        msg_id: i64,
+        delivered_to: Vec<String>,
+        queued_for: Vec<String>,
+    },
+    RateLimited {
+        retry_in_ms: i64,
+    },
+    Paused {
+        room: String,
+        count: u32,
+        reason: String,
+    },
+}
+
+/// `POST /api/participants/send` — send as this lease's identity.
+///
+/// Authority is the lease's (session-level): `human_present` is always false for
+/// an HTTP participant, `relayer` is the lease's bit. So a relayer lease's
+/// message is labeled with human authority but still runs the guards — hence it
+/// can come back `paused`/`rate_limited` like anyone.
+pub(crate) async fn send(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(body): Json<SendRequest>,
+) -> Response {
+    if !origin_ok(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(lease) = token_lease(&app, &headers).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let authority = Authority {
+        human_present: false,
+        relayer: lease.relayer,
+    };
+    match do_send(
+        &app,
+        &lease.name,
+        body.target,
+        body.text,
+        body.done,
+        authority,
+    )
+    .await
+    {
+        SendOutcome::Sent {
+            room,
+            msg_id,
+            delivered_to,
+            queued_for,
+        } => Json(SendOutcomeDto::Sent {
+            room,
+            msg_id,
+            delivered_to,
+            queued_for,
+        })
+        .into_response(),
+        SendOutcome::RateLimited { retry_in_ms } => {
+            Json(SendOutcomeDto::RateLimited { retry_in_ms }).into_response()
+        }
+        SendOutcome::Paused {
+            room,
+            count,
+            reason,
+        } => Json(SendOutcomeDto::Paused {
+            room,
+            count,
+            reason,
+        })
+        .into_response(),
+        SendOutcome::UnknownAgent { message } | SendOutcome::Error { message } => {
+            (StatusCode::UNPROCESSABLE_ENTITY, message).into_response()
+        }
+    }
 }

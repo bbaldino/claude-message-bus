@@ -131,3 +131,63 @@ async fn a_cross_origin_register_is_refused() {
     .await;
     assert_eq!(status, 403);
 }
+
+#[tokio::test]
+async fn a_participant_send_reaches_a_connected_agent_and_reports_delivered() {
+    let (_d, port, _p) =
+        common::start_bus_with_participants_dir(ParticipantConfig::default()).await;
+    let bus = format!("ws://127.0.0.1:{port}/ws");
+    let mut caas = common::InProcessAgent::start(&bus, "caas");
+    common::initialize(&mut caas).await;
+    assert!(
+        common::wait_until(|| common::agent_is_online(port, "caas")).await,
+        "caas should be online before the send"
+    );
+
+    let (_s, body) =
+        post_json_headers(port, "/api/participants", json!({"name":"raven"}), &[]).await;
+    let token = token_of(&body);
+
+    let (status, sbody) = post_json_headers(
+        port,
+        "/api/participants/send",
+        json!({"target":{"kind":"agent","name":"caas"}, "text":"hi", "done":false}),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200, "{sbody}");
+    let v: Value = serde_json::from_str(&sbody).unwrap();
+    assert_eq!(v["outcome"], "sent");
+    assert_eq!(v["deliveredTo"], json!(["caas"]));
+}
+
+#[tokio::test]
+async fn a_participant_send_to_an_unknown_agent_is_refused() {
+    let (_d, port, _p) =
+        common::start_bus_with_participants_dir(ParticipantConfig::default()).await;
+    let (_s, body) =
+        post_json_headers(port, "/api/participants", json!({"name":"raven"}), &[]).await;
+    let token = token_of(&body);
+    let (status, _b) = post_json_headers(
+        port,
+        "/api/participants/send",
+        json!({"target":{"kind":"agent","name":"ghost"}, "text":"hi"}),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 422);
+}
+
+#[tokio::test]
+async fn a_send_without_a_token_is_unauthorized() {
+    let (_d, port, _p) =
+        common::start_bus_with_participants_dir(ParticipantConfig::default()).await;
+    let (status, _b) = post_json_headers(
+        port,
+        "/api/participants/send",
+        json!({"target":{"kind":"room","room":"x"}, "text":"hi"}),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 401);
+}

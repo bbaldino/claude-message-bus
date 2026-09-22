@@ -326,6 +326,7 @@ pub fn routes() -> Router<App> {
         .route("/api/rooms/{name}/hidden", post(api::room_set_hidden))
         .route("/api/events", get(api::events))
         .route("/api/participants", post(participants::register))
+        .route("/api/participants/send", post(participants::send))
         .route("/app", get(assets::app_root))
         // `/app/` is registered separately and deliberately: matchit requires a
         // non-empty remainder for a catch-all, so `/app/{*rest}` does not match
