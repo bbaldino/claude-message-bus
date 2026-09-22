@@ -38,17 +38,25 @@ second send/delivery/guard implementation would be exactly that.
 ## Authority is session-level
 
 Human authority is decided once, at registration, by a bus-configured relayer
-secret — never per message. This is the bus's existing `--relayer` name-set
-semantics, proven by a secret instead of by name:
+secret — never per message. The registration's `mode` (honored only with a valid
+secret) then shapes the grant:
 
-- **Relayer lease** (registered with the correct secret): every message it sends
-  is labeled with human authority (`has_human_authority = true`, so bus agents
-  treat raven's requests as actionable), but `is_human` stays **false** for the
+- **Human proxy** (`mode:"human"`, secret required): full human semantics —
+  `human_present=true`, so its sends are exempt from the exchange cap and clear
+  pauses, exactly like a person typing in the console. For a *pure pipe* that
+  forwards a person's own typed words verbatim (raven → hub), where every message
+  really is the human. Stored `is_human=true` so the console badges it as that
+  person.
+- **Relayer lease** (`mode:"relayer"`, the default, secret required): every
+  message is labeled with human authority (`has_human_authority = true`, so bus
+  agents treat its requests as actionable), but `is_human` stays **false** for the
   guards — its sends still count against the exchange cap and do **not** clear a
-  pause. Loop protection therefore applies to everything raven sends. A relayer
-  clears a pause only through the explicit resume endpoint (or a human typing in
-  the room).
+  pause. For an *agent* that speaks with a human's authority but composes its own
+  prose (a hub). Clears a pause only through the resume endpoint (or a human in
+  the room). Identical to a `--relayer` name-set entry, proven by the secret.
 - **Plain lease** (no secret): an ordinary bot — guard-bound, no authority label.
+  A `mode` sent without a valid secret is ignored; the response's `human`/`relayer`
+  booleans report what was actually granted.
 
 A relayer lease and a `--relayer` name-set entry then have identical semantics.
 raven uses the secret path and is deliberately **not** added to the name-set:
@@ -78,11 +86,13 @@ running away unattended.
 
 ### `POST /api/participants` — register / open a lease
 
-Request: `{ "name": "raven" }`. Optional header `X-Relayer-Secret: <secret>`.
+Request: `{ "name": "raven", "mode": "human" | "relayer" }` (`mode` optional,
+default `"relayer"`, honored only with a valid secret). Optional header
+`X-Relayer-Secret: <secret>`.
 
 Response `200`:
 ```json
-{ "name": "raven", "token": "<opaque>", "relayer": true, "leaseTtlMs": 120000 }
+{ "name": "raven", "token": "<opaque>", "human": true, "relayer": false, "leaseTtlMs": 120000 }
 ```
 - `name` — the effective name; suffixed on collision (`raven#2`) unless reserved.
 - `relayer` — whether the secret was accepted; the single source of truth for
@@ -154,10 +164,12 @@ Clears the room's exchange-cap pause (`guards.reset`) and appends a `resumed` ev
 (actor = the lease name, `via: "participant_resume"`). This is the relayer's escape
 hatch when bbaldino says "continue" through another channel.
 
-- **Relayer leases only.** A plain (bot) lease gets `403`: `ToBus::Resume` is
-  ungated over WS only because every WS agent has a human behind it who can honor
-  "resume once your human says to". An HTTP bot has no such human, so letting it
-  resume would make the exchange cap toothless for pure bot traffic.
+- **Authority-bearing leases only** (relayer or human proxy). A plain (bot) lease
+  gets `403`: `ToBus::Resume` is ungated over WS only because every WS agent has a
+  human behind it who can honor "resume once your human says to". An HTTP bot has
+  no such human, so letting it resume would make the exchange cap toothless for
+  pure bot traffic. (A human proxy rarely needs resume — its own messages already
+  clear pauses — but it is allowed.)
 - `guards.reset` clears only the exchange counter, not the per-agent rate limit —
   raven is still under the 2s min-interval right after a resume.
 

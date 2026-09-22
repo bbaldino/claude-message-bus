@@ -47,6 +47,11 @@ pub(crate) fn origin_ok(headers: &HeaderMap) -> bool {
 #[derive(serde::Deserialize)]
 pub(crate) struct RegisterRequest {
     name: String,
+    /// `"human"` (full human proxy) or `"relayer"` (label only). Honored only
+    /// with a valid secret; ignored otherwise. Absent defaults to `"relayer"`,
+    /// preserving the original secret-proven behavior.
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -54,16 +59,24 @@ pub(crate) struct RegisterRequest {
 pub(crate) struct RegisterResponse {
     name: String,
     token: String,
+    /// True when the lease carries full human semantics (cap-exempt, clears
+    /// pauses). A caller that asked for `mode:"human"` should check this — a
+    /// missing/invalid secret yields `false` here rather than a hard failure.
+    human: bool,
+    /// True when the lease carries the relayer label (authority, but still
+    /// guard-bound).
     relayer: bool,
     lease_ttl_ms: u64,
 }
 
 /// `POST /api/participants` — open a lease.
 ///
-/// A correct `X-Relayer-Secret` makes the whole lease a relayer (session-level
-/// authority); a wrong one is refused rather than downgraded. A reserved name
-/// may be claimed only by a relayer, and an existing holder of it is detached
-/// first so the returned name is the bare reserved one, not a `#2` suffix.
+/// A correct `X-Relayer-Secret` grants authority (session-level), shaped by
+/// `mode`: `"human"` is a full human proxy (cap-exempt, clears pauses — for a
+/// pure pipe forwarding a person's own words), `"relayer"` (the default) is the
+/// label-only grant. A wrong secret is refused, not downgraded. A reserved name
+/// may be claimed only by an authorized lease, and an existing holder of it is
+/// detached first so the returned name is the bare reserved one, not a `#2`.
 pub(crate) async fn register(
     State(app): State<App>,
     headers: HeaderMap,
@@ -75,16 +88,30 @@ pub(crate) async fn register(
     let secret = headers
         .get("x-relayer-secret")
         .and_then(|v| v.to_str().ok());
-    let relayer = match app.participants.decide_relayer(secret) {
-        RelayerDecision::Plain => false,
-        RelayerDecision::Relayer => true,
+    // `mode` is only consulted with a valid secret; without one the lease is a
+    // plain bot regardless of what was asked, so raven can detect it didn't get
+    // authority by reading `human`/`relayer` in the response.
+    let (human_present, relayer) = match app.participants.decide_relayer(secret) {
+        RelayerDecision::Plain => (false, false),
         RelayerDecision::Refused => return StatusCode::FORBIDDEN.into_response(),
+        RelayerDecision::Relayer => match body.mode.as_deref() {
+            None | Some("relayer") => (false, true),
+            Some("human") => (true, false),
+            Some(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "mode must be \"human\" or \"relayer\"",
+                )
+                    .into_response();
+            }
+        },
     };
-    if app.participants.is_reserved(&body.name) && !relayer {
+    let authorized = human_present || relayer;
+    if app.participants.is_reserved(&body.name) && !authorized {
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    // Reserved + authorised: take over any existing holder so the bare reserved
+    // Reserved + authorized: take over any existing holder so the bare reserved
     // name is kept rather than suffixed. `detach` here drops the prior lease's
     // routing entry; its lease row is swept later (or is this same identity
     // reconnecting).
@@ -95,9 +122,11 @@ pub(crate) async fn register(
     let already = app.registry.is_online(&body.name).await;
     let (tx, rx) = tokio::sync::mpsc::channel(crate::bus::registry::CHANNEL_CAPACITY);
     let name = app.registry.attach(&body.name, "http", tx).await;
+    // A human proxy stores `is_human=true` so the console badges it as the person
+    // it stands in for; a relayer/plain lease stays a bot in the roster.
     let _ = app
         .store
-        .upsert_agent(&name, "http", "", None, false, None)
+        .upsert_agent(&name, "http", "", None, human_present, None)
         .await;
 
     // Presence + the registration event fire only on a genuine online
@@ -115,7 +144,7 @@ pub(crate) async fn register(
                     "effective_name": &name,
                     "host": "http",
                     "transport": "http",
-                    "is_human": false,
+                    "is_human": human_present,
                 }),
             )
             .await;
@@ -129,10 +158,14 @@ pub(crate) async fn register(
             .await;
     }
 
-    let token = app.participants.open(name.clone(), relayer, rx).await;
+    let token = app
+        .participants
+        .open(name.clone(), human_present, relayer, rx)
+        .await;
     Json(RegisterResponse {
         name,
         token,
+        human: human_present,
         relayer,
         lease_ttl_ms: app.participants.cfg().lease_ttl.as_millis() as u64,
     })
@@ -191,7 +224,7 @@ pub(crate) async fn send(
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let authority = Authority {
-        human_present: false,
+        human_present: lease.human_present,
         relayer: lease.relayer,
     };
     match do_send(
@@ -362,7 +395,9 @@ pub(crate) async fn resume(
     let Some(lease) = token_lease(&app, &headers).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    if !lease.relayer {
+    // Any authority-bearing lease may resume — a human proxy rarely needs to
+    // (its own messages clear pauses), but a relayer does.
+    if !(lease.relayer || lease.human_present) {
         return StatusCode::FORBIDDEN.into_response();
     }
     app.guards.reset(&body.room).await;

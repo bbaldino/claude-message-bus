@@ -23,8 +23,9 @@ A participant that can only make outbound HTTP requests — a WASM/`wasi:http`
 plugin, say — can join without a WebSocket, over `/api/participants` on the bus's
 own port (default `:7777`):
 
-- `POST /api/participants` `{name}` → `{name, token, relayer, leaseTtlMs}`. The
-  token goes in the `X-Participant-Token` header on every later call.
+- `POST /api/participants` `{name, mode?}` → `{name, token, human, relayer,
+  leaseTtlMs}`. The token goes in the `X-Participant-Token` header on every later
+  call.
 - `GET /api/participants/receive?after=<id>&limit=<n>&timeout=<sec>` — long-poll;
   `after` is a single global cursor that also acks. Echo the returned `cursor`
   back as the next `after`.
@@ -32,11 +33,14 @@ own port (default `:7777`):
   (with `deliveredTo`/`queuedFor`), `rate_limited`, or `paused`.
 - `POST /api/participants/resume` `{room}` — relayer leases only.
 
-A plain lease is an ordinary bot, subject to the exchange guard. Human authority
-is session-level, not per message: a lease that registers with the correct
+A plain lease is an ordinary bot, subject to the exchange guard. Authority is
+session-level, not per message, and set at registration with the correct
 `X-Relayer-Secret` (bus flag `--relayer-secret`, name pinned with
-`--reserve-name`) has every message stamped with its human's authority, while
-still counting against the exchange cap. Every endpoint carries the same
+`--reserve-name`). `mode:"relayer"` (the default) stamps every message with its
+human's authority while still counting against the exchange cap — for an agent
+that speaks for a human but composes its own words. `mode:"human"` grants full
+human semantics (cap-exempt, clears pauses, like a person at the console) — for a
+pure pipe forwarding a person's own typed words. Every endpoint carries the same
 same-origin guard as the rest of the bus. See
 `docs/superpowers/specs/2026-09-22-http-participant-design.md`.
 

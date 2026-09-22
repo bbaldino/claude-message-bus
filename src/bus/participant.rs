@@ -52,19 +52,26 @@ pub enum RelayerDecision {
 }
 
 /// One live lease.
+///
+/// `human_present` and `relayer` are the two authority bits the send path needs
+/// (they map straight onto `commands::Authority`): a `human` proxy lease carries
+/// `human_present` (full human semantics — cap-exempt, clears pauses), a
+/// `relayer` lease carries only the label. A plain lease carries neither.
 pub struct Lease {
     pub name: String,
+    pub human_present: bool,
     pub relayer: bool,
     pub last_seen: tokio::time::Instant,
     pub rx: Arc<Mutex<tokio::sync::mpsc::Receiver<crate::proto::FromBus>>>,
 }
 
-/// What a handler needs from a live lease: who it speaks as, whether it carries
-/// authority, and the wakeup/delivery channel a long-poll awaits. Cheap to clone
-/// out of the map so the handler can drop the map lock before it parks.
+/// What a handler needs from a live lease: who it speaks as, the authority bits,
+/// and the wakeup/delivery channel a long-poll awaits. Cheap to clone out of the
+/// map so the handler can drop the map lock before it parks.
 #[derive(Clone)]
 pub struct LeaseHandle {
     pub name: String,
+    pub human_present: bool,
     pub relayer: bool,
     pub rx: Arc<Mutex<tokio::sync::mpsc::Receiver<crate::proto::FromBus>>>,
 }
@@ -110,6 +117,7 @@ impl Leases {
     pub async fn open(
         &self,
         name: String,
+        human_present: bool,
         relayer: bool,
         rx: tokio::sync::mpsc::Receiver<crate::proto::FromBus>,
     ) -> String {
@@ -118,6 +126,7 @@ impl Leases {
             token.clone(),
             Lease {
                 name,
+                human_present,
                 relayer,
                 last_seen: tokio::time::Instant::now(),
                 rx: Arc::new(Mutex::new(rx)),
@@ -134,6 +143,7 @@ impl Leases {
         lease.last_seen = tokio::time::Instant::now();
         Some(LeaseHandle {
             name: lease.name.clone(),
+            human_present: lease.human_present,
             relayer: lease.relayer,
             rx: lease.rx.clone(),
         })
@@ -199,10 +209,11 @@ mod tests {
     async fn touch_renews_and_unknown_token_is_none() {
         let leases = Leases::new(ParticipantConfig::default());
         let (_tx, rx) = tokio::sync::mpsc::channel(8);
-        let token = leases.open("raven".into(), true, rx).await;
+        let token = leases.open("raven".into(), false, true, rx).await;
         let h = leases.touch(&token).await.expect("known token");
         assert_eq!(h.name, "raven");
         assert!(h.relayer);
+        assert!(!h.human_present);
         assert!(leases.touch("bogus").await.is_none());
     }
 
@@ -214,7 +225,7 @@ mod tests {
         };
         let leases = Leases::new(cfg);
         let (_tx, rx) = tokio::sync::mpsc::channel(8);
-        let token = leases.open("raven".into(), false, rx).await;
+        let token = leases.open("raven".into(), false, false, rx).await;
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         let gone = leases.expired().await;
         assert_eq!(gone, vec![(token, "raven".to_string())]);
@@ -229,7 +240,7 @@ mod tests {
         let leases = Leases::new(ParticipantConfig::default());
         assert!(!leases.name_online("raven").await);
         let (_tx, rx) = tokio::sync::mpsc::channel(8);
-        leases.open("raven".into(), false, rx).await;
+        leases.open("raven".into(), false, false, rx).await;
         assert!(leases.name_online("raven").await);
     }
 

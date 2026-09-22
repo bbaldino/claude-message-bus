@@ -549,8 +549,21 @@ pub async fn start_bus_with_relayers_dir(
 pub async fn start_bus_with_participants_dir(
     participants: claude_bus::bus::participant::ParticipantConfig,
 ) -> (tempfile::TempDir, u16, std::path::PathBuf) {
-    start_bus_full(
+    start_bus_with_participants_and_guards_dir(
         claude_bus::bus::delivery::Guards::new(20, 0),
+        participants,
+    )
+    .await
+}
+
+/// Same as `start_bus_with_participants_dir`, but with the exchange guard's cap
+/// set directly — for tests that need to trip (or bypass) `Paused` cheaply.
+pub async fn start_bus_with_participants_and_guards_dir(
+    guards: claude_bus::bus::delivery::Guards,
+    participants: claude_bus::bus::participant::ParticipantConfig,
+) -> (tempfile::TempDir, u16, std::path::PathBuf) {
+    start_bus_full(
+        guards,
         claude_bus::bus::Keepalive::default(),
         claude_bus::bus::registry::Registry::new(),
         claude_bus::bus::Relayers::default(),

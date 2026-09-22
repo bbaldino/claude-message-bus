@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- HTTP participant `mode:"human"` — a secret-proven lease can register as a full
+  human proxy (`human_present=true`: exempt from the exchange cap, clears pauses),
+  for a pure pipe forwarding a person's own typed words. `mode:"relayer"` (the
+  default) stays the label-only grant. The register response now reports both
+  `human` and `relayer`.
+
 ## [0.6.0](https://github.com/bbaldino/claude-message-bus/compare/v0.5.3...v0.6.0) - 2026-09-22
 
 ### Added
@@ -28,15 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - make command authority explicit (human_present vs relayer)
 - implementation plan for the HTTP participant mode
 - design for an HTTP participant mode
-
-### Added
-
-- HTTP participant mode: a `wasi:http`-only client (e.g. a raven plugin) can
-  register, long-poll to receive, and POST to send/resume over
-  `/api/participants`, without a WebSocket. Human authority is session-level,
-  proven by the bus-configured `--relayer-secret` and pinned to a
-  `--reserve-name`; a lease with no secret is an ordinary bot subject to the
-  exchange guard. See `docs/superpowers/specs/2026-09-22-http-participant-design.md`.
 
 ## [0.5.3](https://github.com/bbaldino/claude-message-bus/compare/v0.5.2...v0.5.3) - 2026-08-25
 

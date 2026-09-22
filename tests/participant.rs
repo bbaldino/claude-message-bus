@@ -309,3 +309,126 @@ async fn a_lease_that_stops_polling_goes_offline() {
         "raven should go offline once its lease expires with no polling"
     );
 }
+
+#[tokio::test]
+async fn human_mode_with_the_secret_is_a_full_human_proxy() {
+    let cfg = ParticipantConfig {
+        relayer_secret: Some("s".into()),
+        ..Default::default()
+    };
+    let (_d, port, _p) = common::start_bus_with_participants_dir(cfg).await;
+    let (status, body) = post_json_headers(
+        port,
+        "/api/participants",
+        json!({"name":"raven","mode":"human"}),
+        &[("X-Relayer-Secret", "s")],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["human"], true, "{body}");
+    assert_eq!(v["relayer"], false, "{body}");
+}
+
+#[tokio::test]
+async fn human_mode_without_the_secret_is_not_honored() {
+    let cfg = ParticipantConfig {
+        relayer_secret: Some("s".into()),
+        ..Default::default()
+    };
+    let (_d, port, _p) = common::start_bus_with_participants_dir(cfg).await;
+    let (status, body) = post_json_headers(
+        port,
+        "/api/participants",
+        json!({"name":"raven","mode":"human"}),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["human"], false, "no secret => plain, not human: {body}");
+    assert_eq!(v["relayer"], false, "{body}");
+}
+
+#[tokio::test]
+async fn an_unknown_mode_is_rejected() {
+    let cfg = ParticipantConfig {
+        relayer_secret: Some("s".into()),
+        ..Default::default()
+    };
+    let (_d, port, _p) = common::start_bus_with_participants_dir(cfg).await;
+    let (status, _b) = post_json_headers(
+        port,
+        "/api/participants",
+        json!({"name":"raven","mode":"bogus"}),
+        &[("X-Relayer-Secret", "s")],
+    )
+    .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn a_human_proxy_is_cap_exempt_while_a_relayer_is_not() {
+    let cfg = ParticipantConfig {
+        relayer_secret: Some("s".into()),
+        ..Default::default()
+    };
+    let guards = claude_bus::bus::delivery::Guards::new(2, 0);
+    let (_d, port, _p) = common::start_bus_with_participants_and_guards_dir(guards, cfg).await;
+
+    // Human proxy: four sends to its own room, none pause (cap=2, but exempt).
+    let (_s, hb) = post_json_headers(
+        port,
+        "/api/participants",
+        json!({"name":"raven","mode":"human"}),
+        &[("X-Relayer-Secret", "s")],
+    )
+    .await;
+    let htok = token_of(&hb);
+    for i in 0..4 {
+        let (st, b) = post_json_headers(
+            port,
+            "/api/participants/send",
+            json!({"target":{"kind":"room","room":"hroom"}, "text":format!("h{i}")}),
+            &[("X-Participant-Token", &htok)],
+        )
+        .await;
+        assert_eq!(st, 200, "{b}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&b).unwrap()["outcome"],
+            "sent",
+            "a human proxy is cap-exempt: {b}"
+        );
+    }
+
+    // Relayer: same bus, its own room, pauses once past the cap.
+    let (_s2, rb) = post_json_headers(
+        port,
+        "/api/participants",
+        json!({"name":"hubby","mode":"relayer"}),
+        &[("X-Relayer-Secret", "s")],
+    )
+    .await;
+    let rtok = token_of(&rb);
+    let mut outcomes = vec![];
+    for i in 0..3 {
+        let (_st, b) = post_json_headers(
+            port,
+            "/api/participants/send",
+            json!({"target":{"kind":"room","room":"rroom"}, "text":format!("r{i}")}),
+            &[("X-Participant-Token", &rtok)],
+        )
+        .await;
+        outcomes.push(
+            serde_json::from_str::<Value>(&b).unwrap()["outcome"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    assert_eq!(
+        outcomes,
+        vec!["sent", "sent", "paused"],
+        "a relayer's sends count against the exchange cap"
+    );
+}
