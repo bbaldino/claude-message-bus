@@ -16,6 +16,20 @@ use crate::proto::{
 };
 use crate::store::now_ms;
 
+/// What authority a connection's command carries.
+///
+/// `human_present` means a person is actually at the keyboard — it, and only it,
+/// exempts the exchange guard and clears a pause. `relayer` means the connection
+/// speaks with a human's authority (label only): its messages are stamped human,
+/// but the guards still apply. Keeping the two apart is the whole point (see the
+/// long note in the `Send` arm): authority is delegable by configuration,
+/// attendance is not.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Authority {
+    pub human_present: bool,
+    pub relayer: bool,
+}
+
 async fn known_rooms(app: &App) -> String {
     match app.store.rooms().await {
         Ok(rooms) if !rooms.is_empty() => rooms
@@ -32,7 +46,7 @@ pub(crate) async fn handle(
     me: &str,
     cmd: ToBus,
     control_tx: &registry::Sender,
-    is_human: bool,
+    authority: Authority,
 ) {
     match cmd {
         ToBus::Register { .. } => {}
@@ -174,7 +188,11 @@ pub(crate) async fn handle(
             // "needs you". Deliberately not written here at verdict time — a send that
             // then fails to store never happened, and must not leave a `resumed`
             // behind claiming a human unblocked the room.
-            let cleared_pause = match app.guards.check(&room, me, now_ms(), is_human).await {
+            let cleared_pause = match app
+                .guards
+                .check(&room, me, now_ms(), authority.human_present)
+                .await
+            {
                 GuardVerdict::Allow { cleared_pause } => cleared_pause,
                 GuardVerdict::RateLimited { retry_in_ms } => {
                     let _ = app
@@ -243,7 +261,8 @@ pub(crate) async fn handle(
             // passed the gate; that decides whether the message exists at all. Making
             // the two agree by widening the gate would silently delete the exchange
             // cap for relayed conversations.
-            let has_human_authority = is_human || app.relayers.contains(me);
+            let has_human_authority =
+                authority.human_present || authority.relayer || app.relayers.contains(me);
 
             // A DM auto-creates its room and enrolls both sides.
             let _ = app.store.join_room(&room, me).await;
