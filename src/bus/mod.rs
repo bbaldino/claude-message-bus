@@ -3,6 +3,7 @@
 
 pub(crate) mod commands;
 pub mod delivery;
+pub mod participant;
 pub mod registry;
 pub mod rooms;
 
@@ -22,6 +23,7 @@ use tokio::sync::mpsc;
 use crate::proto::{FromBus, ReplyResult, RoomUnread, ToBus};
 use crate::store::Store;
 use delivery::Guards;
+use participant::{Leases, ParticipantConfig};
 use registry::Registry;
 
 /// How often the bus pings each connected client, and how long it waits for
@@ -141,9 +143,17 @@ pub(crate) struct App {
     pub(crate) guards: Guards,
     pub(crate) keepalive: Keepalive,
     pub(crate) relayers: Relayers,
+    // Read by the HTTP participant handlers, added in a later task.
+    #[allow(dead_code)]
+    pub(crate) participants: Leases,
 }
 
-pub async fn serve(port: u16, data_dir: PathBuf, relayers: Relayers) -> anyhow::Result<()> {
+pub async fn serve(
+    port: u16,
+    data_dir: PathBuf,
+    relayers: Relayers,
+    participants: ParticipantConfig,
+) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     eprintln!("claude-bus listening on 0.0.0.0:{port}");
     // Auditable through `make bus-logs`: a mistyped `--relayer` (e.g. the equals form,
@@ -163,6 +173,7 @@ pub async fn serve(port: u16, data_dir: PathBuf, relayers: Relayers) -> anyhow::
         Keepalive::default(),
         Registry::new(),
         relayers,
+        participants,
     )
     .await
 }
@@ -199,6 +210,7 @@ pub async fn serve_on_with_keepalive(
         keepalive,
         Registry::new(),
         Relayers::default(),
+        ParticipantConfig::default(),
     )
     .await
 }
@@ -216,6 +228,7 @@ pub async fn serve_on_full(
     keepalive: Keepalive,
     registry: Registry,
     relayers: Relayers,
+    participants: ParticipantConfig,
 ) -> anyhow::Result<()> {
     let store = Store::open(&data_dir).await?;
     // A bus that is only now starting has no live connections, so any row left claiming
@@ -248,6 +261,7 @@ pub async fn serve_on_full(
         guards,
         keepalive,
         relayers,
+        participants: Leases::new(participants),
     };
     // Events reach observers through the store's broadcast channel, so every
     // append is fanned out regardless of which call site produced it.

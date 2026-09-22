@@ -235,6 +235,7 @@ async fn start_bus_full(
     keepalive: claude_bus::bus::Keepalive,
     registry: claude_bus::bus::registry::Registry,
     relayers: claude_bus::bus::Relayers,
+    participants: claude_bus::bus::participant::ParticipantConfig,
 ) -> (tempfile::TempDir, u16, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_path_buf();
@@ -244,9 +245,17 @@ async fn start_bus_full(
     let port = listener.local_addr().unwrap().port();
     let serve_path = path.clone();
     tokio::spawn(async move {
-        claude_bus::bus::serve_on_full(listener, serve_path, guards, keepalive, registry, relayers)
-            .await
-            .unwrap();
+        claude_bus::bus::serve_on_full(
+            listener,
+            serve_path,
+            guards,
+            keepalive,
+            registry,
+            relayers,
+            participants,
+        )
+        .await
+        .unwrap();
     });
     wait_until_bus_ready(port).await;
     (dir, port, path)
@@ -493,6 +502,7 @@ pub async fn start_bus_with_dir() -> (tempfile::TempDir, u16, std::path::PathBuf
         claude_bus::bus::Keepalive::default(),
         claude_bus::bus::registry::Registry::new(),
         claude_bus::bus::Relayers::default(),
+        claude_bus::bus::participant::ParticipantConfig::default(),
     )
     .await
 }
@@ -513,6 +523,7 @@ pub async fn start_bus_with_guards_dir(
         claude_bus::bus::Keepalive::default(),
         claude_bus::bus::registry::Registry::new(),
         claude_bus::bus::Relayers::default(),
+        claude_bus::bus::participant::ParticipantConfig::default(),
     )
     .await
 }
@@ -527,6 +538,23 @@ pub async fn start_bus_with_relayers_dir(
         claude_bus::bus::Keepalive::default(),
         claude_bus::bus::registry::Registry::new(),
         claude_bus::bus::Relayers::new(names),
+        claude_bus::bus::participant::ParticipantConfig::default(),
+    )
+    .await
+}
+
+/// Same as `start_bus_with_dir`, but with a configured HTTP participant config
+/// (relayer secret, reserved names, lease TTL) — for the `tests/participant.rs`
+/// suite.
+pub async fn start_bus_with_participants_dir(
+    participants: claude_bus::bus::participant::ParticipantConfig,
+) -> (tempfile::TempDir, u16, std::path::PathBuf) {
+    start_bus_full(
+        claude_bus::bus::delivery::Guards::new(20, 0),
+        claude_bus::bus::Keepalive::default(),
+        claude_bus::bus::registry::Registry::new(),
+        claude_bus::bus::Relayers::default(),
+        participants,
     )
     .await
 }
@@ -552,6 +580,7 @@ pub async fn start_bus_with_keepalive_dir(
         keepalive,
         claude_bus::bus::registry::Registry::new(),
         claude_bus::bus::Relayers::default(),
+        claude_bus::bus::participant::ParticipantConfig::default(),
     )
     .await
 }
@@ -579,6 +608,7 @@ pub async fn start_bus_with_registry(
         claude_bus::bus::Keepalive::default(),
         registry,
         claude_bus::bus::Relayers::default(),
+        claude_bus::bus::participant::ParticipantConfig::default(),
     )
     .await;
     (dir, port)
