@@ -12,3 +12,7 @@ ui/dist/*
 !ui/dist/.gitkeep
 .playwright-mcp/
 examples/
+
+# Stray scratch files, never part of the project
+/Internal app redesign directions.zip
+/shell-index.png
