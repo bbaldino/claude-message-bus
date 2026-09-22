@@ -39,6 +39,10 @@ fn usage() -> ! {
          [--relayer-secret <s>] [--reserve-name <n>]..."
     );
     eprintln!("  claude-bus agent [--bus ws://host:7777/ws] [--name <n>] [--name-template <t>]");
+    eprintln!(
+        "  claude-bus launch [<claude args>...]   # start claude wired for the bus \
+         (non-interactive; e.g. add --continue)"
+    );
     eprintln!("  claude-bus tail <room> [--bus ws://host:7777/ws]");
     eprintln!("  claude-bus chat (<room> | --to <agent>) [--bus ws://host:7777/ws] [--name <n>]");
     eprintln!(
@@ -69,6 +73,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             claude_bus::bus::serve(port, std::path::PathBuf::from(data), relayers, participants)
                 .await?;
+            Ok(())
+        }
+        Some("launch") => {
+            // Everything after "launch" is forwarded to `claude` verbatim.
+            claude_bus::launch::run(args[2..].to_vec())?;
             Ok(())
         }
         Some("agent") => {

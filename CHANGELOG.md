@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `claude-bus launch` — start a Claude Code session wired for the bus in one
+  command: the `msgbus` development-channel flag plus the non-interactive posture
+  (skip permission prompts; disallow `AskUserQuestion`/`EnterPlanMode`/
+  `ExitPlanMode`). Any extra args (e.g. `--continue`) are forwarded to `claude`.
+
 ## [0.7.0](https://github.com/bbaldino/claude-message-bus/compare/v0.6.0...v0.7.0) - 2026-09-22
 
 ### Added

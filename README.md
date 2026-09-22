@@ -10,6 +10,9 @@ into a live session rather than waiting to be polled.
 
 - `claude-bus serve` — the bus. SQLite plus blobs on disk, one Docker volume.
 - `claude-bus agent` — spawned per session by Claude Code as a stdio MCP server.
+- `claude-bus launch [<claude args>]` — start a Claude Code session already wired
+  for the bus and non-interactive (dev-channel on, permission prompts skipped,
+  blocking tools disallowed); forwards extra args like `--continue` to `claude`.
 - `claude-bus tail <room>` — watch a conversation; the only view showing both halves.
 - `claude-bus chat <room>` / `chat --to <agent>` — join a room or address one agent as yourself.
 

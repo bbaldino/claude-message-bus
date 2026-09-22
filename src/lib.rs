@@ -3,6 +3,7 @@ pub mod bus;
 pub mod chat;
 pub mod config;
 pub mod init;
+pub mod launch;
 pub mod proto;
 pub mod store;
 pub mod tail;
