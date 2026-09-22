@@ -762,6 +762,44 @@ impl Store {
         .await?;
         Ok(rows.iter().map(message_row).collect())
     }
+
+    /// Every room `agent` is a member of. The set an HTTP participant's
+    /// `/receive` scans — including DM rooms it was auto-enrolled into by a
+    /// sender, which it never explicitly joined.
+    pub async fn member_rooms(&self, agent: &str) -> anyhow::Result<Vec<String>> {
+        let rows = sqlx::query("SELECT room FROM room_members WHERE agent_name = ?1")
+            .bind(agent)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.iter().map(|r| r.get::<String, _>("room")).collect())
+    }
+
+    /// The participant's undelivered messages across every room it belongs to,
+    /// merged in global id order and capped at `limit`. Excludes its own
+    /// messages and respects each room's cursor — the cross-room counterpart of
+    /// `undelivered`, for the HTTP long-poll where one call spans all a
+    /// participant's rooms rather than a single named one.
+    pub async fn undelivered_for_participant(
+        &self,
+        agent: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<MessageRow>> {
+        let rows = sqlx::query(
+            "SELECT m.id, m.room, m.from_agent, m.body, m.done, m.created_at, m.human
+             FROM messages m
+             JOIN room_members rm ON rm.room = m.room AND rm.agent_name = ?1
+             LEFT JOIN cursors c ON c.room = m.room AND c.agent_name = ?1
+             WHERE m.from_agent != ?1
+               AND m.id > COALESCE(c.last_delivered_id, 0)
+             ORDER BY m.id ASC
+             LIMIT ?2",
+        )
+        .bind(agent)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(message_row).collect())
+    }
 }
 
 /// Which messages a volume strip counts.
