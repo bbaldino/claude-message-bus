@@ -249,3 +249,45 @@ async fn receive_returns_a_dm_and_advances_the_cursor() {
         "acked messages are not redelivered: {body2}"
     );
 }
+
+#[tokio::test]
+async fn a_plain_participant_cannot_resume() {
+    let (_d, port, _p) =
+        common::start_bus_with_participants_dir(ParticipantConfig::default()).await;
+    let (_s, body) =
+        post_json_headers(port, "/api/participants", json!({"name":"raven"}), &[]).await;
+    let token = token_of(&body);
+    let (status, _b) = post_json_headers(
+        port,
+        "/api/participants/resume",
+        json!({"room":"x"}),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 403);
+}
+
+#[tokio::test]
+async fn a_relayer_can_resume() {
+    let cfg = ParticipantConfig {
+        relayer_secret: Some("s".into()),
+        ..Default::default()
+    };
+    let (_d, port, _p) = common::start_bus_with_participants_dir(cfg).await;
+    let (_s, body) = post_json_headers(
+        port,
+        "/api/participants",
+        json!({"name":"raven"}),
+        &[("X-Relayer-Secret", "s")],
+    )
+    .await;
+    let token = token_of(&body);
+    let (status, _b) = post_json_headers(
+        port,
+        "/api/participants/resume",
+        json!({"room":"x"}),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 204);
+}

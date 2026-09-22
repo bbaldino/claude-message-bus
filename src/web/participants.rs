@@ -339,3 +339,41 @@ pub(crate) async fn receive(
     })
     .into_response()
 }
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ResumeRequest {
+    room: String,
+}
+
+/// `POST /api/participants/resume` — clear a room's exchange-cap pause.
+///
+/// Relayer leases only: a plain (bot) lease gets 403. `ToBus::Resume` is ungated
+/// over WS only because every WS agent has a human behind it to authorise
+/// "continue"; an HTTP bot has none, so letting it resume would make the exchange
+/// cap toothless. Resets only the exchange counter, not the per-agent rate limit.
+pub(crate) async fn resume(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(body): Json<ResumeRequest>,
+) -> Response {
+    if !origin_ok(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(lease) = token_lease(&app, &headers).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !lease.relayer {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    app.guards.reset(&body.room).await;
+    let _ = app
+        .store
+        .append_event(
+            "resumed",
+            Some(&lease.name),
+            Some(&body.room),
+            serde_json::json!({ "via": "participant_resume" }),
+        )
+        .await;
+    StatusCode::NO_CONTENT.into_response()
+}
