@@ -12,8 +12,10 @@
 //! this bus served. Non-browser callers (raven's bridge, curl) send no `Origin`
 //! and are allowed, exactly as elsewhere.
 
+use std::time::Duration;
+
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
@@ -21,6 +23,7 @@ use crate::bus::App;
 use crate::bus::commands::{Authority, SendOutcome, do_send};
 use crate::bus::participant::{LeaseHandle, RelayerDecision};
 use crate::proto::Target;
+use crate::store::MessageRow;
 
 /// The lease behind an `X-Participant-Token`, renewing it, or `None` when the
 /// header is missing or the token is unknown/expired.
@@ -230,4 +233,109 @@ pub(crate) async fn send(
             (StatusCode::UNPROCESSABLE_ENTITY, message).into_response()
         }
     }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ReceiveQuery {
+    after: Option<i64>,
+    limit: Option<i64>,
+    timeout: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MessageDto {
+    id: i64,
+    room: String,
+    from: String,
+    body: String,
+    done: bool,
+    human: bool,
+    created_at: i64,
+}
+
+impl From<MessageRow> for MessageDto {
+    fn from(m: MessageRow) -> Self {
+        Self {
+            id: m.id,
+            room: m.room,
+            from: m.from_agent,
+            body: m.body,
+            done: m.done,
+            human: m.human,
+            created_at: m.created_at,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReceiveResponse {
+    messages: Vec<MessageDto>,
+    cursor: i64,
+}
+
+/// `GET /api/participants/receive` — long-poll for messages across every room
+/// this lease is a member of.
+///
+/// `after` is both the wire cursor and the ack: before reading, every member
+/// room's durable cursor is advanced to `after` (monotonic `MAX`), so a single
+/// global offset fans onto the per-`(room, name)` cursors. The store is the
+/// source of truth; the lease's mpsc is only the wakeup, drained after it fires
+/// so a burst that overflowed it still gets caught up by the re-read.
+pub(crate) async fn receive(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(q): Query<ReceiveQuery>,
+) -> Response {
+    if !origin_ok(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(lease) = token_lease(&app, &headers).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let after = q.after.unwrap_or(0);
+    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+    let timeout = Duration::from_secs(q.timeout.unwrap_or(30).clamp(1, 50));
+
+    // The ack. Everything <= after was returned by an earlier poll (a contiguous
+    // id-ordered prefix of the union), so advancing every member room to `after`
+    // can't skip an unreturned message.
+    for room in app
+        .store
+        .member_rooms(&lease.name)
+        .await
+        .unwrap_or_default()
+    {
+        let _ = app.store.set_cursor(&room, &lease.name, after).await;
+    }
+
+    let mut msgs = app
+        .store
+        .undelivered_for_participant(&lease.name, limit)
+        .await
+        .unwrap_or_default();
+
+    if msgs.is_empty() {
+        let mut rx = lease.rx.lock().await;
+        if tokio::time::timeout(timeout, rx.recv()).await.is_ok() {
+            // Drain the wakeup buffer; the store, not these frames, is what we
+            // actually return, so their content doesn't matter — only that
+            // something arrived.
+            while rx.try_recv().is_ok() {}
+            drop(rx);
+            msgs = app
+                .store
+                .undelivered_for_participant(&lease.name, limit)
+                .await
+                .unwrap_or_default();
+        }
+    }
+
+    let cursor = msgs.last().map(|m| m.id).unwrap_or(after);
+    Json(ReceiveResponse {
+        messages: msgs.into_iter().map(MessageDto::from).collect(),
+        cursor,
+    })
+    .into_response()
 }

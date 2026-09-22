@@ -191,3 +191,61 @@ async fn a_send_without_a_token_is_unauthorized() {
     .await;
     assert_eq!(status, 401);
 }
+
+#[tokio::test]
+async fn receive_returns_a_dm_and_advances_the_cursor() {
+    use claude_bus::proto::{Target, ToBus};
+    let (_d, port, _p) =
+        common::start_bus_with_participants_dir(ParticipantConfig::default()).await;
+
+    // raven registers over HTTP.
+    let (_s, rb) = post_json_headers(port, "/api/participants", json!({"name":"raven"}), &[]).await;
+    let token = token_of(&rb);
+
+    // caas connects over WS and DMs raven; wait for its Sent reply so the
+    // message is durably stored before raven polls.
+    let mut caas = common::connect(port, "caas").await;
+    common::send(
+        &mut caas,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent {
+                name: "raven".into(),
+            },
+            text: "ping".into(),
+            done: false,
+        },
+    )
+    .await;
+    common::next_event(&mut caas).await; // Reply::Sent
+
+    let (status, body) = get_headers(
+        port,
+        "/api/participants/receive?after=0&timeout=2",
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    let msgs = v["messages"].as_array().unwrap();
+    assert!(
+        msgs.iter()
+            .any(|m| m["from"] == "caas" && m["body"] == "ping"),
+        "raven should receive caas's DM: {body}"
+    );
+    let cursor = v["cursor"].as_i64().unwrap();
+    assert!(cursor > 0, "cursor advances to the delivered id: {body}");
+
+    // A second poll acking `cursor` returns nothing new before timeout.
+    let (_s2, body2) = get_headers(
+        port,
+        &format!("/api/participants/receive?after={cursor}&timeout=1"),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    let v2: Value = serde_json::from_str(&body2).unwrap();
+    assert!(
+        v2["messages"].as_array().unwrap().is_empty(),
+        "acked messages are not redelivered: {body2}"
+    );
+}
