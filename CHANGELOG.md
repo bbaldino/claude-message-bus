@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- HTTP participant mode: a `wasi:http`-only client (e.g. a raven plugin) can
+  register, long-poll to receive, and POST to send/resume over
+  `/api/participants`, without a WebSocket. Human authority is session-level,
+  proven by the bus-configured `--relayer-secret` and pinned to a
+  `--reserve-name`; a lease with no secret is an ordinary bot subject to the
+  exchange guard. See `docs/superpowers/specs/2026-09-22-http-participant-design.md`.
+
 ## [0.5.2](https://github.com/bbaldino/claude-message-bus/compare/v0.5.1...v0.5.2) - 2026-08-25
 
 ### Fixed
