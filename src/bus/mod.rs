@@ -143,8 +143,6 @@ pub(crate) struct App {
     pub(crate) guards: Guards,
     pub(crate) keepalive: Keepalive,
     pub(crate) relayers: Relayers,
-    // Read by the HTTP participant handlers, added in a later task.
-    #[allow(dead_code)]
     pub(crate) participants: Leases,
 }
 

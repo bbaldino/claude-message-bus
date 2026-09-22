@@ -1,0 +1,133 @@
+//! End-to-end tests for the HTTP participant surface (`/api/participants`).
+//! Drives a real bus over raw HTTP/1.1, matching the no-HTTP-client style of
+//! `tests/web.rs`, and a real WS agent (via `common::InProcessAgent`) when a
+//! send needs a live recipient.
+
+#![allow(dead_code)] // helpers land a task ahead of the tests that use them.
+
+mod common;
+
+use claude_bus::bus::participant::ParticipantConfig;
+use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Minimal HTTP/1.1 POST with a JSON body and arbitrary extra headers. Returns
+/// `(status, body)`. No HTTP-client dependency, like `tests/web.rs`.
+async fn post_json_headers(
+    port: u16,
+    path: &str,
+    body: Value,
+    headers: &[(&str, &str)],
+) -> (u16, String) {
+    let body = body.to_string();
+    let mut req = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n",
+        body.len()
+    );
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    req.push_str(&body);
+    send_raw(port, &req).await
+}
+
+/// Minimal HTTP/1.1 GET with arbitrary extra headers. Returns `(status, body)`.
+async fn get_headers(port: u16, path: &str, headers: &[(&str, &str)]) -> (u16, String) {
+    let mut req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    send_raw(port, &req).await
+}
+
+async fn send_raw(port: u16, req: &str) -> (u16, String) {
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).await.unwrap();
+    let status = raw
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
+    let body = raw.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+    (status, body.trim().to_string())
+}
+
+fn token_of(body: &str) -> String {
+    serde_json::from_str::<Value>(body).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn register_without_secret_is_a_plain_participant() {
+    let (_d, port, _p) =
+        common::start_bus_with_participants_dir(ParticipantConfig::default()).await;
+    let (status, body) =
+        post_json_headers(port, "/api/participants", json!({"name":"raven"}), &[]).await;
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["name"], "raven");
+    assert_eq!(v["relayer"], false);
+    assert!(v["token"].as_str().is_some_and(|t| !t.is_empty()));
+}
+
+#[tokio::test]
+async fn register_with_correct_secret_is_a_relayer() {
+    let cfg = ParticipantConfig {
+        relayer_secret: Some("s3cret".into()),
+        ..Default::default()
+    };
+    let (_d, port, _p) = common::start_bus_with_participants_dir(cfg).await;
+    let (status, body) = post_json_headers(
+        port,
+        "/api/participants",
+        json!({"name":"raven"}),
+        &[("X-Relayer-Secret", "s3cret")],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["relayer"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn a_wrong_secret_is_refused_not_downgraded() {
+    let cfg = ParticipantConfig {
+        relayer_secret: Some("s3cret".into()),
+        ..Default::default()
+    };
+    let (_d, port, _p) = common::start_bus_with_participants_dir(cfg).await;
+    let (status, _body) = post_json_headers(
+        port,
+        "/api/participants",
+        json!({"name":"raven"}),
+        &[("X-Relayer-Secret", "wrong")],
+    )
+    .await;
+    assert_eq!(status, 403);
+}
+
+#[tokio::test]
+async fn a_cross_origin_register_is_refused() {
+    let (_d, port, _p) =
+        common::start_bus_with_participants_dir(ParticipantConfig::default()).await;
+    let (status, _b) = post_json_headers(
+        port,
+        "/api/participants",
+        json!({"name":"raven"}),
+        &[("Origin", "http://evil.example")],
+    )
+    .await;
+    assert_eq!(status, 403);
+}

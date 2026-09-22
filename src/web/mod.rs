@@ -35,6 +35,7 @@
 mod api;
 mod assets;
 pub mod html;
+mod participants;
 
 use std::collections::HashMap;
 
@@ -324,6 +325,7 @@ pub fn routes() -> Router<App> {
         .route("/api/rooms/{name}/files", get(api::room_files))
         .route("/api/rooms/{name}/hidden", post(api::room_set_hidden))
         .route("/api/events", get(api::events))
+        .route("/api/participants", post(participants::register))
         .route("/app", get(assets::app_root))
         // `/app/` is registered separately and deliberately: matchit requires a
         // non-empty remainder for a catch-all, so `/app/{*rest}` does not match
