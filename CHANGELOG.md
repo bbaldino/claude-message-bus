@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/bbaldino/claude-message-bus/compare/v0.5.3...v0.6.0) - 2026-09-22
+
+### Added
+
+- expire idle HTTP participant leases
+- relayer-only HTTP participant resume
+- HTTP participant long-poll receive
+- HTTP participant send via shared do_send
+- HTTP participant registration endpoint
+- participant lease lifecycle (open/touch/expire/relayer decision)
+- store reads for cross-room participant receive
+- participant config plumbing (--relayer-secret, --reserve-name)
+
+### Other
+
+- untrack stray scratch files added by mistake
+- Merge feat/http-participant: HTTP participant mode
+- document the HTTP participant surface
+- make command authority explicit (human_present vs relayer)
+- implementation plan for the HTTP participant mode
+- design for an HTTP participant mode
+
 ### Added
 
 - HTTP participant mode: a `wasi:http`-only client (e.g. a raven plugin) can
