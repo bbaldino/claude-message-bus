@@ -143,10 +143,12 @@ test('going offline transitions the dialog to confirmable and re-fetches the cou
             version: '1',
             online: true,
             isHuman: false,
+            isRelayer: false,
             lastSeen: 1,
             buckets: [0],
           },
         ],
+        relayers: [],
       },
     },
   )
@@ -163,10 +165,12 @@ test('going offline transitions the dialog to confirmable and re-fetches the cou
           version: '1',
           online: false,
           isHuman: false,
+          isRelayer: false,
           lastSeen: 1,
           buckets: [0],
         },
       ],
+      relayers: [],
     },
   })
   rerender(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)
@@ -214,10 +218,12 @@ test('reconnecting while confirmable re-latches to refused, driven by presence n
             version: '1',
             online: false,
             isHuman: false,
+            isRelayer: false,
             lastSeen: 1,
             buckets: [0],
           },
         ],
+        relayers: [],
       },
     },
   )
@@ -234,10 +240,12 @@ test('reconnecting while confirmable re-latches to refused, driven by presence n
           version: '1',
           online: true,
           isHuman: false,
+          isRelayer: false,
           lastSeen: 1,
           buckets: [0],
         },
       ],
+      relayers: [],
     },
   })
   rerender(<DeleteModal name={NAME} onClose={vi.fn()} onDeleted={vi.fn()} />)

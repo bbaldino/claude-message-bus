@@ -28,6 +28,14 @@
   border-color: var(--human-border);
 }
 
+/* A relayer is still an agent — it is deliberately not styled as a human, only
+   marked as one whose messages the bus treats as carrying a human's authority.
+   Neutral, and unfilled like the human badge, so it never reads as a state flag. */
+.relayer {
+  color: var(--text-tertiary);
+  border-color: var(--border-emphasis);
+}
+
 .attention {
   color: var(--attention);
   background: var(--attention-bg);

@@ -2,7 +2,11 @@
 import type { AgentEventItem } from "./AgentEventItem";
 import type { AgentRoomSummary } from "./AgentRoomSummary";
 
-export type AgentDetail = { name: string, host: string, cwd: string, sessionId: string | null, version: string | null, online: boolean, isHuman: boolean, lastSeen: number, 
+export type AgentDetail = { name: string, host: string, cwd: string, sessionId: string | null, version: string | null, online: boolean, isHuman: boolean, 
+/**
+ * See `Agent::is_relayer`.
+ */
+isRelayer: boolean, lastSeen: number, 
 /**
  * Twenty five-minute slots, oldest first — the detail strip's width.
  */

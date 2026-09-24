@@ -11,6 +11,7 @@ const detail = {
   version: '0.3.3',
   online: false,
   isHuman: false,
+  isRelayer: false,
   lastSeen: 1_700_000_000_000,
   buckets: Array(20).fill(0),
   rooms: [],
@@ -125,4 +126,25 @@ test('the event section header states the true total, not the slice length', asy
   )
   renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
   expect(await screen.findByText('312 total')).toBeDefined()
+})
+
+test('a configured relayer is badged in the header', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    const body = url.includes('/api/meta')
+      ? { host: 'hardac', version: '0.3.3' }
+      : { ...detail, isRelayer: true }
+    return new Response(JSON.stringify(body), {
+      headers: { 'content-type': 'application/json' },
+    })
+  })
+  renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
+  await screen.findByTestId('agent-detail-name')
+  expect(screen.getByText('relayer')).toBeDefined()
+})
+
+test('an agent that is not a relayer carries no relayer badge', async () => {
+  renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
+  await screen.findByTestId('agent-detail-name')
+  expect(screen.queryByText('relayer')).toBeNull()
 })

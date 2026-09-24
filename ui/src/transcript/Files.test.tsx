@@ -23,10 +23,12 @@ const rail = {
       version: '1',
       online: true,
       isHuman: false,
+      isRelayer: false,
       lastSeen: 5,
       buckets: [1],
     },
   ],
+  relayers: [],
 }
 
 const files = [

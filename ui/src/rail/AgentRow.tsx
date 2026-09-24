@@ -25,6 +25,7 @@ export function AgentRow({ agent, now }: { agent: RailAgent; now: number }) {
           {agent.name}
         </span>
         {agent.isHuman && <Chip tone="human">human</Chip>}
+        {agent.isRelayer && <Chip tone="relayer">relayer</Chip>}
         <div className={styles.spacer} />
         <VolumeStrip buckets={agent.buckets} variant="rail" />
         <span className={styles.agentAge} data-testid="agent-age">

@@ -15,7 +15,7 @@ test('a null rail renders neither the new-bus state nor the placeholder', () => 
 })
 
 test('an empty rail renders the new-bus state, not the placeholder', () => {
-  renderWithStore(<MainPlaceholder />, { rail: { rooms: [], agents: [] } })
+  renderWithStore(<MainPlaceholder />, { rail: { rooms: [], agents: [], relayers: [] } })
   expect(screen.getByText('The bus is running. Nothing has joined it.')).toBeDefined()
   expect(screen.queryByTestId('main-placeholder')).toBeNull()
 })
@@ -31,10 +31,12 @@ test('a populated rail renders the placeholder, not the new-bus state', () => {
           version: '1',
           online: true,
           isHuman: false,
+          isRelayer: false,
           lastSeen: 5,
           buckets: [1],
         },
       ],
+      relayers: [],
     },
   })
   expect(screen.getByTestId('main-placeholder')).toBeDefined()

@@ -46,6 +46,7 @@ export function Rail({ query = '' }: { query?: string }) {
   const hiddenRooms = rooms.filter((r) => r.hidden)
   const agents = sortAgents((rail?.agents ?? []).filter((a) => matches(a.name, query)))
   const online = agents.filter((a) => a.online).length
+  const relayers = rail?.relayers ?? []
   // Only for a search that matches nothing at all — a query that matches
   // agents but no rooms (or vice versa) still gets its normal empty section,
   // header and all, since that's a real, legible statement about that half of
@@ -99,6 +100,14 @@ export function Rail({ query = '' }: { query?: string }) {
           <AgentRow key={a.name} agent={a} now={now} />
         ))}
       </div>
+      {/* The configured set, stated even when empty. A mistyped `--relayer` flag
+          marks no agent, which the badges alone cannot tell apart from a correct
+          config whose relayer is not connected — this line is what can. */}
+      {rail && (
+        <p className={styles.relayerNote} data-testid="relayer-note">
+          relayers: {relayers.length > 0 ? relayers.join(', ') : '(none)'}
+        </p>
+      )}
     </nav>
   )
 }

@@ -25,6 +25,10 @@ pub struct Agent {
     pub session_id: Option<String>,
     pub online: bool,
     pub is_human: bool,
+    /// Whether the bus is configured (`--relayer`) to accept relayed human
+    /// authority from this name. Read from the running config, not the agent's
+    /// row: the grant is bus configuration, not agent state.
+    pub is_relayer: bool,
     pub version: Option<String>,
     /// Epoch milliseconds.
     ///
@@ -54,6 +58,7 @@ pub(crate) async fn agents(State(app): State<App>) -> Result<Json<Vec<Agent>>, S
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let online = app.registry.is_online(&r.name).await;
+        let is_relayer = app.relayers.contains(&r.name);
         out.push(Agent {
             name: r.name,
             host: r.host,
@@ -61,6 +66,7 @@ pub(crate) async fn agents(State(app): State<App>) -> Result<Json<Vec<Agent>>, S
             session_id: r.session_id,
             online,
             is_human: r.is_human,
+            is_relayer,
             version: r.version,
             last_seen: r.last_seen,
         });
@@ -119,6 +125,8 @@ pub struct RailAgent {
     pub version: Option<String>,
     pub online: bool,
     pub is_human: bool,
+    /// See `Agent::is_relayer`.
+    pub is_relayer: bool,
     #[ts(type = "number")]
     pub last_seen: i64,
     #[ts(type = "Array<number>")]
@@ -131,6 +139,11 @@ pub struct RailAgent {
 pub struct RailSummary {
     pub rooms: Vec<RailRoom>,
     pub agents: Vec<RailAgent>,
+    /// The configured relayer names, sorted, whether or not any agent uses
+    /// them. `is_relayer` alone cannot show a mistyped `--relayer hubb`: it
+    /// marks nothing, which looks exactly like a correct config whose relayer
+    /// has never connected. The list is what makes that mistake visible.
+    pub relayers: Vec<String>,
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -222,6 +235,7 @@ pub(crate) async fn rail(State(app): State<App>) -> Result<Json<RailSummary>, St
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         agents.push(RailAgent {
             online: online.contains(&a.name),
+            is_relayer: app.relayers.contains(&a.name),
             name: a.name,
             host: a.host,
             version: a.version,
@@ -231,7 +245,12 @@ pub(crate) async fn rail(State(app): State<App>) -> Result<Json<RailSummary>, St
         });
     }
 
-    Ok(Json(RailSummary { rooms, agents }))
+    let relayers = app.relayers.names().into_iter().map(String::from).collect();
+    Ok(Json(RailSummary {
+        rooms,
+        agents,
+        relayers,
+    }))
 }
 
 pub(crate) async fn meta() -> Json<Meta> {
@@ -367,6 +386,8 @@ pub struct AgentDetail {
     pub version: Option<String>,
     pub online: bool,
     pub is_human: bool,
+    /// See `Agent::is_relayer`.
+    pub is_relayer: bool,
     #[ts(type = "number")]
     pub last_seen: i64,
     /// Twenty five-minute slots, oldest first — the detail strip's width.
@@ -432,6 +453,7 @@ pub(crate) async fn agent_detail(
         // this way instead of trusting the row.
         online: app.registry.is_online(&name).await,
         is_human: row.is_human,
+        is_relayer: app.relayers.contains(&name),
         last_seen: row.last_seen,
         buckets,
         rooms: rooms

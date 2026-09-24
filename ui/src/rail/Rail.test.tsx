@@ -37,6 +37,7 @@ const rail: RailSummary = {
       version: '0.3.3',
       online: false,
       isHuman: false,
+      isRelayer: false,
       lastSeen: 5,
       buckets: [0],
     },
@@ -46,10 +47,12 @@ const rail: RailSummary = {
       version: '0.3.3',
       online: true,
       isHuman: false,
+      isRelayer: false,
       lastSeen: 1,
       buckets: [1],
     },
   ],
+  relayers: [],
 }
 
 function renderRail(query?: string) {
@@ -136,6 +139,7 @@ test('an online agent name is styled distinguishably from an offline one', () =>
     version: null,
     online: true,
     isHuman: false,
+    isRelayer: false,
     lastSeen: 1,
     buckets: [0],
   })
@@ -151,6 +155,7 @@ test('an offline agent name carries the offline class instead', () => {
     version: null,
     online: false,
     isHuman: false,
+    isRelayer: false,
     lastSeen: 1,
     buckets: [0],
   })
@@ -166,6 +171,7 @@ test('an agent flagged as human renders the human badge', () => {
     version: null,
     online: true,
     isHuman: true,
+    isRelayer: false,
     lastSeen: 1,
     buckets: [0],
   })
@@ -179,10 +185,58 @@ test('a non-human agent renders no human badge', () => {
     version: null,
     online: true,
     isHuman: false,
+    isRelayer: false,
     lastSeen: 1,
     buckets: [0],
   })
   expect(screen.queryByText('human')).toBeNull()
+})
+
+test('a configured relayer renders the relayer badge', () => {
+  renderAgentRow({
+    name: 'hub',
+    host: 'h',
+    version: null,
+    online: true,
+    isHuman: false,
+    isRelayer: true,
+    lastSeen: 1,
+    buckets: [0],
+  })
+  expect(screen.getByText('relayer')).toBeDefined()
+  // A relayer is not a human, and must not be dressed as one.
+  expect(screen.queryByText('human')).toBeNull()
+})
+
+test('an agent that is not a relayer renders no relayer badge', () => {
+  renderAgentRow({
+    name: 'caas',
+    host: 'h',
+    version: null,
+    online: true,
+    isHuman: false,
+    isRelayer: false,
+    lastSeen: 1,
+    buckets: [0],
+  })
+  expect(screen.queryByText('relayer')).toBeNull()
+})
+
+test('the rail states the configured relayers', () => {
+  renderWithStore(<Rail />, { rail: { ...rail, relayers: ['hub', 'relay-2'] } })
+  expect(screen.getByTestId('relayer-note').textContent).toBe('relayers: hub, relay-2')
+})
+
+test('a bus with no relayers says so rather than omitting the line', () => {
+  renderRail()
+  expect(screen.getByTestId('relayer-note').textContent).toBe('relayers: (none)')
+})
+
+test('a relayer name no agent uses is still stated, with nothing badged', () => {
+  // The mistyped `--relayer hubb`: the line is the only visible trace of it.
+  renderWithStore(<Rail />, { rail: { ...rail, relayers: ['hubb'] } })
+  expect(screen.getByTestId('relayer-note').textContent).toBe('relayers: hubb')
+  expect(screen.queryByText('relayer')).toBeNull()
 })
 
 test('a shared ticker re-derives relative age on an interval, with no store update', () => {
@@ -236,6 +290,7 @@ test('an agent name containing # is percent-encoded in its link', () => {
     version: null,
     online: true,
     isHuman: false,
+    isRelayer: false,
     lastSeen: 1,
     buckets: [0],
   })
@@ -260,6 +315,7 @@ test('a room and an agent sharing a name are each selected only on their own rou
     version: null,
     online: true,
     isHuman: false,
+    isRelayer: false,
     lastSeen: 1,
     buckets: [0],
   }
@@ -315,6 +371,7 @@ test('a hidden room is out of the list, and the footer says how many', () => {
         { name: 'tidied', members: [], lastActivity: null, buckets: [], flag: null, hidden: true },
       ],
       agents: [],
+      relayers: [],
     },
   })
   expect(screen.getByText('visible')).toBeDefined()
@@ -329,6 +386,7 @@ test('expanding the footer reveals them', () => {
         { name: 'tidied', members: [], lastActivity: null, buckets: [], flag: null, hidden: true },
       ],
       agents: [],
+      relayers: [],
     },
   })
   fireEvent.click(screen.getByText(/1 hidden/))
@@ -350,6 +408,7 @@ test('with nothing hidden there is no affordance at all', () => {
         },
       ],
       agents: [],
+      relayers: [],
     },
   })
   expect(screen.queryByText(/hidden/)).toBeNull()
@@ -364,6 +423,7 @@ test('the volume strip caption survives', () => {
         { name: 'tidied', members: [], lastActivity: null, buckets: [], flag: null, hidden: true },
       ],
       agents: [],
+      relayers: [],
     },
   })
   expect(screen.getByText('last 60 min')).toBeDefined()

@@ -38,6 +38,14 @@
   padding: 0 8px;
 }
 
+.relayerNote {
+  padding: 10px 16px 16px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dimmest);
+  overflow-wrap: anywhere;
+}
+
 .railEmpty {
   padding: 16px;
   color: var(--text-quaternary);

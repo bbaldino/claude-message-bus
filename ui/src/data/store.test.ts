@@ -5,7 +5,7 @@ import type { SendOutcome } from './participant'
 import { writeSendAs } from '../composer/identity'
 import type { RailSummary } from '../types/RailSummary'
 
-const emptyRail: RailSummary = { rooms: [], agents: [] }
+const emptyRail: RailSummary = { rooms: [], agents: [], relayers: [] }
 const noMessages = async () => []
 const noEvents = async () => []
 // None of the tests in this file exercise the hide control — it lives in its
@@ -128,10 +128,12 @@ test('a presence push flips an agent online', () => {
           version: null,
           online: false,
           isHuman: false,
+          isRelayer: false,
           lastSeen: 1,
           buckets: [],
         },
       ],
+      relayers: [],
     },
   })
   // `last_seen`, not `lastSeen`: FromBus is snake_case on the wire because

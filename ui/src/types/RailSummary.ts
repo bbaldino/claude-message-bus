@@ -2,4 +2,11 @@
 import type { RailAgent } from "./RailAgent";
 import type { RailRoom } from "./RailRoom";
 
-export type RailSummary = { rooms: Array<RailRoom>, agents: Array<RailAgent>, };
+export type RailSummary = { rooms: Array<RailRoom>, agents: Array<RailAgent>, 
+/**
+ * The configured relayer names, sorted, whether or not any agent uses
+ * them. `is_relayer` alone cannot show a mistyped `--relayer hubb`: it
+ * marks nothing, which looks exactly like a correct config whose relayer
+ * has never connected. The list is what makes that mistake visible.
+ */
+relayers: Array<string>, };

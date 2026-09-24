@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import styles from './Chip.module.css'
 
-export type ChipTone = 'human' | 'attention' | 'destructive' | 'presence'
+export type ChipTone = 'human' | 'relayer' | 'attention' | 'destructive' | 'presence'
 
 export function Chip({
   tone,

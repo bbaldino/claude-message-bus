@@ -41,6 +41,7 @@ const base: Partial<State> = {
         version: '1',
         online: true,
         isHuman: false,
+        isRelayer: false,
         lastSeen: 5,
         buckets: [1],
       },
@@ -50,10 +51,12 @@ const base: Partial<State> = {
         version: '1',
         online: false,
         isHuman: false,
+        isRelayer: false,
         lastSeen: 4,
         buckets: [0],
       },
     ],
+    relayers: [],
   },
   events: [],
   roomEvents: [
@@ -167,10 +170,12 @@ const emptyRoomRail = {
       version: '1',
       online: true,
       isHuman: false,
+      isRelayer: false,
       lastSeen: 5,
       buckets: [1],
     },
   ],
+  relayers: [],
 }
 
 test('an empty room says so in one line, with no call to action', async () => {
@@ -235,6 +240,7 @@ test('a byline names the host a message came from, humans included', async () =>
           version: null,
           online: true,
           isHuman: true,
+          isRelayer: false,
           lastSeen: 0,
           buckets: [],
         },
@@ -244,10 +250,12 @@ test('a byline names the host a message came from, humans included', async () =>
           version: null,
           online: true,
           isHuman: false,
+          isRelayer: false,
           lastSeen: 0,
           buckets: [],
         },
       ],
+      relayers: [],
     },
     messages: [
       {
@@ -291,10 +299,12 @@ test('an already-qualified name is not qualified twice', async () => {
           version: null,
           online: true,
           isHuman: true,
+          isRelayer: false,
           lastSeen: 0,
           buckets: [],
         },
       ],
+      relayers: [],
     },
     messages: [
       {
@@ -316,7 +326,7 @@ test('a message from an agent no longer in the rail shows its bare name', async 
   renderWithStore(<RoomScreen />, {
     room: 'protocol',
     roomLoad: 'ready',
-    rail: { rooms: [], agents: [] },
+    rail: { rooms: [], agents: [], relayers: [] },
     messages: [
       {
         id: 1,
@@ -348,6 +358,7 @@ test('the tab bar offers hide for a visible room and unhide for a hidden one', a
         },
       ],
       agents: [],
+      relayers: [],
     },
     messages: [],
   })
@@ -371,6 +382,7 @@ test('clicking hide asks the store to hide this room', async () => {
         },
       ],
       agents: [],
+      relayers: [],
     },
     messages: [],
   })
@@ -400,6 +412,7 @@ test('a failed hide is surfaced near the control, not swallowed', async () => {
         },
       ],
       agents: [],
+      relayers: [],
     },
     messages: [],
   })

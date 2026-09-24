@@ -19,6 +19,7 @@ export function AgentHeader({ agent, now }: { agent: AgentDetail; now: number })
           {agent.name}
         </h1>
         {agent.isHuman && <Chip tone="human">human</Chip>}
+        {agent.isRelayer && <Chip tone="relayer">relayer</Chip>}
         <span className={agent.online ? styles.pillOnline : styles.pillOffline}>
           {!agent.online && <span className={styles.pillDot} />}
           {agent.online ? 'online' : 'offline'}

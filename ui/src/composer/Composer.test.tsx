@@ -82,6 +82,7 @@ test('the delivery preview counts the room members, not every agent', () => {
           version: null,
           online: true,
           isHuman: false,
+          isRelayer: false,
           lastSeen: 0,
           buckets: [],
         },
@@ -91,6 +92,7 @@ test('the delivery preview counts the room members, not every agent', () => {
           version: null,
           online: false,
           isHuman: false,
+          isRelayer: false,
           lastSeen: 0,
           buckets: [],
         },
@@ -100,10 +102,12 @@ test('the delivery preview counts the room members, not every agent', () => {
           version: null,
           online: true,
           isHuman: false,
+          isRelayer: false,
           lastSeen: 0,
           buckets: [],
         },
       ],
+      relayers: [],
     },
   })
   expect(screen.getByText('delivers to 1, queues for 1')).toBeDefined()
@@ -141,10 +145,12 @@ test('alone in the room, the preview does not count the operator as a recipient'
           version: null,
           online: true,
           isHuman: true,
+          isRelayer: false,
           lastSeen: 0,
           buckets: [],
         },
       ],
+      relayers: [],
     },
   })
   expect(screen.getByText('delivers to 0, queues for 0')).toBeDefined()

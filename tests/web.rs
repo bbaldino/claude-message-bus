@@ -16,6 +16,33 @@ async fn start(dir: &std::path::Path) -> u16 {
     port
 }
 
+/// Like `start`, but with a configured relayer set. `serve_on` hardcodes an empty
+/// one, and relayer reporting is exactly what needs a non-empty set to test.
+async fn start_with_relayers(dir: &std::path::Path, names: &[&str]) -> u16 {
+    let path = dir.to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let relayers =
+        claude_bus::bus::Relayers::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>());
+    tokio::spawn(async move {
+        claude_bus::bus::serve_on_full(
+            listener,
+            path,
+            claude_bus::bus::delivery::Guards::default(),
+            claude_bus::bus::Keepalive::default(),
+            claude_bus::bus::registry::Registry::new(),
+            relayers,
+            claude_bus::bus::participant::ParticipantConfig::default(),
+        )
+        .await
+        .unwrap()
+    });
+    common::wait_until_bus_ready(port).await;
+    port
+}
+
 /// Like `start`, but with the exchange guard's cap set directly (and the rate
 /// limit off). `serve_on` uses the production cap of 20, which is a lot of
 /// round trips to trip on purpose.
@@ -151,6 +178,78 @@ async fn the_agents_api_returns_json_in_camel_case() {
     assert!(body.contains("\"sessionId\":\"sess-1\""), "got: {body}");
     // mark_all_offline runs at startup, so a seeded agent is offline.
     assert!(body.contains("\"online\":false"), "got: {body}");
+}
+
+/// Which agents in a JSON array are marked `isRelayer`, sorted.
+fn relayer_names(agents: &serde_json::Value) -> Vec<String> {
+    let mut names: Vec<String> = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["isRelayer"] == true)
+        .map(|a| a["name"].as_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+async fn seed_agents(dir: &std::path::Path, names: &[&str]) {
+    let store = Store::open(dir).await.unwrap();
+    for n in names {
+        store
+            .upsert_agent(n, "hardac", "/w", None, false, Some("0.3.0"))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_configured_relayer_is_marked_everywhere_an_agent_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_agents(dir.path(), &["hub", "caas"]).await;
+    let port = start_with_relayers(dir.path(), &["hub"]).await;
+
+    let agents = common::get_json(port, "/api/agents").await;
+    assert_eq!(relayer_names(&agents), ["hub"], "{agents}");
+
+    let rail = common::get_json(port, "/api/rail").await;
+    assert_eq!(relayer_names(&rail["agents"]), ["hub"], "{rail}");
+    assert_eq!(rail["relayers"], serde_json::json!(["hub"]), "{rail}");
+
+    let hub = common::get_json(port, "/api/agents/hub").await;
+    assert_eq!(hub["isRelayer"], true, "{hub}");
+    let caas = common::get_json(port, "/api/agents/caas").await;
+    assert_eq!(caas["isRelayer"], false, "{caas}");
+}
+
+#[tokio::test]
+async fn a_bus_with_no_relayers_reports_an_empty_set() {
+    // An empty list, not a missing field: the console states "(none)" rather than
+    // staying silent, and it can only do that if absence is explicit.
+    let dir = tempfile::tempdir().unwrap();
+    seed_agents(dir.path(), &["caas"]).await;
+    let port = start(dir.path()).await;
+
+    let rail = common::get_json(port, "/api/rail").await;
+    assert_eq!(rail["relayers"], serde_json::json!([]), "{rail}");
+    assert!(relayer_names(&rail["agents"]).is_empty(), "{rail}");
+}
+
+#[tokio::test]
+async fn a_relayer_configured_under_a_name_no_agent_uses_is_still_listed() {
+    // The failure this exists for. A mistyped `--relayer hubb` marks nothing, so
+    // with the per-agent flag alone the bus would look identical to a correctly
+    // configured one whose relayer is not connected. The set is what tells them apart.
+    let dir = tempfile::tempdir().unwrap();
+    seed_agents(dir.path(), &["hub"]).await;
+    let port = start_with_relayers(dir.path(), &["hubb"]).await;
+
+    let rail = common::get_json(port, "/api/rail").await;
+    assert_eq!(rail["relayers"], serde_json::json!(["hubb"]), "{rail}");
+    assert!(
+        relayer_names(&rail["agents"]).is_empty(),
+        "and nothing is marked, which is the tell: {rail}"
+    );
 }
 
 #[tokio::test]

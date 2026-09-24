@@ -249,8 +249,10 @@ Two things are marked human-origin:
   the hub works: you type in the hub's terminal, and its messages to workers carry your
   authority.
 
-A relayer is still an agent everywhere else. It is not shown as a human in the web UI, and
-its traffic still counts toward the exchange cap — a hub volleying with workers is exactly
+A relayer is still an agent everywhere else. The console marks it `relayer`, not `human`,
+and lists the configured relayer names under its agent list. That list is how you spot a
+mistyped `--relayer` flag, which marks no agent at all. Its traffic still counts toward
+the exchange cap — a hub volleying with workers is exactly
 the runaway that cap exists to catch.
 
 This is a behavior control, not a security one. The bus has no authentication, and every
