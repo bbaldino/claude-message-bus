@@ -42,6 +42,14 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
+/// The app answers every path nothing else claimed, which would otherwise
+/// include a mistyped or removed API route. Handing a JSON client the HTML
+/// shell with a 200 turns "no such endpoint" into a baffling parse error, and
+/// the unbuilt-bundle 503 would blame the frontend for it.
+fn is_api(rel: &str) -> bool {
+    rel == "api" || rel.starts_with("api/")
+}
+
 /// Resolve a request path within the bundle.
 ///
 /// Returns the bytes and content type, or `None` when the request is for a
@@ -52,10 +60,7 @@ fn resolve(
 ) -> Option<(Vec<u8>, &'static str)> {
     let rel = request_path.trim_start_matches('/');
 
-    // The app answers every path nothing else claimed, which would otherwise
-    // include a mistyped or removed API route. Handing a JSON client the HTML
-    // shell with a 200 turns "no such endpoint" into a baffling parse error.
-    if rel == "api" || rel.starts_with("api/") {
+    if is_api(rel) {
         return None;
     }
 
@@ -83,12 +88,16 @@ fn respond(request_path: &str) -> Response {
         // not filter dotfiles, so `Bundle::iter()` is never empty and an unbuilt
         // bundle would otherwise answer a bare "not found" — on exactly the
         // fresh-clone path this hint exists for.
-        None if Bundle::get("index.html").is_none() => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "the UI bundle was not built into this binary — run `make ui` \
-             (or `npm run build` in ui/) and rebuild",
-        )
-            .into_response(),
+        None if Bundle::get("index.html").is_none()
+            && !is_api(request_path.trim_start_matches('/')) =>
+        {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the UI bundle was not built into this binary — run `make ui` \
+                 (or `npm run build` in ui/) and rebuild",
+            )
+                .into_response()
+        }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }

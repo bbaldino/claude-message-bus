@@ -442,14 +442,17 @@ where
 /// The `TcpListener` is bound *before* the server task is spawned, so the
 /// port accepts connections into the kernel backlog immediately — a bare
 /// TCP connect proves nothing about whether the bus is actually serving
-/// requests yet. The web UI is mounted on every `serve_on*` variant, so `/`
-/// is a valid readiness signal no matter which flavor of bus was started.
+/// requests yet. `/api/meta` is mounted on every `serve_on*` variant and
+/// answers 200 unconditionally, so it is a valid readiness signal no matter
+/// which flavor of bus was started. Not `/`: that serves the embedded UI
+/// bundle, which is a 503 wherever the frontend was never built — including
+/// CI's Rust job.
 pub async fn wait_until_bus_ready(port: u16) {
     let ready = wait_until_timeout(std::time::Duration::from_secs(10), || async move {
         let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
             return false;
         };
-        let req = b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let req = b"GET /api/meta HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         if stream.write_all(req).await.is_err() {
             return false;
         }
@@ -470,7 +473,7 @@ pub async fn wait_until_bus_ready(port: u16) {
     .await;
     assert!(
         ready,
-        "bus on 127.0.0.1:{port} never answered GET / within the startup deadline"
+        "bus on 127.0.0.1:{port} never answered GET /api/meta within the startup deadline"
     );
 }
 
