@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/bbaldino/claude-message-bus/compare/v0.7.1...v0.8.0) - 2026-09-24
+
+### Added
+
+- show configured relayers in the console
+- [**breaking**] serve the console at / and remove the server-rendered UI
+
+### Fixed
+
+- keep tests and /api 404s working without a built UI bundle
+
 ## [0.7.1](https://github.com/bbaldino/claude-message-bus/compare/v0.7.0...v0.7.1) - 2026-09-22
 
 ### Added
