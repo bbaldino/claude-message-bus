@@ -41,12 +41,11 @@ pub struct Agent {
 /// than the persisted `online` column — the column is only reconciled at
 /// startup, while the registry knows who is routable right now.
 ///
-/// A store failure is a 500, not `unwrap_or_default`. The HTML pages next door
-/// degrade to an empty table because a human reading one can see the page is
-/// bare and go look; this is consumed by code that branches on the response, and
-/// `200 []` tells it — confidently, and wrongly — that the fleet is empty. This
-/// is the first endpoint under `/api`, and every later one will be written by
-/// copying it, so the pattern matters more than this single call site.
+/// A store failure is a 500, not `unwrap_or_default`. This is consumed by code
+/// that branches on the response, and `200 []` tells it — confidently, and
+/// wrongly — that the fleet is empty. This was the first endpoint under `/api`,
+/// and every later one is written by copying it, so the pattern matters more
+/// than this single call site.
 pub(crate) async fn agents(State(app): State<App>) -> Result<Json<Vec<Agent>>, StatusCode> {
     let rows = app.store.agents().await.map_err(|e| {
         eprintln!("GET /api/agents could not read agents: {e}");
@@ -490,8 +489,7 @@ pub(crate) async fn agent_deletion_preview(
 
     // A failed read is a 500, never an empty listing. `unwrap_or_default` here
     // would make a database error indistinguishable from "this agent belongs to
-    // nothing" while the UI still offers the button — the same reasoning the
-    // HTML confirm page documents.
+    // nothing" while the UI still offers the button.
     let fp = app
         .store
         .agent_footprint(&name)
@@ -512,25 +510,23 @@ pub(crate) async fn agent_deletion_preview(
 /// transaction.
 ///
 /// Guards run in the order that lets each one narrow what the next has to
-/// handle, mirroring `delete_agent_perform` next door:
+/// handle:
 ///
 /// 1. **Cross-origin.** A request whose `Origin` disagrees with `Host` is
 ///    refused; a request with *no* `Origin` at all (curl, scripts) is
 ///    allowed, since it could already reach the port directly — refusing it
-///    buys nothing. Same rule as the HTML path's `POST`, and for the same
-///    reason (see the module doc), even though the mechanism it defends
-///    against doesn't transfer: `DELETE` isn't a CORS-safelisted method, so a
-///    browser preflights it and a plain cross-origin `<form>` or no-CORS
-///    `fetch` can't forge it the way a `POST` can. The check is kept anyway,
-///    for parity with the HTML path and as a second line of defence. `Host`
+///    buys nothing (see the module doc). `DELETE` isn't a CORS-safelisted
+///    method, so a browser preflights it and a plain cross-origin `<form>` or
+///    no-CORS `fetch` can't forge it the way a `POST` can; the check is a
+///    second line of defence, and keeps every write under `/api` behind the
+///    same rule. `Host`
 ///    absent — a malformed HTTP/1.1 request — is treated as an empty string,
 ///    which no real `Origin` matches, so a present `Origin` is refused rather
 ///    than silently waved through.
 /// 2. **Unknown name**, looked up here rather than trusted from the preview —
 ///    it is what stops any name at all from forging an `agent_deleted` event,
-///    and the row it returns supplies the `host` this event carries, matching
-///    the HTML delete's shape so the audit log stays uniform across both
-///    paths.
+///    and the row it returns supplies the `host` and `last_seen` this event
+///    carries — the last trace of when this agent was alive.
 /// 3. **Liveness.** `Registry::if_offline` is the authority, not the `online`
 ///    column: that column is written *after* the registry insert, so a live
 ///    agent's row can still read offline for a moment. `forget_agent`'s own
@@ -596,10 +592,8 @@ pub(crate) async fn agent_delete(
         // no agent row.
         Some(Ok(counts)) if counts.agents == 0 => StatusCode::NOT_FOUND,
         Some(Ok(counts)) => {
-            // Matches `delete_agent_perform`'s event exactly — same kind, same
-            // agent (`Some(&name)`, so the deleted agent's own activity log
-            // still finds this event), same detail shape — so the audit trail
-            // reads the same regardless of which path performed the delete.
+            // Recorded against the deleted agent (`Some(&name)`), so its own
+            // activity log still finds this event.
             if let Err(e) = app
                 .store
                 .append_event(

@@ -23,9 +23,9 @@ BUS ?= ws://127.0.0.1:7777/ws
 ##
 ## Every Rust build embeds whatever ui/dist holds at compile time (rust-embed),
 ## and a fresh clone holds only .gitkeep — so a `cargo install` without this
-## first produces a binary whose /app has nothing to serve. Only the Docker
+## first produces a binary whose web console has nothing to serve. Only the Docker
 ## build did this on its own; `install` now depends on it so the documented
-## install path cannot quietly ship a broken /app.
+## install path cannot quietly ship a broken console.
 ##
 ## `npm ci` rather than `npm install`: it installs exactly the lockfile, which
 ## is what a build step wants.
@@ -44,7 +44,7 @@ ui:
 ## artifact instead of ~9M.
 ##
 ## Depends on `ui` because rust-embed compiles ui/dist into the binary: without
-## a built bundle the install succeeds and /app 404s, with nothing to warn you.
+## a built bundle the install succeeds and the console is missing, with nothing to warn you.
 install: ui
 	cargo install --path . --root "$(PREFIX)" --locked
 	@echo

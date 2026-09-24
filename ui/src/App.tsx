@@ -32,10 +32,7 @@ export function App() {
   }, [])
 
   return (
-    // basename must match Vite's `base`. The SPA is served at /app while the
-    // original UI still holds /, and a mismatch breaks deep links in exactly the
-    // way the catch-all route test was written to catch.
-    <BrowserRouter basename="/app">
+    <BrowserRouter>
       <Routes>
         <Route path="/" element={<Shell />}>
           <Route index element={<MainPlaceholder />} />

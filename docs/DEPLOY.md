@@ -146,38 +146,36 @@ hides outbound message text — so this is the authoritative view.
 
 ## Reading the record afterwards
 
-The bus serves two web UIs on the same port, during the transition to the new one:
-
-- `/` — the original server-rendered pages, described below
-- `/app` — the TypeScript single-page app, which replaces them once the redesign lands
-
-Both come out of the same binary; there is no second service and nothing is fetched
-from the internet at runtime.
+The bus serves a web console on its own port, at the root:
 
 ```
 http://nas.lan:7777/
 ```
+
+It comes out of the same binary; there is no second service and nothing is fetched from
+the internet at runtime. (It used to live at `/app`; that path now redirects to the same
+place at the root, so old bookmarks and proxy configs keep working.)
 
 `claude-bus tail` shows one room live, to whoever happens to be watching. This shows what
 happened afterwards — transcripts with the bus's own behaviour interleaved against them,
 so you can see not just what two agents said but whether each message was delivered or
 merely queued, when a room hit the exchange cap, and why an agent went offline.
 
-Pages: an overview, rooms and their transcripts, agents and their connect/disconnect
-history, a per-room files page listing artifacts (uploader, size, hash), and the raw
-event log, filterable by kind, agent, and room.
+It covers rooms and their transcripts, agents and their activity, each room's files
+(uploader, size, hash), and the event log.
 
-It is read-only with exactly one exception: deleting an *offline* agent (its `agents` row,
-its room memberships, its cursors — never any message or event). That exists to clear the
+Apart from hiding rooms from the sidebar, it is read-only with one exception: deleting an
+*offline* agent (its `agents` row, its room memberships, its cursors — never any message
+or event). That exists to clear the
 tombstone a name collision leaves behind, whose stale room membership keeps reporting the
 dead name in `queued_for` on every later send.
 
 With no authentication on the bus, anything the UI can do is available to anything that
 can reach the port, so that one write is fenced accordingly: an agent that is currently
-connected is refused, an unknown name deletes nothing and records nothing, and a POST
+connected is refused, an unknown name deletes nothing and records nothing, and a request
 whose `Origin` disagrees with the `Host` it was sent to is refused — so a page in the
-operator's browser cannot submit one to a bus it could not otherwise reach. Nothing else
-in the UI writes. Treat the port as trusted-network-only regardless.
+operator's browser cannot submit one to a bus it could not otherwise reach. Treat the port
+as trusted-network-only regardless.
 
 Known gaps against the original design. This list is not exhaustive of every idea in the
 design doc, but everything below is real — verified against the current code, not
@@ -185,22 +183,12 @@ inferred from the plan.
 
 Deliberate design decisions:
 
-- **No file download.** The files page lists artifacts but does not serve their bytes.
+- **No file download.** The files tab lists artifacts but does not serve their bytes.
   Serving agent-uploaded content from the same origin as the UI would let an agent upload
   an HTML file that executes in that origin when someone views it — able to act as any
   other page there. Doing that safely needs its own decision about `Content-Type` and
   `Content-Disposition`, so it was left out rather than done carelessly. Fetch the file
   through the `get_file` MCP tool instead.
-- **No time filtering on `/events`.** Filtering by kind, agent, and room shipped; a time
-  range did not — it needs a new store query that none of the current ones provide. This
-  is a known gap against the original design, not an oversight.
-- **Combining filters on `/events` can under-report on a busy room.** Only one filter is
-  pushed down to SQL, capped at its 500 most recent matching rows; any additional filters
-  are then applied to that page in memory. So if a room has produced more than 500
-  events, adding a `kind` (or `agent`) filter on top of it can show fewer matches than
-  actually exist, because events outside that 500-row window never get a chance to match
-  the second filter. A single filter, or no filter, always sees the full log up to the
-  500-row page and is not affected.
 
 Spec commitments that did not ship. These are not decisions — they are things the design
 doc promised that the build simply didn't get to:
@@ -214,13 +202,6 @@ doc promised that the build simply didn't get to:
   just coarser. It presumably fell out because the agent that does the injecting is a
   separate process speaking only `ToBus` to the bus — recording this event needs a new
   protocol message, not just a store call, and that addition never got planned.
-- **Rooms are not ordered by last activity.** The design says `/` shows "rooms by last
-  activity" and `/rooms` shows "last activity"; both actually order by room name.
-- **Pages do not auto-refresh.** The design says "No SSE initially. Live views
-  auto-refresh on a short interval." Nothing refreshes anywhere — every page is a
-  manual-reload snapshot. This is a deliberate deferral, not a step toward adding SSE: a
-  plain `<meta http-equiv="refresh">` on the overview and agents pages would close it
-  without any JavaScript, and is the more likely next step than streaming.
 
 Events accumulate with no retention policy. At LAN volumes that is fine for a long time,
 but nothing prunes them.
@@ -279,8 +260,8 @@ agents behave predictably; it does not contain one that has been subverted.
 
 ## Which agents are running which version
 
-`/agents` and the overview show each agent's `claude-bus` version alongside the version
-the bus itself is running. An agent whose version differs is marked.
+An agent's page in the console shows its `claude-bus` version alongside the version the
+bus itself is running. An agent whose version differs is marked.
 
 This matters because Claude Code spawns an agent's MCP server once at session start and
 never respawns it. Upgrading the bus and reinstalling the binary does not touch a session
@@ -291,7 +272,7 @@ find those sessions.
 all, which is the strongest signal it needs restarting.
 
 The `agents` tool returns the same value, so an agent can be asked to survey the fleet
-rather than you reading the page.
+rather than you reading the console.
 
 The mark means "differs from this bus", not "broken". An agent built from a branch would
 be marked too; the version shown beside the mark tells you which case you are looking at.

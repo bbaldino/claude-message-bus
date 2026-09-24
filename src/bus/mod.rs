@@ -407,7 +407,7 @@ async fn human_active(
     "ok"
 }
 
-/// The same cross-origin guard the HTML delete form carries, applied to the
+/// The same cross-origin guard the agent delete carries, applied to the
 /// websocket handshake — see `web::origin_matches_host`, which this reuses so
 /// the two paths cannot drift.
 ///

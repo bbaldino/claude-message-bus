@@ -4,7 +4,7 @@
 //! that: nothing under `ui/` is a Rust source file, so a frontend-only change
 //! leaves the crate fingerprint identical and cargo reuses the existing binary.
 //! `make install` rebuilds the bundle and then `cargo install --path .` — the
-//! install documented in the README — quietly ships the *old* `/app`. The
+//! install documented in the README — quietly ships the *old* console. The
 //! symptom is a fix that "isn't working", with nothing anywhere to explain it.
 //!
 //! Emitting a `rerun-if-changed` for a directory makes cargo watch the mtime of

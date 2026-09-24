@@ -10,8 +10,8 @@
 //! just to test path resolution would couple the two jobs for nothing.
 
 use axum::extract::Path as AxumPath;
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::{StatusCode, Uri, header};
+use axum::response::{IntoResponse, Redirect, Response};
 
 // `@fontsource` faces list woff2 first in `src` (`format('woff2'), format('woff')`),
 // and every browser this console targets (React 19 requires a woff2-capable engine
@@ -50,10 +50,14 @@ fn resolve(
     get: &impl Fn(&str) -> Option<Vec<u8>>,
     request_path: &str,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let rel = request_path
-        .strip_prefix("/app")
-        .unwrap_or(request_path)
-        .trim_start_matches('/');
+    let rel = request_path.trim_start_matches('/');
+
+    // The app answers every path nothing else claimed, which would otherwise
+    // include a mistyped or removed API route. Handing a JSON client the HTML
+    // shell with a 200 turns "no such endpoint" into a baffling parse error.
+    if rel == "api" || rel.starts_with("api/") {
+        return None;
+    }
 
     if !rel.is_empty()
         && let Some(bytes) = get(rel)
@@ -81,8 +85,8 @@ fn respond(request_path: &str) -> Response {
         // fresh-clone path this hint exists for.
         None if Bundle::get("index.html").is_none() => (
             StatusCode::SERVICE_UNAVAILABLE,
-            "the UI bundle was not built into this binary — run `npm run build` in ui/ \
-             and rebuild, or use the server-rendered UI at /",
+            "the UI bundle was not built into this binary — run `make ui` \
+             (or `npm run build` in ui/) and rebuild",
         )
             .into_response(),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
@@ -90,11 +94,26 @@ fn respond(request_path: &str) -> Response {
 }
 
 pub(crate) async fn app_root() -> Response {
-    respond("/app")
+    respond("/")
 }
 
 pub(crate) async fn app_path(AxumPath(rest): AxumPath<String>) -> Response {
-    respond(&format!("/app/{rest}"))
+    respond(&format!("/{rest}"))
+}
+
+/// Where a request under the old `/app` mount lives now: the same path and
+/// query, with the prefix dropped.
+fn legacy_app_target(uri: &Uri) -> String {
+    let path = uri.path().strip_prefix("/app").unwrap_or(uri.path());
+    let path = if path.is_empty() { "/" } else { path };
+    match uri.query() {
+        Some(q) => format!("{path}?{q}"),
+        None => path.to_string(),
+    }
+}
+
+pub(crate) async fn legacy_app_redirect(uri: Uri) -> Redirect {
+    Redirect::permanent(&legacy_app_target(&uri))
 }
 
 #[cfg(test)]
@@ -113,24 +132,24 @@ mod tests {
     #[test]
     fn serves_an_exact_file_with_its_content_type() {
         let get = fake(&[("assets/app.js", "console.log(1)")]);
-        let (body, ct) = resolve(&get, "/app/assets/app.js").expect("asset must resolve");
+        let (body, ct) = resolve(&get, "/assets/app.js").expect("asset must resolve");
         assert_eq!(body, b"console.log(1)");
         assert_eq!(ct, "text/javascript");
     }
 
     #[test]
-    fn serves_index_at_the_app_root() {
+    fn serves_index_at_the_root() {
         let get = fake(&[("index.html", "<!doctype html>")]);
-        let (body, ct) = resolve(&get, "/app").expect("root must resolve");
+        let (body, ct) = resolve(&get, "/").expect("root must resolve");
         assert_eq!(body, b"<!doctype html>");
         assert_eq!(ct, "text/html; charset=utf-8");
     }
 
     #[test]
     fn an_unknown_client_route_falls_back_to_index() {
-        // A deep link like /app/agents/caas is a client-side route, not a file.
+        // A deep link like /agents/caas is a client-side route, not a file.
         let get = fake(&[("index.html", "<!doctype html>")]);
-        let (body, _) = resolve(&get, "/app/agents/caas").expect("deep link must resolve");
+        let (body, _) = resolve(&get, "/agents/caas").expect("deep link must resolve");
         assert_eq!(body, b"<!doctype html>");
     }
 
@@ -139,7 +158,7 @@ mod tests {
         // Falling back to index.html for a missing .js would hand the browser
         // HTML where it expected a script, which fails confusingly at runtime.
         let get = fake(&[("index.html", "<!doctype html>")]);
-        assert!(resolve(&get, "/app/assets/missing.js").is_none());
+        assert!(resolve(&get, "/assets/missing.js").is_none());
     }
 
     #[test]
@@ -149,7 +168,25 @@ mod tests {
         // dotfiles. An entirely empty bundle is not a state the real system can
         // be in, so testing that instead would prove nothing about the 503 path.
         let get = fake(&[(".gitkeep", "")]);
-        assert!(resolve(&get, "/app").is_none());
-        assert!(resolve(&get, "/app/").is_none());
+        assert!(resolve(&get, "/").is_none());
+        assert!(resolve(&get, "/agents/caas").is_none());
+    }
+
+    #[test]
+    fn an_unknown_api_path_is_not_the_app_shell() {
+        let get = fake(&[("index.html", "<!doctype html>")]);
+        assert!(resolve(&get, "/api").is_none());
+        assert!(resolve(&get, "/api/no-such-thing").is_none());
+        // Only the `api` segment itself is reserved, not every path starting "api".
+        assert!(resolve(&get, "/apiary").is_some());
+    }
+
+    #[test]
+    fn the_old_app_mount_redirects_to_the_same_place_at_the_root() {
+        let target = |u: &str| legacy_app_target(&u.parse().unwrap());
+        assert_eq!(target("/app"), "/");
+        assert_eq!(target("/app/"), "/");
+        assert_eq!(target("/app/rooms/protocol"), "/rooms/protocol");
+        assert_eq!(target("/app/events?kind=ack"), "/events?kind=ack");
     }
 }

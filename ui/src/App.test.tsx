@@ -56,7 +56,7 @@ test('renders the three shell regions and routes to a room', async () => {
     )
   })
 
-  window.history.pushState({}, '', '/app/rooms/protocol')
+  window.history.pushState({}, '', '/rooms/protocol')
   render(<App />)
 
   // The rail is outside the outlet, so it is present on a room route.
@@ -104,7 +104,7 @@ test('typing in the top bar search field filters the rail, and clearing it resto
     )
   })
 
-  window.history.pushState({}, '', '/app')
+  window.history.pushState({}, '', '/')
   render(<App />)
 
   expect(await screen.findByText('protocol')).toBeDefined()
@@ -140,7 +140,7 @@ test('rendering at a room route tells the store to select that room', async () =
   mockEmptyRail()
   const selectRoom = vi.spyOn(store, 'selectRoom')
 
-  window.history.pushState({}, '', '/app/rooms/protocol')
+  window.history.pushState({}, '', '/rooms/protocol')
   render(<App />)
 
   // The room screen replaced the placeholder, so wait on the wiring itself
@@ -153,7 +153,7 @@ test('a room name that needs URL encoding reaches the store decoded', async () =
   const selectRoom = vi.spyOn(store, 'selectRoom')
 
   const roomName = 'dm:caas|network-debug#2'
-  window.history.pushState({}, '', `/app/rooms/${encodeURIComponent(roomName)}`)
+  window.history.pushState({}, '', `/rooms/${encodeURIComponent(roomName)}`)
   render(<App />)
 
   // The route param comes through useMatch already decoded — selectRoom must
