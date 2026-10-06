@@ -602,8 +602,54 @@ pub(crate) async fn handle(
                 .await;
         }
 
-        // Task 2 implements the bus-side store; for now, accept and discard.
-        ToBus::Status { .. } => {}
+        ToBus::Status {
+            state,
+            state_age_ms,
+            heartbeat_age_ms,
+            reason,
+            text,
+            text_age_ms,
+            waiting_on: _,
+        } => {
+            let now = crate::store::now_ms();
+            let t = app
+                .statuses
+                .apply(
+                    me,
+                    crate::bus::status::Update {
+                        state,
+                        state_age_ms,
+                        heartbeat_age_ms,
+                        reason,
+                        text,
+                        text_age_ms,
+                    },
+                    now,
+                )
+                .await;
+            let blocked = crate::proto::AgentState::BlockedOnHuman;
+            let was = t.before == Some(blocked);
+            let is = t.after == blocked;
+            if was != is {
+                let _ = app
+                    .store
+                    .append_event(
+                        "blocked_on_human",
+                        Some(me),
+                        None,
+                        json!({ "entered": is, "reason": t.reason, "via": "hook" }),
+                    )
+                    .await;
+            }
+            if let Some(status) = app.statuses.view(me, now).await {
+                app.registry
+                    .notify_presence(FromBus::Status {
+                        name: me.to_string(),
+                        status,
+                    })
+                    .await;
+            }
+        }
     }
 }
 

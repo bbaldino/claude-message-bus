@@ -6,6 +6,7 @@ pub mod delivery;
 pub mod participant;
 pub mod registry;
 pub mod rooms;
+pub(crate) mod status;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -144,6 +145,7 @@ pub(crate) struct App {
     pub(crate) keepalive: Keepalive,
     pub(crate) relayers: Relayers,
     pub(crate) participants: Leases,
+    pub(crate) statuses: status::Statuses,
 }
 
 pub async fn serve(
@@ -260,6 +262,7 @@ pub async fn serve_on_full(
         keepalive,
         relayers,
         participants: Leases::new(participants),
+        statuses: status::Statuses::default(),
     };
     // Events reach observers through the store's broadcast channel, so every
     // append is fanned out regardless of which call site produced it.
@@ -757,6 +760,21 @@ async fn connection(socket: WebSocket, app: App) {
                 last_seen: crate::store::now_ms(),
             })
             .await;
+        // A session that dies while blocked on the human is no longer blocked: close the
+        // event the way a resolved prompt would, so the log never shows a wait that
+        // stayed open forever. The status itself stays, so readers see "offline, was
+        // blocked".
+        if app.statuses.state_of(&name).await == Some(crate::proto::AgentState::BlockedOnHuman) {
+            let _ = app
+                .store
+                .append_event(
+                    "blocked_on_human",
+                    Some(&name),
+                    None,
+                    json!({ "entered": false, "via": "disconnect" }),
+                )
+                .await;
+        }
         if is_human {
             // Ephemeral by design — see `leave_all_rooms`.
             let _ = app.store.leave_all_rooms(&name).await;

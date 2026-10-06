@@ -614,6 +614,9 @@ pub(crate) async fn agent_delete(
         // no agent row.
         Some(Ok(counts)) if counts.agents == 0 => StatusCode::NOT_FOUND,
         Some(Ok(counts)) => {
+            // The status must not outlive the agent, or a later agent registering
+            // under the same name would inherit it.
+            app.statuses.remove(&name).await;
             // Recorded against the deleted agent (`Some(&name)`), so its own
             // activity log still finds this event.
             if let Err(e) = app
