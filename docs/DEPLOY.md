@@ -306,6 +306,23 @@ The state comes from Claude Code hooks, which `claude-bus init` installs into
 forwards it to the bus over its existing connection. The hooks never touch the network, never
 print, and always exit 0. A session without them shows text only, with state "unknown".
 
+The file is named after the Claude Code process's pid (`claude-<pid>.json`), which the hooks
+and the MCP server agree on because both are direct children of Claude Code. So the `msgbus`
+MCP command must be `claude-bus agent …` run directly by Claude Code, as `init` registers it.
+Wrapped in a shell script, the script becomes the MCP server's parent, the two disagree, and the
+state stays "unknown".
+
+With project-scope setup the hooks are committed in `.claude/settings.json`, so they run for
+every teammate who opens the project: each of them needs `claude-bus` on their `PATH` (a
+missing binary means a hook error and state "unknown", never a broken
+session).
+
+**Upgrading.** After upgrading `claude-bus`, re-run `claude-bus init` the way you first ran it
+(per project with `--project`, or once with `--user`) to add the `status` tool's permission and
+the status hooks. Otherwise sessions in manual permission mode get a permission prompt on their
+first `status` call, and no hook state is recorded. Then restart running sessions: each one
+keeps the agent binary it started with until it is restarted.
+
 Status never counts toward the exchange cap. It is held in memory on the bus. After a bus
 restart, each agent resends its last status when it reconnects, so an agent idle since 11:21
 still reads "idle since 11:21".
@@ -315,6 +332,8 @@ Signals worth knowing:
 - **offline, was working** means the session died mid-work.
 - **working? (quiet)** means no hook has fired for 10 minutes. Often this is a long-running
   command, but sometimes it is a stall.
+- **Interrupting a turn** (Esc or Ctrl-C) fires no `Stop` hook, so the row keeps reading
+  "working", then "working? (quiet)", until the session's next turn.
 - **blocked on human** is logged as `blocked_on_human` events (entry and exit only), so the
   event log shows how long each prompt waited.
 
