@@ -1314,6 +1314,49 @@ async fn a_hook_file_change_reaches_the_bus() {
     assert_eq!(status_of(port, "caas").await["reason"], "permission_prompt");
 }
 
+#[tokio::test]
+async fn a_state_file_left_by_an_earlier_process_is_ignored() {
+    // The file is keyed by the Claude Code pid, and pids are reused. A file whose
+    // heartbeat is far older than the bridge was written by someone else.
+    let (_dir, port) = common::start_bus().await;
+    let state = tempfile::tempdir().unwrap();
+    let file = state.path().join("s.json");
+    let hour_ago = claude_bus::store::now_ms() - 3_600_000;
+    let stale = claude_bus::agent::status::HookState {
+        state: claude_bus::proto::AgentState::BlockedOnHuman,
+        changed_at_ms: hour_ago,
+        heartbeat_at_ms: hour_ago,
+        reason: Some("permission_prompt".into()),
+    };
+    claude_bus::agent::status::write(&file, &stale).unwrap();
+    let mut a = InProcessAgent::start_with_status_file(
+        format!("ws://127.0.0.1:{port}/ws"),
+        "caas",
+        file.clone(),
+    );
+    handshake(&mut a).await;
+    assert!(common::wait_until(|| common::agent_is_online(port, "caas")).await);
+    // Several poll ticks: the stale file must never be published.
+    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+    assert_eq!(status_of(port, "caas").await["state"], "unknown");
+    // Once a hook of this session rewrites it, it counts.
+    let now = claude_bus::store::now_ms();
+    claude_bus::agent::status::write(
+        &file,
+        &claude_bus::agent::status::HookState {
+            state: claude_bus::proto::AgentState::Working,
+            changed_at_ms: now,
+            heartbeat_at_ms: now,
+            reason: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        common::wait_until(|| async { status_of(port, "caas").await["state"] == "working" }).await,
+        "a fresh write after the stale one never reached the bus"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn status_is_reestablished_after_a_bus_restart() {
     let data = tempfile::tempdir().unwrap();
@@ -1329,13 +1372,16 @@ async fn status_is_reestablished_after_a_bus_restart() {
 
     let state = tempfile::tempdir().unwrap();
     let file = state.path().join("s.json");
-    let hour_ago = claude_bus::store::now_ms() - 3_600_000;
+    // Idle for an hour, but heartbeated by this session (a bridge ignores a file
+    // whose heartbeat predates it: that file belongs to an earlier, pid-reusing
+    // process).
+    let now = claude_bus::store::now_ms();
     claude_bus::agent::status::write(
         &file,
         &claude_bus::agent::status::HookState {
             state: claude_bus::proto::AgentState::Idle,
-            changed_at_ms: hour_ago,
-            heartbeat_at_ms: hour_ago,
+            changed_at_ms: now - 3_600_000,
+            heartbeat_at_ms: now,
             reason: None,
         },
     )

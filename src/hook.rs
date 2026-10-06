@@ -19,15 +19,16 @@ pub fn run(args: &[String]) {
 }
 
 fn try_run(args: &[String]) -> anyhow::Result<()> {
+    // Read (and discard) stdin first, whatever happens next, so Claude Code's write
+    // to the pipe never blocks or fails. Nothing in it is needed: the file is keyed
+    // by the Claude Code pid, not the `session_id` stdin carries (see
+    // `status::status_key_for_pid`).
+    let mut buf = Vec::new();
+    let _ = std::io::stdin().take(MAX_STDIN).read_to_end(&mut buf);
     let Some(ev) = status::HookEvent::parse(args) else {
         anyhow::bail!("unknown hook event {args:?}");
     };
-    let mut buf = Vec::new();
-    std::io::stdin().take(MAX_STDIN).read_to_end(&mut buf)?;
-    let input: serde_json::Value = serde_json::from_slice(&buf)?;
-    let Some(key) = status::status_key(input["session_id"].as_str()) else {
-        anyhow::bail!("no session_id on stdin");
-    };
+    let key = status::status_key_for_pid(claude_pid());
     let Some(dir) = status::status_dir(
         std::env::var("XDG_STATE_HOME").ok(),
         std::env::var("HOME").ok(),
@@ -40,4 +41,13 @@ fn try_run(args: &[String]) -> anyhow::Result<()> {
         status::write(&path, &next)?;
     }
     Ok(())
+}
+
+/// Claude Code sets `CLAUDE_PID` on its hooks. Without it (or with garbage in it),
+/// the hook's parent is the Claude Code process anyway.
+fn claude_pid() -> u32 {
+    std::env::var("CLAUDE_PID")
+        .ok()
+        .and_then(|p| p.trim().parse().ok())
+        .unwrap_or_else(std::os::unix::process::parent_id)
 }

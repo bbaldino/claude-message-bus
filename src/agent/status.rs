@@ -2,7 +2,8 @@
 //!
 //! The hook (`claude-bus hook`) is a separate, short-lived process that Claude Code
 //! spawns on lifecycle events. It cannot reach the bridge's memory, so the two meet
-//! at a small JSON file keyed by Claude session id. The file is also what makes
+//! at a small JSON file keyed by the pid of the Claude Code process, which is the
+//! parent of both (see `status_key_for_pid`). The file is also what makes
 //! status survive a bus restart: the last event's result is still on disk when the
 //! bridge reconnects, even if no hook has fired since.
 
@@ -68,25 +69,27 @@ pub fn next(prev: Option<&HookState>, ev: &HookEvent, now_ms: i64) -> Option<Hoo
     }
 }
 
-/// The one place both sides derive the file name. The hook passes the `session_id`
-/// from its stdin; the bridge passes `CLAUDE_CODE_SESSION_ID`. If Task 0's spike
-/// showed those differ, this is the only function to change.
-pub fn status_key(session_id: Option<&str>) -> Option<String> {
-    let id = session_id?.trim();
-    if id.is_empty() {
-        return None;
-    }
-    Some(
-        id.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect(),
-    )
+/// The one place both sides derive the file name, from the pid of the Claude Code
+/// process. Both the hook and the bridge are its direct children: the hook reads
+/// `CLAUDE_PID` (falling back to its parent pid) and the bridge uses its parent pid.
+///
+/// Not the session id: after `/clear` the hooks receive a new `session_id` while the
+/// bridge keeps the old one, which froze the status; and `--continue`/`--resume`
+/// reuse an old id, so a new bridge would read a dead session's file.
+pub fn status_key_for_pid(pid: u32) -> String {
+    format!("claude-{pid}")
+}
+
+/// How far before the bridge started a heartbeat may be and still count as this
+/// session's. A hook can fire just before the MCP server comes up; anything older
+/// than this was written by an earlier process that happened to have the same pid.
+pub const STALE_BEFORE_START_MS: i64 = 60_000;
+
+/// Whether a state file belongs to the Claude Code process this bridge runs under,
+/// rather than to an earlier process whose pid was reused. The bridge treats a
+/// file that fails this as absent.
+pub fn is_current(s: &HookState, bridge_started_ms: i64) -> bool {
+    s.heartbeat_at_ms >= bridge_started_ms - STALE_BEFORE_START_MS
 }
 
 pub fn status_dir(xdg_state_home: Option<String>, home: Option<String>) -> Option<PathBuf> {
@@ -227,17 +230,20 @@ mod tests {
     }
 
     #[test]
-    fn keys_are_filesystem_safe_and_never_empty() {
-        assert_eq!(
-            status_key(Some("0f9c1d2e-3a4b")).as_deref(),
-            Some("0f9c1d2e-3a4b")
+    fn the_key_is_the_claude_pid() {
+        assert_eq!(status_key_for_pid(4242), "claude-4242");
+    }
+
+    #[test]
+    fn a_file_from_before_the_bridge_started_is_stale() {
+        let start = 1_000_000;
+        let at = |hb| is_current(&st(Idle, 0, hb), start);
+        assert!(at(start), "written after start");
+        assert!(at(start - STALE_BEFORE_START_MS), "just inside the slack");
+        assert!(
+            !at(start - STALE_BEFORE_START_MS - 1),
+            "an earlier process with the same pid"
         );
-        assert_eq!(
-            status_key(Some("../../etc/passwd")).as_deref(),
-            Some("______etc_passwd")
-        );
-        assert_eq!(status_key(Some("")), None);
-        assert_eq!(status_key(None), None);
     }
 
     #[test]

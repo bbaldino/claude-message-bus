@@ -151,8 +151,8 @@ impl InProcessAgent {
         liveness: claude_bus::agent::bridge::Liveness,
     ) {
         // The status poller is off: deriving its file from the environment would
-        // pick up `CLAUDE_CODE_SESSION_ID` when the suite runs inside a Claude Code
-        // session, and the test would then read that real session's live status.
+        // key it by this test process's parent pid in the developer's real state
+        // dir, so a test could read whatever status file happens to live there.
         if let Err(e) = claude_bus::agent::run_on_with_options(
             (agent_stdin, agent_stdout),
             bus_url,
@@ -199,7 +199,7 @@ impl InProcessAgent {
 
 impl InProcessAgent {
     /// `start`, but with the status file pinned to `path` instead of derived from
-    /// `CLAUDE_CODE_SESSION_ID` (which tests do not set).
+    /// the parent pid and the real state dir.
     pub fn start_with_status_file(
         bus_url: impl Into<String>,
         name: impl Into<String>,

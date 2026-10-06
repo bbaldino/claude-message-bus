@@ -48,16 +48,17 @@ The agent never has to remember to report any of this. That is what makes this l
 
 ```
 Claude Code hook ──writes──▶ local state file ◀──polls── bridge ──websocket──▶ bus
-                         (keyed by session id)          (owns status)       (in-memory copy)
+                       (keyed by Claude Code pid)       (owns status)       (in-memory copy)
 ```
 
 - **Hook.** Each hook runs a new subcommand, `claude-bus hook <event>`, instead of a shell script.
-  - It reads the session id from the JSON Claude Code passes on stdin.
-  - It writes a small state file at `$XDG_STATE_HOME/claude-bus/status/<session_id>.json`, containing the state and when it last changed.
+  - It takes the Claude Code process's pid from `CLAUDE_PID`, which Claude Code sets on every hook, falling back to its own parent pid. It still reads (and discards) its stdin so Claude Code's pipe never blocks.
+  - It writes a small state file at `$XDG_STATE_HOME/claude-bus/status/claude-<pid>.json`, containing the state and when it last changed and last heartbeated.
   - It never makes a network call and always exits 0. It cannot block, fail or slow a prompt beyond writing one file.
   - It only rewrites the file when the state changes, or when the last heartbeat is more than about 30 seconds old.
 - **Bridge.**
-  - It finds the same file using `CLAUDE_CODE_SESSION_ID`, which it already reads to register. **Verify during planning:** that this value equals the hook's `session_id`.
+  - It finds the same file from its own parent pid: the bridge, like every hook, is a direct child of the Claude Code process. This is why the `msgbus` MCP command must be `claude-bus agent` run directly, not through a wrapper script (the wrapper would be the parent, and the state would stay "unknown").
+  - Pids are reused, so it ignores a file whose heartbeat is more than 60 seconds older than the bridge itself: that file was left by an earlier process.
   - It checks the file's modification time about once a second, and sends `ToBus::Status` when the file changes.
   - It also holds the text and waiting-on fields, set by the `status` tool.
 - **Bus.** Status arrives only over the agent's own authenticated websocket.
@@ -81,7 +82,7 @@ An agent that went idle at 11:21 comes back as "idle since 11:21". It does not h
 
 Edge cases:
 
-- **The session restarted rather than the bus.** That means a new session id and an empty file, so the state is "unknown" until the first hook fires. That is correct: nothing is known about the new session yet.
+- **The session restarted rather than the bus.** That means a new Claude Code process, so a new pid and an empty file (or a pid-reused file the bridge ignores as stale), and the state is "unknown" until the first hook fires. That is correct: nothing is known about the new session yet.
 - **Claude Code died.** The bridge is its child process and dies with it, so nothing reconnects with a stale file.
 
 Status is otherwise not persisted on the bus. It lives in memory, alongside the registry. A database column would repeat the mistake of the persisted `online` flag, which showed agents from a dead bus as online.
@@ -184,9 +185,10 @@ Cheapest first:
 The spike ran an interactive Claude Code v2.1.289 session in tmux, with logging hooks, against a scratch bus.
 
 1. **Notification types.** Confirmed. The payload carries `notification_type` (`"permission_prompt"` with message "Claude needs your permission"; `"idle_prompt"` with "Claude is waiting for your input"). A `matcher` of `permission_prompt` ran only for the former. We still pass the type as an argument rather than parsing it.
-2. **Session id.** The hook stdin `session_id` equals the session id the bridge registers with (from `CLAUDE_CODE_SESSION_ID`). Keying the state file by session id stands.
+2. **Session id.** At session start the hook stdin `session_id` equals the session id the bridge registers with (from `CLAUDE_CODE_SESSION_ID`), and the state file was first keyed by it. **Superseded by the final review (second spike, 2026-10-06):** after `/clear`, hooks receive a **new** `session_id` (on stdin and in `CLAUDE_CODE_SESSION_ID`) while the MCP bridge keeps the old one, so the status froze; and `--continue`/`--resume` reuse an old session id, so a new bridge would read a dead session's file. Hooks and the bridge are both direct children of the Claude Code process, hooks get `CLAUDE_PID=<claude pid>`, and the bridge's parent pid is the same pid. **Change:** the state file is keyed by the Claude Code pid (`claude-<pid>.json`). The bridge ignores a file whose heartbeat is older than its own start minus 60 seconds, which guards against pid reuse. Limitation: the `msgbus` MCP command must be `claude-bus agent` run directly by Claude Code, not wrapped in a shell script.
 3. **Bus-message turns.** A turn started by a channel (bus) message **does** fire `UserPromptSubmit`.
 4. **Hook order around a permission prompt.** `UserPromptSubmit` → `PreToolUse` → `PermissionRequest` → (about 6 seconds later) `Notification[permission_prompt]` → *(human approves)* → `PostToolUse` → `Stop`. `PreToolUse` fires **before** the prompt, so it can't be what marks the end of the wait. The first signal after approval is `PostToolUse`. **Change:** `PostToolUse` and `PostToolUseFailure` also map to "working", or an approved long-running command would show "blocked" until it finished.
 5. **Take over the human-active hook?** Still out of scope.
+6. **`AskUserQuestion` and `ExitPlanMode`.** (Final-review spike.) Both fire `Notification[permission_prompt]` about 6 seconds after their `PreToolUse`, in manual and in auto mode, so they already read as blocked-on-human. No code change.
 
 Also observed: this Claude Code version defaults to **auto** permission mode, which settles most permission prompts without asking. Blocked-on-human from permission prompts will therefore mostly come from sessions in manual mode, and from prompts auto mode escalates.

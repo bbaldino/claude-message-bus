@@ -64,9 +64,9 @@ where
 /// `run_on_with_*` per combination.
 pub struct AgentOptions {
     pub liveness: bridge::Liveness,
-    /// The hook's state file. `None` derives it from the environment
-    /// (`CLAUDE_CODE_SESSION_ID` plus the state dir), `Some(None)` turns the poller
-    /// off, and `Some(Some(path))` uses that file.
+    /// The hook's state file. `None` derives it from this process's parent pid (the
+    /// Claude Code process) and the state dir, `Some(None)` turns the poller off, and
+    /// `Some(Some(path))` uses that file.
     pub status_file: Option<Option<PathBuf>>,
 }
 
@@ -106,16 +106,23 @@ where
 
     let env = RealEnv;
     let session_id = env.var("CLAUDE_CODE_SESSION_ID");
+    // Keyed by the Claude Code pid, never the session id: see `status_key_for_pid`.
+    // This only works when Claude Code runs this binary directly, not through a
+    // wrapper script, since the wrapper would then be the parent.
     let status_file = match opts.status_file {
         Some(explicit) => explicit,
-        None => status::status_key(session_id.as_deref()).and_then(|key| {
-            status::status_dir(env.var("XDG_STATE_HOME"), env.var("HOME"))
-                .map(|d| d.join(format!("{key}.json")))
+        None => status::status_dir(env.var("XDG_STATE_HOME"), env.var("HOME")).map(|d| {
+            let key = status::status_key_for_pid(std::os::unix::process::parent_id());
+            d.join(format!("{key}.json"))
         }),
     };
     if let Some(path) = status_file {
         eprintln!("[agent] watching status file {}", path.display());
-        tokio::spawn(bridge::poll_status_file(path, status.clone()));
+        tokio::spawn(bridge::poll_status_file(
+            path,
+            status.clone(),
+            crate::store::now_ms(),
+        ));
     }
     let cfg = BridgeConfig {
         bus_url,

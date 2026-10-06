@@ -415,11 +415,16 @@ async fn dispatch(
 /// stat is cheap, works on every filesystem (including network homes), and needs
 /// no new dependency. Only a changed `HookState` is published, so the heartbeat
 /// rewrites (every 30s at most) are the only routine traffic.
-pub async fn poll_status_file(path: PathBuf, status: StatusTx) {
+///
+/// A file whose heartbeat predates `started_ms` (less the slack in
+/// `status::is_current`) was left by an earlier process with the same pid, and is
+/// treated as absent until a hook of this session rewrites it.
+pub async fn poll_status_file(path: PathBuf, status: StatusTx, started_ms: i64) {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tick.tick().await;
-        let latest = crate::agent::status::read(&path);
+        let latest = crate::agent::status::read(&path)
+            .filter(|s| crate::agent::status::is_current(s, started_ms));
         status.send_if_modified(|s| {
             if s.hook != latest && latest.is_some() {
                 s.hook = latest.clone();
