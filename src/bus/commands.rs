@@ -445,6 +445,7 @@ pub(crate) async fn handle(
                     name: a.name,
                     host: a.host,
                     version: a.version,
+                    status: None,
                 })
                 .collect();
             let _ = control_tx.try_send(FromBus::Reply {
@@ -600,6 +601,9 @@ pub(crate) async fn handle(
                 )
                 .await;
         }
+
+        // Task 2 implements the bus-side store; for now, accept and discard.
+        ToBus::Status { .. } => {}
     }
 }
 

@@ -908,7 +908,10 @@ fn req_id_of(cmd: &ToBus) -> Option<u64> {
         | ToBus::Unwatch { req_id, .. }
         | ToBus::WatchPresence { req_id }
         | ToBus::WatchEvents { req_id, .. } => Some(*req_id),
-        ToBus::Register { .. } | ToBus::Observe { .. } | ToBus::Ack { .. } => None,
+        ToBus::Register { .. }
+        | ToBus::Observe { .. }
+        | ToBus::Ack { .. }
+        | ToBus::Status { .. } => None,
     }
 }
 

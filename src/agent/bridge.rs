@@ -355,8 +355,11 @@ async fn dispatch(
         // The agent bridge never sends `WatchPresence`/`WatchEvents` (those
         // are observer-only, issued by `claude-bus tail`/the console), so
         // these never actually arrive here — kept only because `FromBus`
-        // must be matched exhaustively.
-        FromBus::Presence { .. } | FromBus::Event { .. } => {}
+        // must be matched exhaustively. `Status` is sent to the same
+        // observers as `Presence`, so the same reasoning applies; Task 5
+        // gives the bridge its own status reporting, which is unrelated to
+        // receiving this fan-out.
+        FromBus::Presence { .. } | FromBus::Event { .. } | FromBus::Status { .. } => {}
     }
 }
 

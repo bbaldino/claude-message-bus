@@ -13,6 +13,20 @@ pub enum Target {
     Agent { name: String },
 }
 
+/// What an agent is doing, as its Claude Code hooks last reported it.
+///
+/// `Unknown` is a real state, not a missing value: a session without the hooks
+/// installed, or one that has not fired a hook since it started.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "snake_case")]
+pub enum AgentState {
+    Working,
+    Idle,
+    BlockedOnHuman,
+    Unknown,
+}
+
 /// agent → bus
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -118,6 +132,30 @@ pub enum ToBus {
         req_id: u64,
         room: Option<String>,
     },
+    /// The agent's current status. Fire-and-forget like `Ack`: no `req_id`, no reply.
+    ///
+    /// Ages, not timestamps: the agent and the bus are often on different machines,
+    /// and an age measured on one clock survives the trip, where an absolute time
+    /// would carry the sender's clock error with it. The bus turns each age into
+    /// its own time on arrival.
+    Status {
+        state: AgentState,
+        #[serde(default)]
+        state_age_ms: Option<u64>,
+        #[serde(default)]
+        heartbeat_age_ms: Option<u64>,
+        /// Why the state is what it is, e.g. the notification type that made it
+        /// `blocked_on_human` (`permission_prompt`).
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        text_age_ms: Option<u64>,
+        /// Reserved for phase 2 (waiting-on chains). Ignored by the bus today.
+        #[serde(default)]
+        waiting_on: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -154,6 +192,28 @@ pub struct AgentInfo {
     /// The agent's reported crate version, or `None` for a binary predating the field.
     #[serde(default)]
     pub version: Option<String>,
+    /// `None` when the agent has never reported a status, or when a bus that
+    /// predates statuses answered.
+    #[serde(default)]
+    pub status: Option<StatusView>,
+}
+
+/// An agent's status as readers see it. Every time is bus time, epoch milliseconds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+pub struct StatusView {
+    pub state: AgentState,
+    #[ts(type = "number")]
+    pub since: i64,
+    #[ts(type = "number | null")]
+    pub last_heartbeat: Option<i64>,
+    pub reason: Option<String>,
+    pub text: Option<String>,
+    #[ts(type = "number | null")]
+    pub text_at: Option<i64>,
+    /// Working, but no hook has fired for longer than the quiet threshold. A soft
+    /// hint, not a verdict: one long Bash command fires no hooks while it runs.
+    pub quiet: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -295,6 +355,8 @@ pub enum FromBus {
         #[ts(type = "number")]
         last_seen: i64,
     },
+    /// An agent's status changed. Sent to the same observers as `Presence`.
+    Status { name: String, status: StatusView },
     /// A bus event, as appended to the audit log. Only sent to observers that asked.
     Event {
         #[ts(type = "number")]
@@ -401,6 +463,47 @@ mod tests {
     fn unknown_variants_fail_loudly_rather_than_silently() {
         let err = serde_json::from_str::<ToBus>(r#"{"type":"teleport"}"#);
         assert!(err.is_err(), "unknown command must not deserialize");
+    }
+
+    #[test]
+    fn status_round_trips_and_omitted_fields_default() {
+        let cmd = ToBus::Status {
+            state: AgentState::BlockedOnHuman,
+            state_age_ms: Some(4_210),
+            heartbeat_age_ms: Some(10),
+            reason: Some("permission_prompt".into()),
+            text: Some("voice-fit run 3/5".into()),
+            text_age_ms: Some(300_000),
+            waiting_on: None,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("\"type\":\"status\""), "{json}");
+        assert!(json.contains("\"blocked_on_human\""), "{json}");
+        assert_eq!(serde_json::from_str::<ToBus>(&json).unwrap(), cmd);
+
+        // A minimal frame (state only) must parse: every other field defaults.
+        let minimal: ToBus = serde_json::from_str(r#"{"type":"status","state":"idle"}"#).unwrap();
+        assert_eq!(
+            minimal,
+            ToBus::Status {
+                state: AgentState::Idle,
+                state_age_ms: None,
+                heartbeat_age_ms: None,
+                reason: None,
+                text: None,
+                text_age_ms: None,
+                waiting_on: None,
+            }
+        );
+    }
+
+    #[test]
+    fn agent_info_without_status_still_parses() {
+        // A new agent binary talking to an old bus must keep parsing `agents` replies.
+        let v: AgentInfo =
+            serde_json::from_str(r#"{"name":"caas","host":"h","online":true,"version":"0.8.0"}"#)
+                .unwrap();
+        assert_eq!(v.status, None);
     }
 
     #[test]
