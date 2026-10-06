@@ -59,7 +59,10 @@ pub(crate) fn truncate_text(s: &str) -> String {
     one_line(s, TEXT_CAP)
 }
 
-fn one_line(s: &str, cap: usize) -> String {
+/// At most `cap` characters on one line: control characters (line breaks
+/// included) become spaces. Shared with the console inbox's message excerpt
+/// (`web::api::RailMessage`), so both read as one line by the same rule.
+pub(crate) fn one_line(s: &str, cap: usize) -> String {
     s.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .take(cap)

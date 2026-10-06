@@ -266,6 +266,93 @@ async fn the_agents_api_returns_an_empty_array_for_a_bus_with_no_agents() {
 }
 
 #[tokio::test]
+async fn the_rail_carries_each_rooms_last_message_as_a_one_line_excerpt() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_message("protocol", "caas", "first", false, false)
+            .await
+            .unwrap();
+        let long = format!("line one\nline two {}", "x".repeat(400));
+        store
+            .append_message("protocol", "dashboard", &long, false, false)
+            .await
+            .unwrap();
+        store
+            .append_message(
+                "quiet-but-human",
+                "bbaldino",
+                "<script>hi</script>",
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+    let rail = common::get_json(port, "/api/rail").await;
+    let rooms = rail["rooms"].as_array().unwrap();
+    let room = |n: &str| rooms.iter().find(|r| r["name"] == n).unwrap().clone();
+
+    let p = room("protocol");
+    assert_eq!(p["lastMessage"]["from"], "dashboard", "{p}");
+    let excerpt = p["lastMessage"]["excerpt"].as_str().unwrap();
+    assert!(!excerpt.contains('\n'), "one line: {excerpt:?}");
+    assert_eq!(excerpt.chars().count(), 160, "capped at 160: {excerpt:?}");
+    assert!(excerpt.starts_with("line one line two"), "{excerpt:?}");
+    assert_eq!(p["lastMessage"]["human"], false);
+
+    let h = room("quiet-but-human");
+    assert_eq!(
+        h["lastMessage"]["excerpt"], "<script>hi</script>",
+        "verbatim; escaping is the renderer's job"
+    );
+    assert_eq!(h["lastMessage"]["human"], true);
+}
+
+#[tokio::test]
+async fn a_room_with_no_messages_has_a_null_last_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start(dir.path()).await;
+    let mut a = common::connect(port, "caas").await;
+    common::next_event(&mut a).await;
+    common::send(
+        &mut a,
+        &claude_bus::proto::ToBus::Join {
+            req_id: 1,
+            room: "empty".into(),
+        },
+    )
+    .await;
+    assert!(
+        common::wait_until(|| async {
+            common::get_json(port, "/api/rail").await["rooms"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["name"] == "empty")
+        })
+        .await
+    );
+    let rail = common::get_json(port, "/api/rail").await;
+    let empty = rail["rooms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "empty")
+        .unwrap()
+        .clone();
+    // Present and null, not merely absent: indexing a missing key also reads as
+    // null, which would pass before the field existed at all.
+    assert!(
+        empty.as_object().unwrap().contains_key("lastMessage"),
+        "the field must be present: {empty}"
+    );
+    assert!(empty["lastMessage"].is_null(), "{empty}");
+}
+
+#[tokio::test]
 async fn the_rail_summarises_rooms_and_agents() {
     let dir = tempfile::tempdir().unwrap();
     {

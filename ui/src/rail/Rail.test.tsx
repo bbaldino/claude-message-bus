@@ -12,7 +12,15 @@ import type { RailAgent } from '../types/RailAgent'
 
 const rail: RailSummary = {
   rooms: [
-    { name: 'quiet', members: ['a'], lastActivity: 9, buckets: [0], flag: null, hidden: false },
+    {
+      name: 'quiet',
+      members: ['a'],
+      lastActivity: 9,
+      buckets: [0],
+      flag: null,
+      hidden: false,
+      lastMessage: null,
+    },
     {
       name: 'stuck',
       members: ['a'],
@@ -20,6 +28,7 @@ const rail: RailSummary = {
       buckets: [1],
       flag: { kind: 'needsYou', exchanges: 20 },
       hidden: false,
+      lastMessage: null,
     },
     {
       name: 'waiting',
@@ -28,6 +37,7 @@ const rail: RailSummary = {
       buckets: [1],
       flag: { kind: 'blocked', queued: 2, waitingOn: ['caas'] },
       hidden: false,
+      lastMessage: null,
     },
   ],
   agents: [
@@ -275,6 +285,7 @@ test('a room with no last activity renders its name as silent', () => {
     buckets: [0],
     flag: null,
     hidden: false,
+    lastMessage: null,
   })
   expect(screen.getByTestId('room-name').classList.contains(styles.empty)).toBe(true)
 })
@@ -287,6 +298,7 @@ test('a room name with special characters is percent-encoded in its link', () =>
     buckets: [0],
     flag: null,
     hidden: false,
+    lastMessage: null,
   })
   expect(container.querySelector('a')?.getAttribute('href')).toBe('/rooms/dm%3Aa%7Cb')
 })
@@ -317,6 +329,7 @@ test('a room and an agent sharing a name are each selected only on their own rou
     buckets: [0],
     flag: null,
     hidden: false,
+    lastMessage: null,
   }
   const agent: RailAgent = {
     name: 'shared',
@@ -377,8 +390,17 @@ test('a hidden room is out of the list, and the footer says how many', () => {
           buckets: [],
           flag: null,
           hidden: false,
+          lastMessage: null,
         },
-        { name: 'tidied', members: [], lastActivity: null, buckets: [], flag: null, hidden: true },
+        {
+          name: 'tidied',
+          members: [],
+          lastActivity: null,
+          buckets: [],
+          flag: null,
+          hidden: true,
+          lastMessage: null,
+        },
       ],
       agents: [],
       relayers: [],
@@ -393,7 +415,15 @@ test('expanding the footer reveals them', () => {
   renderWithStore(<Rail />, {
     rail: {
       rooms: [
-        { name: 'tidied', members: [], lastActivity: null, buckets: [], flag: null, hidden: true },
+        {
+          name: 'tidied',
+          members: [],
+          lastActivity: null,
+          buckets: [],
+          flag: null,
+          hidden: true,
+          lastMessage: null,
+        },
       ],
       agents: [],
       relayers: [],
@@ -415,6 +445,7 @@ test('with nothing hidden there is no affordance at all', () => {
           buckets: [],
           flag: null,
           hidden: false,
+          lastMessage: null,
         },
       ],
       agents: [],
@@ -472,7 +503,15 @@ test('the volume strip caption survives', () => {
   renderWithStore(<Rail />, {
     rail: {
       rooms: [
-        { name: 'tidied', members: [], lastActivity: null, buckets: [], flag: null, hidden: true },
+        {
+          name: 'tidied',
+          members: [],
+          lastActivity: null,
+          buckets: [],
+          flag: null,
+          hidden: true,
+          lastMessage: null,
+        },
       ],
       agents: [],
       relayers: [],

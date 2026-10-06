@@ -73,6 +73,7 @@ test('the delivery preview counts the room members, not every agent', () => {
           buckets: [],
           flag: null,
           hidden: false,
+          lastMessage: null,
         },
       ],
       agents: [
@@ -139,6 +140,7 @@ test('alone in the room, the preview does not count the operator as a recipient'
           buckets: [],
           flag: null,
           hidden: false,
+          lastMessage: null,
         },
       ],
       agents: [

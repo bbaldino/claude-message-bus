@@ -14,6 +14,7 @@ const rail = {
       buckets: [1],
       flag: null,
       hidden: false,
+      lastMessage: null,
     },
   ],
   agents: [

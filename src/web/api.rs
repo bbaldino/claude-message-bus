@@ -123,6 +123,25 @@ pub struct RailRoom {
     pub buckets: Vec<i64>,
     pub flag: Option<RoomFlagDto>,
     pub hidden: bool,
+    /// The room's most recent message, for the console inbox. `None` for a room
+    /// with no messages.
+    pub last_message: Option<RailMessage>,
+}
+
+/// The excerpt length for the inbox preview. One line, cut on a character
+/// boundary by the same rule as status text (`bus::status::one_line`).
+pub(crate) const EXCERPT_CAP: usize = 160;
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "camelCase")]
+pub struct RailMessage {
+    pub from: String,
+    /// One line, at most `EXCERPT_CAP` characters. Verbatim apart from that:
+    /// escaping is the renderer's job.
+    pub excerpt: String,
+    /// The message carried human authority (a person, or a configured relayer).
+    pub human: bool,
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -210,13 +229,19 @@ pub(crate) async fn rail(State(app): State<App>) -> Result<Json<RailSummary>, St
                     RoomFlagDto::Blocked { queued, waiting_on }
                 }
             });
-        let last_activity = app
+        // One read feeds both the activity time and the inbox preview.
+        let last = app
             .store
             .history(&r.name, 1)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .last()
-            .map(|m| m.created_at);
+            .pop();
+        let last_activity = last.as_ref().map(|m| m.created_at);
+        let last_message = last.map(|m| RailMessage {
+            from: m.from_agent,
+            excerpt: crate::bus::status::one_line(&m.body, EXCERPT_CAP),
+            human: m.human,
+        });
         rooms.push(RailRoom {
             name: r.name,
             members: r.members,
@@ -224,6 +249,7 @@ pub(crate) async fn rail(State(app): State<App>) -> Result<Json<RailSummary>, St
             buckets,
             flag,
             hidden: r.hidden,
+            last_message,
         });
     }
 
