@@ -2,6 +2,7 @@ pub mod agent;
 pub mod bus;
 pub mod chat;
 pub mod config;
+pub mod hook;
 pub mod init;
 pub mod launch;
 pub mod proto;

@@ -146,6 +146,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             init::run(init_args)?;
             Ok(())
         }
+        Some("hook") => {
+            // Not a person-facing command: Claude Code invokes this directly, installed
+            // by `claude-bus init`. Synchronous and infallible by design; see
+            // `claude_bus::hook`.
+            claude_bus::hook::run(&args[2..]);
+            Ok(())
+        }
         _ => usage(),
     }
 }
