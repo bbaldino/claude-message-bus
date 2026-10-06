@@ -8,6 +8,10 @@
 //!
 //! The TypeScript equivalents are generated from these structs by `ts-rs`
 //! during `cargo test`, so the frontend's types cannot drift from the server's.
+//!
+//! One exception to camelCase: the nested `status` (`proto::StatusView`) is
+//! snake_case on purpose, because the same type goes out on the websocket
+//! `status` push, and one shape for both lets the console share its handling.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -600,10 +604,20 @@ pub(crate) async fn agent_delete(
     };
 
     // The store call inside must not touch the registry — the connection lock
-    // is held for its whole duration.
+    // is held for its whole duration. The status goes inside it too (it must not
+    // outlive the agent, or a later holder of the name would inherit it): removed after
+    // the lock is released, a session registering in that gap could set a status
+    // this delete would then wipe. (A disconnected agent's wait is already closed,
+    // so there is no exit to log.)
     let outcome = app
         .registry
-        .if_offline(&name, || async { app.store.forget_agent(&name).await })
+        .if_offline(&name, || async {
+            let res = app.store.forget_agent(&name).await;
+            if matches!(&res, Ok(c) if c.agents > 0) {
+                app.statuses.remove(&name).await;
+            }
+            res
+        })
         .await;
 
     match outcome {
@@ -628,9 +642,6 @@ pub(crate) async fn agent_delete(
         // no agent row.
         Some(Ok(counts)) if counts.agents == 0 => StatusCode::NOT_FOUND,
         Some(Ok(counts)) => {
-            // The status must not outlive the agent, or a later agent registering
-            // under the same name would inherit it.
-            app.statuses.remove(&name).await;
             // Recorded against the deleted agent (`Some(&name)`), so its own
             // activity log still finds this event.
             if let Err(e) = app

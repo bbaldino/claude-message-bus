@@ -13,6 +13,9 @@ use tokio::sync::Mutex;
 use crate::proto::{AgentState, StatusView};
 
 pub(crate) const TEXT_CAP: usize = 200;
+/// A reason is a short machine word (`permission_prompt`), but it comes from the
+/// agent's side and is shown everywhere the state is, so it is capped too.
+pub(crate) const REASON_CAP: usize = 64;
 pub(crate) const QUIET_AFTER_MS: i64 = 10 * 60 * 1000;
 
 pub(crate) struct Update {
@@ -24,9 +27,11 @@ pub(crate) struct Update {
     pub text_age_ms: Option<u64>,
 }
 
+/// What `apply` did to this agent's blocked-on-human wait, for the event log.
 pub(crate) struct Transition {
-    pub before: Option<AgentState>,
-    pub after: AgentState,
+    /// `Some(true)` when a wait opened, `Some(false)` when one closed, `None` when
+    /// neither happened (the event log records only entry and exit).
+    pub wait: Option<bool>,
     pub reason: Option<String>,
 }
 
@@ -38,6 +43,11 @@ struct Entry {
     reason: Option<String>,
     text: Option<String>,
     text_at: Option<i64>,
+    /// Whether an `entered: true` event has been logged with no exit after it.
+    /// Decides the next event instead of the previous state: a disconnect closes the
+    /// wait but keeps the state (so readers see "offline, was blocked"), and a
+    /// session that reconnects still blocked must then open a new one.
+    wait_open: bool,
 }
 
 #[derive(Clone, Default)]
@@ -46,9 +56,13 @@ pub(crate) struct Statuses(Arc<Mutex<HashMap<String, Entry>>>);
 /// One line, at most `TEXT_CAP` characters. Line breaks become spaces, so every
 /// renderer (tool text, CLI table, console row) can treat the text as a single line.
 pub(crate) fn truncate_text(s: &str) -> String {
+    one_line(s, TEXT_CAP)
+}
+
+fn one_line(s: &str, cap: usize) -> String {
     s.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
-        .take(TEXT_CAP)
+        .take(cap)
         .collect()
 }
 
@@ -59,22 +73,39 @@ fn at(now: i64, age_ms: Option<u64>) -> Option<i64> {
 impl Statuses {
     pub(crate) async fn apply(&self, name: &str, u: Update, now: i64) -> Transition {
         let mut map = self.0.lock().await;
-        let before = map.get(name).map(|e| e.state);
+        let was = map.get(name).is_some_and(|e| e.wait_open);
+        let is = u.state == AgentState::BlockedOnHuman;
+        let reason = u
+            .reason
+            .map(|r| one_line(&r, REASON_CAP))
+            .filter(|r| !r.is_empty());
         let text = u.text.map(|t| truncate_text(&t)).filter(|t| !t.is_empty());
         let text_at = text.as_ref().and(at(now, u.text_age_ms).or(Some(now)));
         let entry = Entry {
             state: u.state,
             since: at(now, u.state_age_ms).unwrap_or(now),
             last_heartbeat: at(now, u.heartbeat_age_ms),
-            reason: u.reason.clone(),
+            reason: reason.clone(),
             text,
             text_at,
+            wait_open: is,
         };
         map.insert(name.to_string(), entry);
         Transition {
-            before,
-            after: u.state,
-            reason: u.reason,
+            wait: (was != is).then_some(is),
+            reason,
+        }
+    }
+
+    /// Closes this agent's open wait, if it has one, and says whether it did; the
+    /// caller then logs the exit. The status itself stays.
+    pub(crate) async fn close_wait(&self, name: &str) -> bool {
+        match self.0.lock().await.get_mut(name) {
+            Some(e) if e.wait_open => {
+                e.wait_open = false;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -91,12 +122,14 @@ impl Statuses {
             .collect()
     }
 
-    pub(crate) async fn state_of(&self, name: &str) -> Option<AgentState> {
-        self.0.lock().await.get(name).map(|e| e.state)
-    }
-
-    pub(crate) async fn remove(&self, name: &str) -> Option<AgentState> {
-        self.0.lock().await.remove(name).map(|e| e.state)
+    /// Forgets the agent's status. Returns whether it had a wait open, which the
+    /// caller must then log as closed.
+    pub(crate) async fn remove(&self, name: &str) -> bool {
+        self.0
+            .lock()
+            .await
+            .remove(name)
+            .is_some_and(|e| e.wait_open)
     }
 }
 
@@ -176,26 +209,70 @@ mod tests {
         assert_eq!(s.view("a", 0).await.unwrap().text, None);
     }
 
-    #[tokio::test]
-    async fn apply_reports_the_transition() {
-        let s = Statuses::default();
-        let t = s.apply("a", upd(AgentState::Working), 0).await;
-        assert_eq!((t.before, t.after), (None, AgentState::Working));
+    fn blocked() -> Update {
         let mut b = upd(AgentState::BlockedOnHuman);
         b.reason = Some("permission_prompt".into());
-        let t = s.apply("a", b, 1).await;
-        assert_eq!(
-            (t.before, t.after),
-            (Some(AgentState::Working), AgentState::BlockedOnHuman)
-        );
-        assert_eq!(t.reason.as_deref(), Some("permission_prompt"));
+        b
     }
 
     #[tokio::test]
-    async fn remove_forgets_the_agent() {
+    async fn apply_reports_waits_opening_and_closing() {
+        let s = Statuses::default();
+        let t = s.apply("a", upd(AgentState::Working), 0).await;
+        assert_eq!(t.wait, None);
+        let t = s.apply("a", blocked(), 1).await;
+        assert_eq!(t.wait, Some(true));
+        assert_eq!(t.reason.as_deref(), Some("permission_prompt"));
+        assert_eq!(s.apply("a", blocked(), 2).await.wait, None, "a repeat");
+        assert_eq!(
+            s.apply("a", upd(AgentState::Working), 3).await.wait,
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_closed_wait_reopens_when_still_blocked() {
+        // Disconnect closes the wait but keeps the state; the reconnect frame says
+        // blocked again, and that is a new wait, not a continuation.
+        let s = Statuses::default();
+        s.apply("a", blocked(), 0).await;
+        assert!(s.close_wait("a").await);
+        assert!(!s.close_wait("a").await, "closes only once");
+        assert_eq!(
+            s.view("a", 0).await.unwrap().state,
+            AgentState::BlockedOnHuman
+        );
+        assert_eq!(s.apply("a", blocked(), 1).await.wait, Some(true));
+        assert_eq!(
+            s.apply("a", upd(AgentState::Idle), 2).await.wait,
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn reason_is_capped_and_flattened() {
+        let s = Statuses::default();
+        let mut u = upd(AgentState::BlockedOnHuman);
+        u.reason = Some(format!("a\nb{}", "r".repeat(500)));
+        let t = s.apply("a", u, 0).await;
+        let r = s.view("a", 0).await.unwrap().reason.unwrap();
+        assert_eq!(r.chars().count(), REASON_CAP);
+        assert!(!r.contains('\n'), "{r:?}");
+        assert_eq!(
+            t.reason.as_deref(),
+            Some(r.as_str()),
+            "the logged reason too"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_forgets_the_agent_and_reports_an_open_wait() {
         let s = Statuses::default();
         s.apply("a", upd(AgentState::Idle), 0).await;
-        assert_eq!(s.remove("a").await, Some(AgentState::Idle));
+        assert!(!s.remove("a").await);
         assert!(s.view("a", 0).await.is_none());
+        s.apply("b", blocked(), 0).await;
+        assert!(s.remove("b").await);
+        assert!(!s.remove("b").await, "already gone");
     }
 }

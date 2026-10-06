@@ -133,6 +133,8 @@ pub(crate) async fn register(
     // transition, so a lease renewal (a fresh register for a name already live)
     // does not flap the console dot or spam the audit log.
     if !already {
+        // Only on a genuine registration: a lease renewal is the same holder.
+        crate::bus::clear_status_on_register(&app, &name).await;
         let _ = app
             .store
             .append_event(

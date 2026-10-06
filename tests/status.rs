@@ -215,3 +215,80 @@ async fn an_observer_can_list_agents_with_status() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_blocked_agent_that_reconnects_still_blocked_logs_alternating_events() {
+    let (_dir, port) = common::start_bus().await;
+    let mut a = common::connect(port, "caas").await;
+    common::next_event(&mut a).await;
+    common::send(&mut a, &status(AgentState::BlockedOnHuman)).await;
+    assert!(
+        common::wait_until(|| async { events_of(port, "blocked_on_human").await.len() == 1 }).await
+    );
+    drop(a);
+    assert!(
+        common::wait_until(|| async { events_of(port, "blocked_on_human").await.len() == 2 }).await,
+        "the disconnect never closed the wait"
+    );
+    assert!(common::wait_until(|| async { !common::agent_is_online(port, "caas").await }).await);
+    // The same session, back on the bus and still at its prompt.
+    let mut a = common::connect(port, "caas").await;
+    common::next_event(&mut a).await;
+    common::send(&mut a, &status(AgentState::BlockedOnHuman)).await;
+    common::send(&mut a, &status(AgentState::Working)).await;
+    assert!(
+        common::wait_until(|| async { events_of(port, "blocked_on_human").await.len() == 4 }).await,
+        "expected entered, exited (disconnect), entered, exited: {:?}",
+        events_of(port, "blocked_on_human").await
+    );
+    let mut ev = events_of(port, "blocked_on_human").await;
+    ev.sort_by_key(|e| e["id"].as_i64());
+    let seen: Vec<(bool, String)> = ev
+        .iter()
+        .map(|e| {
+            (
+                e["detail"]["entered"].as_bool().unwrap(),
+                e["detail"]["via"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (true, "hook".to_string()),
+            (false, "disconnect".to_string()),
+            (true, "hook".to_string()),
+            (false, "hook".to_string()),
+        ],
+        "{ev:?}"
+    );
+}
+
+#[tokio::test]
+async fn registering_clears_a_previous_holders_status() {
+    // An old-binary agent sends no status frame after registering, so it must not
+    // inherit whatever the last holder of the name left behind.
+    let (_dir, port) = common::start_bus().await;
+    let mut a = common::connect(port, "caas").await;
+    common::next_event(&mut a).await;
+    let mut s = status(AgentState::Idle);
+    if let ToBus::Status { text, .. } = &mut s {
+        *text = Some("the old session's words".into());
+    }
+    common::send(&mut a, &s).await;
+    assert!(
+        common::wait_until(|| async {
+            common::get_json(port, "/api/agents/caas").await["status"]["state"] == "idle"
+        })
+        .await
+    );
+    drop(a);
+    assert!(common::wait_until(|| async { !common::agent_is_online(port, "caas").await }).await);
+    let mut again = common::connect(port, "caas").await;
+    common::next_event(&mut again).await; // Registered
+    let detail = common::get_json(port, "/api/agents/caas").await;
+    assert!(
+        detail["status"].is_null(),
+        "the new holder inherited a status: {detail}"
+    );
+}

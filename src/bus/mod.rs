@@ -639,6 +639,9 @@ async fn connection(socket: WebSocket, app: App) {
                             }),
                         )
                         .await;
+                    // Before `Registered`, so this can never wipe the status frame
+                    // the new bridge sends once it sees `Registered`.
+                    clear_status_on_register(&app, &effective).await;
                     me = Some(effective.clone());
                     let _ = control_tx.try_send(FromBus::Registered {
                         name: effective.clone(),
@@ -764,16 +767,8 @@ async fn connection(socket: WebSocket, app: App) {
         // event the way a resolved prompt would, so the log never shows a wait that
         // stayed open forever. The status itself stays, so readers see "offline, was
         // blocked".
-        if app.statuses.state_of(&name).await == Some(crate::proto::AgentState::BlockedOnHuman) {
-            let _ = app
-                .store
-                .append_event(
-                    "blocked_on_human",
-                    Some(&name),
-                    None,
-                    json!({ "entered": false, "reason": null, "via": "disconnect" }),
-                )
-                .await;
+        if app.statuses.close_wait(&name).await {
+            log_wait_closed(&app, &name, "disconnect").await;
         }
         if is_human {
             // Ephemeral by design — see `leave_all_rooms`.
@@ -799,6 +794,31 @@ async fn connection(socket: WebSocket, app: App) {
         eprintln!("observer disconnected");
     }
     writer.abort();
+}
+
+/// A name that registers starts with no status. Without this, an agent binary that
+/// predates status (it never sends a frame) or an HTTP participant would inherit
+/// whatever the name's previous holder left; a current bridge re-establishes its own
+/// status right after `Registered`. A wait still open is closed in the log, so it
+/// never reads as open forever.
+pub(crate) async fn clear_status_on_register(app: &App, name: &str) {
+    if app.statuses.remove(name).await {
+        log_wait_closed(app, name, "reregister").await;
+    }
+}
+
+/// The `entered: false` half of a `blocked_on_human` wait that ended for a reason
+/// other than the hook (which logs its own, with a reason).
+pub(crate) async fn log_wait_closed(app: &App, name: &str, via: &str) {
+    let _ = app
+        .store
+        .append_event(
+            "blocked_on_human",
+            Some(name),
+            None,
+            json!({ "entered": false, "reason": null, "via": via }),
+        )
+        .await;
 }
 
 /// On reconnect an agent gets counts, never the backlog: replaying yesterday's

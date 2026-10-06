@@ -432,3 +432,41 @@ async fn a_human_proxy_is_cap_exempt_while_a_relayer_is_not() {
         "a relayer's sends count against the exchange cap"
     );
 }
+
+#[tokio::test]
+async fn an_http_participant_does_not_inherit_a_previous_holders_status() {
+    let (_d, port, _p) =
+        common::start_bus_with_participants_dir(ParticipantConfig::default()).await;
+    let mut ws = common::connect(port, "raven").await;
+    common::next_event(&mut ws).await; // Registered
+    common::send(
+        &mut ws,
+        &claude_bus::proto::ToBus::Status {
+            state: claude_bus::proto::AgentState::Idle,
+            state_age_ms: Some(0),
+            heartbeat_age_ms: Some(0),
+            reason: None,
+            text: Some("the websocket session's words".into()),
+            text_age_ms: Some(0),
+            waiting_on: None,
+        },
+    )
+    .await;
+    assert!(
+        common::wait_until(|| async {
+            common::get_json(port, "/api/agents/raven").await["status"]["state"] == "idle"
+        })
+        .await
+    );
+    drop(ws);
+    assert!(common::wait_until(|| async { !common::agent_is_online(port, "raven").await }).await);
+    let (status, body) =
+        post_json_headers(port, "/api/participants", json!({"name":"raven"}), &[]).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["name"],
+        "raven"
+    );
+    let detail = common::get_json(port, "/api/agents/raven").await;
+    assert!(detail["status"].is_null(), "{detail}");
+}

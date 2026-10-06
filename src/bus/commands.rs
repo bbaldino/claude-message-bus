@@ -607,17 +607,14 @@ pub(crate) async fn handle(
                     now,
                 )
                 .await;
-            let blocked = crate::proto::AgentState::BlockedOnHuman;
-            let was = t.before == Some(blocked);
-            let is = t.after == blocked;
-            if was != is {
+            if let Some(entered) = t.wait {
                 let _ = app
                     .store
                     .append_event(
                         "blocked_on_human",
                         Some(me),
                         None,
-                        json!({ "entered": is, "reason": t.reason, "via": "hook" }),
+                        json!({ "entered": entered, "reason": t.reason, "via": "hook" }),
                     )
                     .await;
             }
