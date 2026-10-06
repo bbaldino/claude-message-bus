@@ -26,9 +26,6 @@ pub struct BridgeConfig {
     pub cwd: String,
     pub session_id: Option<String>,
     pub liveness: Liveness,
-    /// The hook's state file the poller watches, if any. Informational here: the
-    /// poller is spawned alongside the bridge and feeds it through `StatusTx`.
-    pub status_file: Option<PathBuf>,
 }
 
 /// A connection that stayed up at least this long resets the backoff to its
@@ -154,16 +151,16 @@ async fn connect_once(
     sink.send(Message::text(serde_json::to_string(&register)?))
         .await?;
 
-    // Re-establish status right after registering. On a fresh session this sends
-    // nothing (there is no status yet); after a bus restart it restores the last
-    // known state with its original age, so an idle agent comes back "idle since
-    // 11:21" without waiting for its next hook. Bound before sending: the
-    // `watch::Ref` is `!Send` and must not be held across the await.
+    // Re-establish status right after registering, always, even when it is empty.
+    // After a bus restart this restores the last known state with its original age,
+    // so an idle agent comes back "idle since 11:21" without waiting for its next
+    // hook. On the same bus it replaces whatever the bus kept across the disconnect:
+    // text cleared while away, or a dead session's state under this name (a fresh
+    // session reads `unknown`). Bound before sending: the `watch::Ref` is `!Send`
+    // and must not be held across the await.
     let initial = status_rx.borrow().to_wire(crate::store::now_ms());
-    if let Some(cmd) = initial {
-        sink.send(Message::text(serde_json::to_string(&cmd)?))
-            .await?;
-    }
+    sink.send(Message::text(serde_json::to_string(&initial)?))
+        .await?;
 
     // Checked on a ticker rather than by racing a timer against the read, so
     // the granularity is one interval: detection lands within
@@ -199,12 +196,18 @@ async fn connect_once(
             // collapses into one send, and a stale update can never arrive after a
             // fresh one. A queued `mpsc` would allow both.
             changed = status_rx.changed() => {
-                // Cannot actually err: this function borrows the sender (`status`),
-                // so it outlives the receiver. Handled rather than unwrapped anyway.
-                if changed.is_err() { continue }
+                // An error means the sender is gone, and `changed()` would then
+                // return at once on every poll. End the connection rather than
+                // `continue` into a busy loop; the outer loop reconnects with a fresh
+                // subscription. (It cannot happen today: this function borrows the
+                // sender.)
+                if changed.is_err() {
+                    eprintln!("[agent] status channel closed; ending this connection");
+                    return Ok(());
+                }
                 // Always a frame, even an empty one: a cleared text must reach the
                 // bus, which replaces the whole status with each frame.
-                let cmd = status_rx.borrow_and_update().to_wire_always(crate::store::now_ms());
+                let cmd = status_rx.borrow_and_update().to_wire(crate::store::now_ms());
                 sink.send(Message::text(serde_json::to_string(&cmd)?)).await?;
             }
             inbound = stream.next() => {

@@ -113,7 +113,7 @@ where
                 .map(|d| d.join(format!("{key}.json")))
         }),
     };
-    if let Some(path) = status_file.clone() {
+    if let Some(path) = status_file {
         eprintln!("[agent] watching status file {}", path.display());
         tokio::spawn(bridge::poll_status_file(path, status.clone()));
     }
@@ -127,7 +127,6 @@ where
             .unwrap_or_else(|| ".".to_string()),
         session_id,
         liveness: opts.liveness,
-        status_file,
     };
     tokio::spawn(bridge::run(cfg, rx, ack_tx, peer, pending, status));
 

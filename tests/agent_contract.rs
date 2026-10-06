@@ -1389,9 +1389,12 @@ async fn a_renamed_session_reports_status_under_its_effective_name() {
         common::wait_until(|| async { status_of(port, "caas#2").await["text"] == "mine" }).await,
         "the renamed session's status never reached caas#2"
     );
+    // The holder registered with its own (empty) status, so `caas` reads `unknown`
+    // with no text; caas#2's text must not have landed on it.
+    let original = status_of(port, "caas").await;
     assert!(
-        status_of(port, "caas").await.is_null(),
-        "the original caas must be untouched"
+        original["text"].is_null() && original["state"] == "unknown",
+        "the original caas must be untouched: {original}"
     );
 }
 
@@ -1439,4 +1442,146 @@ async fn an_old_bus_refusing_status_does_not_break_the_agent() {
     )
     .await;
     assert!(r.contains("delivered to b"), "{r}");
+}
+
+/// A TCP forwarder in front of the bus that can sever every live connection and
+/// refuse new ones, so a test can force the agent to reconnect while the bus keeps
+/// running (and so keeps its in-memory status).
+struct CuttableProxy {
+    port: u16,
+    open: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    conns: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+impl CuttableProxy {
+    async fn start(bus_port: u16) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let open = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let conns: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+            Default::default();
+        let (o, c) = (open.clone(), conns.clone());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut client, _)) = listener.accept().await else {
+                    return;
+                };
+                if !o.load(Ordering::SeqCst) {
+                    continue; // dropped: the agent's connect fails and it backs off
+                }
+                let task = tokio::spawn(async move {
+                    let Ok(mut upstream) =
+                        tokio::net::TcpStream::connect(("127.0.0.1", bus_port)).await
+                    else {
+                        return;
+                    };
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                });
+                c.lock().unwrap().push(task);
+            }
+        });
+        Self { port, open, conns }
+    }
+
+    /// Kill every forwarded connection and refuse new ones until `reopen`.
+    fn cut(&self) {
+        self.open.store(false, Ordering::SeqCst);
+        for t in self.conns.lock().unwrap().drain(..) {
+            t.abort();
+        }
+    }
+
+    fn reopen(&self) {
+        self.open.store(true, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn text_cleared_while_disconnected_is_cleared_on_the_bus_after_reconnect() {
+    // The bus keeps a status across a disconnect ("offline, was ..."), and each
+    // frame replaces the whole status. So a reconnect must always send one, even
+    // when the status is now empty, or the bus keeps the stale text forever.
+    let (_dir, bus_port) = common::start_bus().await;
+    let proxy = CuttableProxy::start(bus_port).await;
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{}/ws", proxy.port), "caas");
+    handshake(&mut a).await;
+    assert!(common::wait_until(|| common::agent_is_online(bus_port, "caas")).await);
+    call_tool(&mut a, 7, "status", serde_json::json!({"text": "X"})).await;
+    assert!(
+        common::wait_until(|| async { status_of(bus_port, "caas").await["text"] == "X" }).await,
+        "the text never reached the bus"
+    );
+
+    proxy.cut();
+    assert!(
+        common::wait_until(|| async { !common::agent_is_online(bus_port, "caas").await }).await,
+        "the bus never saw the agent go offline"
+    );
+    let reply = call_tool(&mut a, 8, "status", serde_json::json!({"text": ""})).await;
+    assert_eq!(reply, "status text cleared");
+    assert_eq!(
+        status_of(bus_port, "caas").await["text"],
+        "X",
+        "precondition: the bus keeps the stale text while the agent is away"
+    );
+    proxy.reopen();
+
+    assert!(
+        common::wait_until_timeout(std::time::Duration::from_secs(15), || {
+            common::agent_is_online(bus_port, "caas")
+        })
+        .await,
+        "the agent never reconnected"
+    );
+    assert!(
+        common::wait_until(|| async {
+            let s = status_of(bus_port, "caas").await;
+            s["text"].is_null() && s["state"] == "unknown"
+        })
+        .await,
+        "the stale text survived the reconnect: {}",
+        status_of(bus_port, "caas").await
+    );
+}
+
+#[tokio::test]
+async fn a_new_session_does_not_inherit_a_dead_sessions_blocked_state() {
+    // A session that died blocked on its human leaves that status on the bus. A new
+    // session under the same name, with no hooks yet, must not read as "needs you".
+    let (_dir, port) = common::start_bus().await;
+    let mut old = connect(port, "caas").await;
+    next_event(&mut old).await; // Registered
+    send(
+        &mut old,
+        &ToBus::Status {
+            state: claude_bus::proto::AgentState::BlockedOnHuman,
+            state_age_ms: Some(0),
+            heartbeat_age_ms: Some(0),
+            reason: Some("permission_prompt".into()),
+            text: None,
+            text_age_ms: None,
+            waiting_on: None,
+        },
+    )
+    .await;
+    assert!(
+        common::wait_until(|| async {
+            status_of(port, "caas").await["state"] == "blocked_on_human"
+        })
+        .await
+    );
+    drop(old);
+    assert!(
+        common::wait_until(|| async { !common::agent_is_online(port, "caas").await }).await,
+        "the old session never went offline"
+    );
+
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "caas");
+    handshake(&mut a).await;
+    assert!(common::wait_until(|| common::agent_is_online(port, "caas")).await);
+    assert!(
+        common::wait_until(|| async { status_of(port, "caas").await["state"] == "unknown" }).await,
+        "the new session inherited the dead one's status: {}",
+        status_of(port, "caas").await
+    );
 }

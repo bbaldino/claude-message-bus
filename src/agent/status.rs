@@ -128,19 +128,12 @@ fn age(now: i64, then: i64) -> Option<u64> {
 }
 
 impl LocalStatus {
-    /// What to send on registration: nothing when there is no status at all, so a
-    /// fresh session does not announce an empty one.
-    pub fn to_wire(&self, now_ms: i64) -> Option<crate::proto::ToBus> {
-        if self.hook.is_none() && self.text.is_none() {
-            return None;
-        }
-        Some(self.to_wire_always(now_ms))
-    }
-
-    /// What to send on a change: always a frame, because the bus applies each one as
-    /// a full replace. Clearing the text of a session with no hooks leaves nothing,
-    /// and only an explicit "unknown, no text" frame tells the bus the old text is gone.
-    pub fn to_wire_always(&self, now_ms: i64) -> crate::proto::ToBus {
+    /// Always a frame, even for an empty status (`unknown`, no text). The bus
+    /// applies each frame as a full replace and keeps a status across a disconnect,
+    /// so an empty status sent nothing would leave whatever was there before: text
+    /// cleared while disconnected, or a dead session's `blocked_on_human` inherited
+    /// by a new session under the same name.
+    pub fn to_wire(&self, now_ms: i64) -> crate::proto::ToBus {
         let h = self.hook.as_ref();
         crate::proto::ToBus::Status {
             state: h.map_or(AgentState::Unknown, |h| h.state),
@@ -267,14 +260,14 @@ mod tests {
             text: Some(("done".into(), 7_000)),
         };
         match ls.to_wire(10_000) {
-            Some(crate::proto::ToBus::Status {
+            crate::proto::ToBus::Status {
                 state,
                 state_age_ms,
                 heartbeat_age_ms,
                 text,
                 text_age_ms,
                 ..
-            }) => {
+            } => {
                 assert_eq!(state, Idle);
                 assert_eq!(state_age_ms, Some(9_000));
                 assert_eq!(heartbeat_age_ms, Some(1_000));
@@ -286,21 +279,20 @@ mod tests {
     }
 
     #[test]
-    fn text_without_hooks_reports_unknown_and_nothing_reports_nothing() {
-        assert_eq!(LocalStatus::default().to_wire(0), None);
+    fn text_without_hooks_reports_unknown() {
         let ls = LocalStatus {
             hook: None,
             text: Some(("x".into(), 0)),
         };
         assert!(matches!(
             ls.to_wire(0),
-            Some(crate::proto::ToBus::Status { state: Unknown, .. })
+            crate::proto::ToBus::Status { state: Unknown, .. }
         ));
     }
 
     #[test]
-    fn an_emptied_status_still_has_a_frame_for_a_change() {
-        match LocalStatus::default().to_wire_always(0) {
+    fn an_empty_status_is_still_a_frame() {
+        match LocalStatus::default().to_wire(0) {
             crate::proto::ToBus::Status {
                 state: Unknown,
                 text: None,
