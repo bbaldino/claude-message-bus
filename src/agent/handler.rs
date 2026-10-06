@@ -24,10 +24,10 @@ pub type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<FromBus>>>>;
 /// `list_tools` below is the other half of the contract — its tool literals
 /// must match this list exactly, which `tests/agent_contract.rs` asserts.
 /// `claude-bus init` derives its permission allowlist from this same const,
-/// rather than hardcoding the nine names a third time, so adding a tool here
+/// rather than hardcoding the ten names a third time, so adding a tool here
 /// without wiring it into `list_tools` fails the suite instead of silently
 /// stalling an unattended agent-to-agent exchange on a permission prompt.
-pub const BUS_TOOL_NAMES: [&str; 9] = [
+pub const BUS_TOOL_NAMES: [&str; 10] = [
     "send",
     "history",
     "rooms",
@@ -37,6 +37,7 @@ pub const BUS_TOOL_NAMES: [&str; 9] = [
     "get_file",
     "list_files",
     "resume",
+    "status",
 ];
 
 #[derive(Clone)]
@@ -45,6 +46,8 @@ pub struct Handler {
     pub to_bus: mpsc::UnboundedSender<ToBus>,
     pub pending: Pending,
     pub next_req: Arc<std::sync::atomic::AtomicU64>,
+    /// The `status` tool writes its text here; the bridge sends it to the bus.
+    pub status: crate::agent::status::StatusTx,
 }
 
 fn schema(v: Value) -> Arc<JsonObject> {
@@ -222,6 +225,25 @@ impl rmcp::ServerHandler for Handler {
                         "type": "object",
                         "properties": { "room": { "type": "string" } },
                         "required": ["room"]
+                    })),
+                ),
+                Tool::new(
+                    Cow::Borrowed("status"),
+                    Cow::Borrowed(
+                        "Set a short line saying what you are doing or just finished, e.g. \
+                         \"voice-fit run 3/5\" or \"wrote anchor.verified.json\". Anyone on the \
+                         bus can read it without messaging you, and it never counts toward the \
+                         exchange cap. Whether you are working, idle, or waiting on your human \
+                         is reported automatically; this adds the what. Pass an empty string \
+                         to clear it.",
+                    ),
+                    schema(json!({
+                        "type": "object",
+                        "properties": {
+                            "text": { "type": "string", "description": "At most 200 characters; longer is truncated" },
+                            "waiting_on": { "type": "string", "description": "Reserved; not yet used" }
+                        },
+                        "required": ["text"]
                     })),
                 ),
             ],
@@ -536,6 +558,28 @@ impl rmcp::ServerHandler for Handler {
                     }
                     Ok(other) => text_of(format!("unexpected reply: {other:?}")),
                     Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e)])),
+                }
+            }
+
+            // Fire-and-forget: the tool never waits for the bus. When disconnected,
+            // the text goes out with the rest of the status on the next registration.
+            "status" => {
+                let Some(text) = s("text") else {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        "`text` is required (an empty string clears it)",
+                    )]));
+                };
+                let now = crate::store::now_ms();
+                // The bus truncates too; doing it here as well keeps the reply honest
+                // about what was actually set.
+                let text = crate::bus::status::truncate_text(&text);
+                self.status.send_modify(|st| {
+                    st.text = (!text.is_empty()).then(|| (text.clone(), now));
+                });
+                if text.is_empty() {
+                    text_of("status text cleared".to_string())
+                } else {
+                    text_of(format!("status set: {text}"))
                 }
             }
 

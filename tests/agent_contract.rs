@@ -1220,3 +1220,223 @@ fn instructions_teach_what_done_obliges_on_receipt() {
         "must say what done=\"false\" obliges the receiver to do: {instructions}"
     );
 }
+
+async fn status_of(port: u16, name: &str) -> serde_json::Value {
+    let agents = common::get_json(port, "/api/agents").await;
+    agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == name)
+        .map(|a| a["status"].clone())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// `initialize` plus the `initialized` notification, as the other tool-calling
+/// tests here do before their first `tools/call`.
+async fn handshake(a: &mut InProcessAgent) {
+    initialize(a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+}
+
+#[tokio::test]
+async fn the_status_tool_reaches_the_bus() {
+    let (_dir, port) = common::start_bus().await;
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "caas");
+    handshake(&mut a).await;
+    assert!(common::wait_until(|| common::agent_is_online(port, "caas")).await);
+    let reply = call_tool(
+        &mut a,
+        7,
+        "status",
+        serde_json::json!({"text": "voice-fit run 3/5"}),
+    )
+    .await;
+    assert_eq!(reply, "status set: voice-fit run 3/5");
+    assert!(
+        common::wait_until(|| async {
+            status_of(port, "caas").await["text"] == "voice-fit run 3/5"
+        })
+        .await,
+        "the status text never reached the bus"
+    );
+    // No hooks configured, so the state is honestly unknown.
+    assert_eq!(status_of(port, "caas").await["state"], "unknown");
+
+    // An empty string clears the text.
+    let reply = call_tool(&mut a, 8, "status", serde_json::json!({"text": ""})).await;
+    assert_eq!(reply, "status text cleared");
+    assert!(
+        common::wait_until(|| async { status_of(port, "caas").await["text"].is_null() }).await,
+        "clearing the text never reached the bus"
+    );
+}
+
+#[tokio::test]
+async fn the_status_tool_requires_text() {
+    let mut a = InProcessAgent::start("ws://127.0.0.1:1/ws", "caas");
+    handshake(&mut a).await;
+    let reply = call_tool(&mut a, 7, "status", serde_json::json!({})).await;
+    assert!(reply.contains("`text` is required"), "{reply}");
+}
+
+#[tokio::test]
+async fn a_hook_file_change_reaches_the_bus() {
+    let (_dir, port) = common::start_bus().await;
+    let state = tempfile::tempdir().unwrap();
+    let file = state.path().join("s.json");
+    let mut a = InProcessAgent::start_with_status_file(
+        format!("ws://127.0.0.1:{port}/ws"),
+        "caas",
+        file.clone(),
+    );
+    handshake(&mut a).await;
+    assert!(common::wait_until(|| common::agent_is_online(port, "caas")).await);
+    let now = claude_bus::store::now_ms();
+    claude_bus::agent::status::write(
+        &file,
+        &claude_bus::agent::status::HookState {
+            state: claude_bus::proto::AgentState::BlockedOnHuman,
+            changed_at_ms: now,
+            heartbeat_at_ms: now,
+            reason: Some("permission_prompt".into()),
+        },
+    )
+    .unwrap();
+    assert!(
+        common::wait_until(|| async {
+            status_of(port, "caas").await["state"] == "blocked_on_human"
+        })
+        .await,
+        "the hook file's state never reached the bus"
+    );
+    assert_eq!(status_of(port, "caas").await["reason"], "permission_prompt");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_is_reestablished_after_a_bus_restart() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = data.path().to_path_buf();
+    let bus = tokio::task::spawn_blocking({
+        let dir = dir.clone();
+        move || common::IsolatedBus::start(dir, 0)
+    })
+    .await
+    .unwrap();
+    let port = bus.port;
+    common::wait_until_bus_ready(port).await;
+
+    let state = tempfile::tempdir().unwrap();
+    let file = state.path().join("s.json");
+    let hour_ago = claude_bus::store::now_ms() - 3_600_000;
+    claude_bus::agent::status::write(
+        &file,
+        &claude_bus::agent::status::HookState {
+            state: claude_bus::proto::AgentState::Idle,
+            changed_at_ms: hour_ago,
+            heartbeat_at_ms: hour_ago,
+            reason: None,
+        },
+    )
+    .unwrap();
+    let mut a =
+        InProcessAgent::start_with_status_file(format!("ws://127.0.0.1:{port}/ws"), "caas", file);
+    handshake(&mut a).await;
+    assert!(
+        common::wait_until(|| async { status_of(port, "caas").await["state"] == "idle" }).await,
+        "the initial status never reached the first bus"
+    );
+
+    // Restart: a new process with the same data dir and the same port, and no memory.
+    tokio::task::spawn_blocking(move || drop(bus))
+        .await
+        .unwrap();
+    let _bus2 = tokio::task::spawn_blocking(move || common::IsolatedBus::start(dir, port))
+        .await
+        .unwrap();
+    common::wait_until_bus_ready(port).await;
+
+    // No hook fires. The status must come back from the file, with its original age.
+    assert!(
+        common::wait_until_timeout(std::time::Duration::from_secs(15), || async {
+            status_of(port, "caas").await["state"] == "idle"
+        })
+        .await,
+        "the bridge did not re-establish its status after reconnecting"
+    );
+    let since = status_of(port, "caas").await["since"].as_i64().unwrap();
+    assert!(
+        claude_bus::store::now_ms() - since >= 3_500_000,
+        "the age was lost; since = {since}"
+    );
+}
+
+#[tokio::test]
+async fn a_renamed_session_reports_status_under_its_effective_name() {
+    let (_dir, port) = common::start_bus().await;
+    // Holds "caas". An in-process agent rather than `common::connect`, so both share
+    // this machine's hostname: a same-host collision is what suffixes `#2` (a
+    // different host would qualify to `caas@host` instead).
+    let mut first = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "caas");
+    handshake(&mut first).await;
+    assert!(common::wait_until(|| common::agent_is_online(port, "caas")).await);
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "caas");
+    handshake(&mut a).await;
+    assert!(common::wait_until(|| common::agent_is_online(port, "caas#2")).await);
+    call_tool(&mut a, 7, "status", serde_json::json!({"text": "mine"})).await;
+    assert!(
+        common::wait_until(|| async { status_of(port, "caas#2").await["text"] == "mine" }).await,
+        "the renamed session's status never reached caas#2"
+    );
+    assert!(
+        status_of(port, "caas").await.is_null(),
+        "the original caas must be untouched"
+    );
+}
+
+#[tokio::test]
+async fn an_old_bus_refusing_status_does_not_break_the_agent() {
+    // A minimal fake "old bus": answers Registered, refuses `status` as an unparseable
+    // command (exactly what the real old bus does), and answers one `send` normally.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let saw_status = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw = saw_status.clone();
+    tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        while let Some(Ok(msg)) = ws.next().await {
+            let Message::Text(t) = msg else { continue };
+            let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+            let reply = match v["type"].as_str() {
+                Some("register") => serde_json::json!({"type":"registered","name":"caas"}),
+                Some("status") => {
+                    saw.store(true, Ordering::SeqCst);
+                    serde_json::json!({"type":"error","req_id":null,
+                        "message":"unparseable command: unknown variant `status`"})
+                }
+                Some("send") => serde_json::json!({"type":"reply","req_id":v["req_id"],
+                    "result":{"kind":"sent","room":"dm:b|caas","msg_id":1,
+                              "delivered_to":["b"],"queued_for":[]}}),
+                _ => continue,
+            };
+            ws.send(Message::text(reply.to_string())).await.unwrap();
+        }
+    });
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "caas");
+    handshake(&mut a).await;
+    call_tool(&mut a, 7, "status", serde_json::json!({"text": "x"})).await;
+    assert!(
+        common::wait_until(|| async { saw_status.load(Ordering::SeqCst) }).await,
+        "the status frame never reached the fake old bus"
+    );
+    let r = call_tool(
+        &mut a,
+        8,
+        "send",
+        serde_json::json!({"to": "b", "text": "hi"}),
+    )
+    .await;
+    assert!(r.contains("delivered to b"), "{r}");
+}

@@ -112,6 +112,48 @@ pub fn write(path: &Path, s: &HookState) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Everything the bridge knows about its own status. The bridge always sends all of
+/// it, never a diff (see `bus::status::Statuses::apply`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalStatus {
+    pub hook: Option<HookState>,
+    /// The text and when it was set, by this machine's clock.
+    pub text: Option<(String, i64)>,
+}
+
+pub type StatusTx = std::sync::Arc<tokio::sync::watch::Sender<LocalStatus>>;
+
+fn age(now: i64, then: i64) -> Option<u64> {
+    u64::try_from(now - then).ok()
+}
+
+impl LocalStatus {
+    /// What to send on registration: nothing when there is no status at all, so a
+    /// fresh session does not announce an empty one.
+    pub fn to_wire(&self, now_ms: i64) -> Option<crate::proto::ToBus> {
+        if self.hook.is_none() && self.text.is_none() {
+            return None;
+        }
+        Some(self.to_wire_always(now_ms))
+    }
+
+    /// What to send on a change: always a frame, because the bus applies each one as
+    /// a full replace. Clearing the text of a session with no hooks leaves nothing,
+    /// and only an explicit "unknown, no text" frame tells the bus the old text is gone.
+    pub fn to_wire_always(&self, now_ms: i64) -> crate::proto::ToBus {
+        let h = self.hook.as_ref();
+        crate::proto::ToBus::Status {
+            state: h.map_or(AgentState::Unknown, |h| h.state),
+            state_age_ms: h.and_then(|h| age(now_ms, h.changed_at_ms)),
+            heartbeat_age_ms: h.and_then(|h| age(now_ms, h.heartbeat_at_ms)),
+            reason: h.and_then(|h| h.reason.clone()),
+            text: self.text.as_ref().map(|(t, _)| t.clone()),
+            text_age_ms: self.text.as_ref().and_then(|(_, at)| age(now_ms, *at)),
+            waiting_on: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +258,57 @@ mod tests {
             Some(PathBuf::from("/home/b/.local/state/claude-bus/status"))
         );
         assert_eq!(status_dir(None, None), None);
+    }
+
+    #[test]
+    fn to_wire_sends_ages_and_whole_status() {
+        let ls = LocalStatus {
+            hook: Some(st(Idle, 1_000, 9_000)),
+            text: Some(("done".into(), 7_000)),
+        };
+        match ls.to_wire(10_000) {
+            Some(crate::proto::ToBus::Status {
+                state,
+                state_age_ms,
+                heartbeat_age_ms,
+                text,
+                text_age_ms,
+                ..
+            }) => {
+                assert_eq!(state, Idle);
+                assert_eq!(state_age_ms, Some(9_000));
+                assert_eq!(heartbeat_age_ms, Some(1_000));
+                assert_eq!(text.as_deref(), Some("done"));
+                assert_eq!(text_age_ms, Some(3_000));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_without_hooks_reports_unknown_and_nothing_reports_nothing() {
+        assert_eq!(LocalStatus::default().to_wire(0), None);
+        let ls = LocalStatus {
+            hook: None,
+            text: Some(("x".into(), 0)),
+        };
+        assert!(matches!(
+            ls.to_wire(0),
+            Some(crate::proto::ToBus::Status { state: Unknown, .. })
+        ));
+    }
+
+    #[test]
+    fn an_emptied_status_still_has_a_frame_for_a_change() {
+        match LocalStatus::default().to_wire_always(0) {
+            crate::proto::ToBus::Status {
+                state: Unknown,
+                text: None,
+                reason: None,
+                ..
+            } => {}
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

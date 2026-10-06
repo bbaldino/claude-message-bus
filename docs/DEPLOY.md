@@ -61,7 +61,7 @@ claude-bus init --project --bus ws://nas.lan:7777/ws --dry-run   # preview first
 `init` shells out to `claude mcp add` for the MCP server entry — that file
 (`~/.claude.json` or a project's `.mcp.json`) belongs to Claude Code, not to us, so we
 never hand-edit it. It then merges the permission allowlist below into
-`.claude/settings.json` itself, deriving the nine tool names from the same const
+`.claude/settings.json` itself, deriving the ten tool names from the same const
 `list_tools` is checked against, so it can't drift from what the agent actually exposes.
 It never overwrites an existing `msgbus` entry without asking, and it checks what's already
 configured — both halves, both scopes if you haven't picked one yet — before it asks you
@@ -105,7 +105,8 @@ in `.claude/settings.json`:
       "mcp__msgbus__put_file",
       "mcp__msgbus__get_file",
       "mcp__msgbus__list_files",
-      "mcp__msgbus__resume"
+      "mcp__msgbus__resume",
+      "mcp__msgbus__status"
     ]
   }
 }

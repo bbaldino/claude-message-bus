@@ -133,8 +133,8 @@ fn dry_run_reports_pending_changes_even_when_a_settings_file_already_exists() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout: {stdout}");
     assert!(
-        stdout.contains("permissions.allow") && stdout.contains("9 entries"),
-        "should describe the 9-entry permissions merge it would make; stdout was:\n{stdout}"
+        stdout.contains("permissions.allow") && stdout.contains("10 entries"),
+        "should describe the 10-entry permissions merge it would make; stdout was:\n{stdout}"
     );
 
     let after = std::fs::read_to_string(&settings_path).unwrap();
@@ -173,7 +173,8 @@ fn dry_run_partial_configuration_offers_only_the_missing_half() {
                 "mcp__msgbus__put_file",
                 "mcp__msgbus__get_file",
                 "mcp__msgbus__list_files",
-                "mcp__msgbus__resume"
+                "mcp__msgbus__resume",
+                "mcp__msgbus__status"
             ]
         }
     });
@@ -201,7 +202,7 @@ fn dry_run_partial_configuration_offers_only_the_missing_half() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout: {stdout}");
     assert!(
-        stdout.contains("allowlist   project 9/9"),
+        stdout.contains("allowlist   project 10/10"),
         "should show the allowlist as already complete; stdout was:\n{stdout}"
     );
     assert!(
@@ -209,7 +210,7 @@ fn dry_run_partial_configuration_offers_only_the_missing_half() {
         "should still show the MCP entry it would add; stdout was:\n{stdout}"
     );
     assert!(
-        stdout.contains("already has all 9 entries; no changes needed"),
+        stdout.contains("already has all 10 entries; no changes needed"),
         "should say the allowlist needs no changes rather than re-describing a merge; \
          stdout was:\n{stdout}"
     );

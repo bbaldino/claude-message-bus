@@ -5,6 +5,7 @@
 //! unacknowledged: if the session was not launched with the channel registered,
 //! the event is discarded with no error, so every emission is logged to stderr.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -15,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::agent::handler::Pending;
+use crate::agent::status::StatusTx;
 use crate::proto::{FromBus, ToBus};
 
 pub struct BridgeConfig {
@@ -24,6 +26,9 @@ pub struct BridgeConfig {
     pub cwd: String,
     pub session_id: Option<String>,
     pub liveness: Liveness,
+    /// The hook's state file the poller watches, if any. Informational here: the
+    /// poller is spawned alongside the bridge and feeds it through `StatusTx`.
+    pub status_file: Option<PathBuf>,
 }
 
 /// A connection that stayed up at least this long resets the backoff to its
@@ -86,6 +91,7 @@ pub async fn run(
     tx: mpsc::UnboundedSender<ToBus>,
     peer: Peer<RoleServer>,
     pending: Pending,
+    status: StatusTx,
 ) {
     let mut backoff = BACKOFF_FLOOR;
     // Whether the grant notice has ever been injected into this session, across every
@@ -96,7 +102,17 @@ pub async fn run(
     let mut granted_before = false;
     loop {
         let connected_at = std::time::Instant::now();
-        match connect_once(&cfg, &mut rx, &tx, &peer, &pending, &mut granted_before).await {
+        match connect_once(
+            &cfg,
+            &mut rx,
+            &tx,
+            &peer,
+            &pending,
+            &status,
+            &mut granted_before,
+        )
+        .await
+        {
             Ok(()) => eprintln!("[agent] bus connection closed"),
             Err(e) => eprintln!("[agent] bus error: {e}"),
         }
@@ -115,11 +131,17 @@ async fn connect_once(
     tx: &mpsc::UnboundedSender<ToBus>,
     peer: &Peer<RoleServer>,
     pending: &Pending,
+    status: &StatusTx,
     granted_before: &mut bool,
 ) -> anyhow::Result<()> {
     let (ws, _) = tokio_tungstenite::connect_async(&cfg.bus_url).await?;
     let (mut sink, mut stream) = ws.split();
     eprintln!("[agent] connected to {}", cfg.bus_url);
+
+    // Subscribed before registering: subscribing marks the current value as seen, so
+    // the explicit send below is the first status this connection carries, and any
+    // change from here on wakes the `changed()` arm.
+    let mut status_rx = status.subscribe();
 
     let register = ToBus::Register {
         name: cfg.name.clone(),
@@ -131,6 +153,17 @@ async fn connect_once(
     };
     sink.send(Message::text(serde_json::to_string(&register)?))
         .await?;
+
+    // Re-establish status right after registering. On a fresh session this sends
+    // nothing (there is no status yet); after a bus restart it restores the last
+    // known state with its original age, so an idle agent comes back "idle since
+    // 11:21" without waiting for its next hook. Bound before sending: the
+    // `watch::Ref` is `!Send` and must not be held across the await.
+    let initial = status_rx.borrow().to_wire(crate::store::now_ms());
+    if let Some(cmd) = initial {
+        sink.send(Message::text(serde_json::to_string(&cmd)?))
+            .await?;
+    }
 
     // Checked on a ticker rather than by racing a timer against the read, so
     // the granularity is one interval: detection lands within
@@ -160,6 +193,18 @@ async fn connect_once(
         tokio::select! {
             outbound = rx.recv() => {
                 let Some(cmd) = outbound else { return Ok(()) };
+                sink.send(Message::text(serde_json::to_string(&cmd)?)).await?;
+            }
+            // A `watch` channel holds only the newest value, so a burst of changes
+            // collapses into one send, and a stale update can never arrive after a
+            // fresh one. A queued `mpsc` would allow both.
+            changed = status_rx.changed() => {
+                // Cannot actually err: this function borrows the sender (`status`),
+                // so it outlives the receiver. Handled rather than unwrapped anyway.
+                if changed.is_err() { continue }
+                // Always a frame, even an empty one: a cleared text must reach the
+                // bus, which replaces the whole status with each frame.
+                let cmd = status_rx.borrow_and_update().to_wire_always(crate::store::now_ms());
                 sink.send(Message::text(serde_json::to_string(&cmd)?)).await?;
             }
             inbound = stream.next() => {
@@ -360,6 +405,26 @@ async fn dispatch(
         // gives the bridge its own status reporting, which is unrelated to
         // receiving this fan-out.
         FromBus::Presence { .. } | FromBus::Event { .. } | FromBus::Status { .. } => {}
+    }
+}
+
+/// Watches the hook's state file. Polls rather than using inotify: a one-second
+/// stat is cheap, works on every filesystem (including network homes), and needs
+/// no new dependency. Only a changed `HookState` is published, so the heartbeat
+/// rewrites (every 30s at most) are the only routine traffic.
+pub async fn poll_status_file(path: PathBuf, status: StatusTx) {
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tick.tick().await;
+        let latest = crate::agent::status::read(&path);
+        status.send_if_modified(|s| {
+            if s.hook != latest && latest.is_some() {
+                s.hook = latest.clone();
+                true
+            } else {
+                false
+            }
+        });
     }
 }
 

@@ -150,11 +150,17 @@ impl InProcessAgent {
         name: String,
         liveness: claude_bus::agent::bridge::Liveness,
     ) {
-        if let Err(e) = claude_bus::agent::run_on_with_liveness(
+        // The status poller is off: deriving its file from the environment would
+        // pick up `CLAUDE_CODE_SESSION_ID` when the suite runs inside a Claude Code
+        // session, and the test would then read that real session's live status.
+        if let Err(e) = claude_bus::agent::run_on_with_options(
             (agent_stdin, agent_stdout),
             bus_url,
             name,
-            liveness,
+            claude_bus::agent::AgentOptions {
+                liveness,
+                status_file: Some(None),
+            },
         )
         .await
         {
@@ -188,6 +194,83 @@ impl InProcessAgent {
             }
         }
         panic!("never saw a {method} notification");
+    }
+}
+
+impl InProcessAgent {
+    /// `start`, but with the status file pinned to `path` instead of derived from
+    /// `CLAUDE_CODE_SESSION_ID` (which tests do not set).
+    pub fn start_with_status_file(
+        bus_url: impl Into<String>,
+        name: impl Into<String>,
+        path: std::path::PathBuf,
+    ) -> Self {
+        let (to_agent, from_agent, agent_stdin, agent_stdout) = Self::pipes();
+        let (bus_url, name) = (bus_url.into(), name.into());
+        let task = tokio::spawn(async move {
+            if let Err(e) = claude_bus::agent::run_on_with_options(
+                (agent_stdin, agent_stdout),
+                bus_url,
+                name,
+                claude_bus::agent::AgentOptions {
+                    liveness: claude_bus::agent::bridge::Liveness::default(),
+                    status_file: Some(Some(path)),
+                },
+            )
+            .await
+            {
+                eprintln!("[InProcessAgent] run_on exited with an error: {e}");
+            }
+        });
+        Self {
+            to_agent,
+            from_agent,
+            runner: Some(Runner::Shared(task)),
+        }
+    }
+}
+
+/// A bus on its own runtime, so dropping it really kills it, connections included.
+/// Aborting the `serve_on` task alone would leave axum's per-connection tasks (and
+/// so the agent's socket) alive on the shared runtime, and the agent would never
+/// notice the "restart".
+///
+/// `start` calls `block_on`, which panics inside an async context: call it (and drop
+/// the bus) from `tokio::task::spawn_blocking`.
+pub struct IsolatedBus {
+    rt: Option<tokio::runtime::Runtime>,
+    pub port: u16,
+}
+
+impl IsolatedBus {
+    /// `port: 0` picks a free port. Pass a previous bus's port to restart "in place".
+    pub fn start(dir: std::path::PathBuf, port: u16) -> Self {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let listener = rt.block_on(async {
+            // A just-dropped listener can take a moment to free its port.
+            for _ in 0..50 {
+                if let Ok(l) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                    return l;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            panic!("port {port} never became free");
+        });
+        let port = listener.local_addr().unwrap().port();
+        rt.spawn(async move { claude_bus::bus::serve_on(listener, dir).await.unwrap() });
+        Self { rt: Some(rt), port }
+    }
+}
+
+impl Drop for IsolatedBus {
+    fn drop(&mut self) {
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_background();
+        }
     }
 }
 

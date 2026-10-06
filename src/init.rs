@@ -34,7 +34,7 @@
 //! do about it; `run` probes everything (both halves, and — when no scope
 //! flag was given — both scopes) before asking the user anything.
 //!
-//! The nine tool names come from `crate::agent::handler::BUS_TOOL_NAMES` —
+//! The ten tool names come from `crate::agent::handler::BUS_TOOL_NAMES` —
 //! the same const `list_tools` is checked against in `tests/agent_contract.rs`
 //! — so this file can never drift from the tools it is allowlisting.
 
