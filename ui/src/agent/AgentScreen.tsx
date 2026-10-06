@@ -9,6 +9,7 @@ import { AgentHeader } from './AgentHeader'
 import { AgentIdentity } from './AgentIdentity'
 import { AgentRooms } from './AgentRooms'
 import { DeleteModal } from './DeleteModal'
+import { useStore } from '../useStore'
 import styles from './Agent.module.css'
 
 export function AgentScreen({ name: nameProp }: { name?: string }) {
@@ -20,6 +21,10 @@ export function AgentScreen({ name: nameProp }: { name?: string }) {
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const now = useTicker(1000)
+  // The status is the one live part of this screen: the store's rail is kept
+  // current by the `status` push, while the detail below is a one-time snapshot.
+  const { rail } = useStore()
+  const railAgent = rail?.agents.find((a) => a.name === name)
 
   useEffect(() => {
     let live = true
@@ -36,7 +41,8 @@ export function AgentScreen({ name: nameProp }: { name?: string }) {
     // stops being true the moment either of two things happens: a second
     // consumer of agent detail appears, or this screen wants to update live
     // while open (e.g. reflect a room join without a manual refresh) — either
-    // one means this belongs in the store instead.
+    // one means this belongs in the store instead. The status line already
+    // follows that rule: it reads the store's rail, not this snapshot.
     fetchAgent(name)
       .then((a) => live && setAgent(a))
       .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)))
@@ -59,9 +65,11 @@ export function AgentScreen({ name: nameProp }: { name?: string }) {
   if (!agent) return <p className={styles.loading}>loading…</p>
 
   const quiet = agent.buckets.every((b) => b === 0)
+  // Falls back to the snapshot only when the rail has no row for this agent yet.
+  const status = railAgent ? railAgent.status : agent.status
   return (
     <div className={styles.screen}>
-      <AgentHeader agent={agent} now={now} />
+      <AgentHeader agent={agent} status={status} now={now} />
       {/* min-height: 0 on this pane is load-bearing — see Agent.module.css. */}
       <div className={styles.content}>
         <VolumeStrip buckets={agent.buckets} variant="detail" />

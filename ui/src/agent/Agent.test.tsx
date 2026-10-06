@@ -1,6 +1,7 @@
 import { screen } from '@testing-library/react'
 import { expect, test, vi, beforeEach } from 'vitest'
-import { renderWithStore } from '../testing/fakeStore'
+import { renderWithStore, setStoreState } from '../testing/fakeStore'
+import { MemoryRouter } from 'react-router-dom'
 import { AgentScreen } from './AgentScreen'
 
 const detail = {
@@ -177,4 +178,48 @@ test('a detail with a status renders the status line', async () => {
   renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
   const el = await screen.findByTestId('agent-detail-status')
   expect(el.textContent).toContain('wrote anchor.verified.json')
+})
+
+test('the header status follows the store, without refetching the detail', async () => {
+  // The detail is a one-time snapshot; the rail's `status` push is what is live.
+  const fetchSpy = vi.spyOn(globalThis, 'fetch')
+  const railAgent = (state: 'working' | 'idle', text: string | null) => ({
+    name: detail.name,
+    host: detail.host,
+    version: detail.version,
+    online: true,
+    isHuman: false,
+    isRelayer: false,
+    lastSeen: detail.lastSeen,
+    buckets: detail.buckets,
+    status: {
+      state,
+      since: detail.lastSeen,
+      last_heartbeat: null,
+      reason: null,
+      text,
+      text_at: text === null ? null : detail.lastSeen,
+      quiet: false,
+    },
+  })
+  const rail = (a: ReturnType<typeof railAgent>) => ({ rooms: [], agents: [a], relayers: [] })
+  const { rerender } = renderWithStore(<AgentScreen name={detail.name} />, {
+    rail: rail(railAgent('working', null)),
+  })
+  const el = await screen.findByTestId('agent-detail-status')
+  expect(el.textContent).toMatch(/working/)
+  const detailFetches = () =>
+    fetchSpy.mock.calls.filter(([u]) => String(u).includes('/api/agents/')).length
+  const before = detailFetches()
+
+  setStoreState({ rail: rail(railAgent('idle', 'wrote anchor.verified.json')) })
+  rerender(
+    <MemoryRouter>
+      <AgentScreen name={detail.name} />
+    </MemoryRouter>,
+  )
+  expect(screen.getByTestId('agent-detail-status').textContent).toMatch(
+    /idle .*: wrote anchor\.verified\.json/,
+  )
+  expect(detailFetches()).toBe(before)
 })

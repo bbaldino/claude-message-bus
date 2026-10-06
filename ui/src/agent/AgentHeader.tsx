@@ -1,10 +1,20 @@
 import type { AgentDetail } from '../types/AgentDetail'
+import type { StatusView } from '../types/StatusView'
 import { Chip } from '../ui/Chip'
 import { age } from '../ui/time'
 import { statusText } from '../ui/statusText'
 import styles from './Agent.module.css'
 
-export function AgentHeader({ agent, now }: { agent: AgentDetail; now: number }) {
+export function AgentHeader({
+  agent,
+  status,
+  now,
+}: {
+  agent: AgentDetail
+  // Passed separately from `agent`: it comes from the live store, not the snapshot.
+  status: StatusView | null
+  now: number
+}) {
   const neverActive = agent.rooms.length === 0
   return (
     <header className={styles.header}>
@@ -30,9 +40,9 @@ export function AgentHeader({ agent, now }: { agent: AgentDetail; now: number })
         agent · {agent.online ? 'seen' : 'last seen'} {age(agent.lastSeen, now)} ago
         {neverActive && ' · never active in a room'}
       </p>
-      {agent.status && (
+      {status && (
         <p className={styles.subtitle} data-testid="agent-detail-status">
-          {statusText(agent.status, agent.online, now)}
+          {statusText(status, agent.online, now)}
         </p>
       )}
     </header>
