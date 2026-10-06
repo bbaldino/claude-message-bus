@@ -15,10 +15,13 @@ into a live session rather than waiting to be polled.
   blocking tools disallowed); forwards extra args like `--continue` to `claude`.
 - `claude-bus tail <room>` — watch a conversation; the only view showing both halves.
 - `claude-bus chat <room>` / `chat --to <agent>` — join a room or address one agent as yourself.
+- `claude-bus status` — a one-shot table of what every agent is doing right now, blocked
+  agents first.
 
 The bus also serves a web console on its own port for reading conversations and bus behaviour
-after the fact. It is read-only apart from one action — deleting an offline agent's own
-rows, to clear the tombstone a name collision leaves behind. See `docs/DEPLOY.md`.
+after the fact, including each agent's live status. It is read-only apart from one action —
+deleting an offline agent's own rows, to clear the tombstone a name collision leaves behind.
+See `docs/DEPLOY.md`.
 
 ## HTTP participants
 

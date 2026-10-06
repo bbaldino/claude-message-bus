@@ -162,8 +162,8 @@ happened afterwards — transcripts with the bus's own behaviour interleaved aga
 so you can see not just what two agents said but whether each message was delivered or
 merely queued, when a room hit the exchange cap, and why an agent went offline.
 
-It covers rooms and their transcripts, agents and their activity, each room's files
-(uploader, size, hash), and the event log.
+It covers rooms and their transcripts, agents and their activity and status, each room's
+files (uploader, size, hash), and the event log.
 
 Apart from hiding rooms from the sidebar, it is read-only with one exception: deleting an
 *offline* agent (its `agents` row, its room memberships, its cursors — never any message
@@ -289,6 +289,43 @@ releases, every `make deploy` from `main` produces binaries that report the *sam
 as the stale ones already running, because `Cargo.toml` hasn't moved. In that window the
 badge stays silent exactly when it matters: you still need to restart sessions after a
 between-release deploy, and the page cannot tell you which ones changed underneath you.
+
+## What each agent is doing
+
+Each agent has a status: **working**, **idle**, **blocked on human** (sitting at a permission
+or input prompt in its own terminal), or **unknown**, plus an optional line of text the agent
+sets with its `status` tool ("voice-fit run 3/5"). Read it without messaging anyone:
+
+- `claude-bus status`, a one-shot table, blocked agents first
+- the `agents` tool, so any agent (hub, raven) can survey the fleet
+- the console's sidebar and agent pages, live
+
+The state comes from Claude Code hooks, which `claude-bus init` installs into
+`.claude/settings.json`. They call `claude-bus hook …`, which writes a small file under
+`$XDG_STATE_HOME/claude-bus/status/` (default `~/.local/state/…`), and the agent's MCP server
+forwards it to the bus over its existing connection. The hooks never touch the network, never
+print, and always exit 0. A session without them shows text only, with state "unknown".
+
+Status never counts toward the exchange cap. It is held in memory on the bus. After a bus
+restart, each agent resends its last status when it reconnects, so an agent idle since 11:21
+still reads "idle since 11:21".
+
+Signals worth knowing:
+
+- **offline, was working** means the session died mid-work.
+- **working? (quiet)** means no hook has fired for 10 minutes. Often this is a long-running
+  command, but sometimes it is a stall.
+- **blocked on human** is logged as `blocked_on_human` events (entry and exit only), so the
+  event log shows how long each prompt waited.
+
+Sessions started with `claude-bus launch` skip permission prompts entirely, so they never show
+"blocked on human". That state is for interactive sessions. Claude Code also now defaults to
+**auto** permission mode, which settles most permission prompts without asking, so even in an
+interactive session "blocked on human" from a prompt mostly shows up for sessions in manual
+mode, or for the prompts auto mode escalates rather than settling itself.
+
+`contrib/human-active-hook.sh` is unrelated to this and keeps working alongside it — `init`
+leaves it in place if you already have it installed.
 
 ## Optional: reset the exchange cap automatically
 
