@@ -38,6 +38,7 @@ The bus sees messages, not work, so a status inferred from sends would be a gues
 |---|---|---|
 | `UserPromptSubmit` | working | the human typed a prompt |
 | `PreToolUse` | working | also a heartbeat: proof of life during long turns, including turns started by a bus message, which may not fire `UserPromptSubmit` |
+| `PostToolUse`, `PostToolUseFailure` | working | the first signal after a permission prompt is approved (`PreToolUse` fires before the prompt; see the resolved open items) |
 | `Stop` | idle | "finished a turn at 11:21" |
 | `Notification` (permission or input prompt) | blocked-on-human | the session is waiting on the human in its terminal. Notifications that only mean "idle for a while" are ignored. **Verify during planning:** which field in the hook payload tells these apart. |
 
@@ -65,7 +66,7 @@ Claude Code hook ──writes──▶ local state file ◀──polls── bri
 
 ### Installing the hooks
 
-`claude-bus init` already writes `.claude/settings.json`. It gains the four hook entries, merged the same way it merges its other keys today. The human approved hook-based setup.
+`claude-bus init` already writes `.claude/settings.json`. It gains the status hook entries, merged the same way it merges its other keys today. The human approved hook-based setup.
 
 A session without the hooks still works. It shows text and online/offline, with state "unknown".
 
@@ -178,9 +179,14 @@ Cheapest first:
 **Phase 2**
 - `waiting_on` declarations, chain resolution, the bus clearing waits, and deadlock and offline flags.
 
-## Open items to verify during planning
+## Open items: resolved by the 2026-10-06 spike
 
-1. The field in the `Notification` hook payload that tells "needs permission or input" apart from "idle reminder".
-2. Whether `CLAUDE_CODE_SESSION_ID` (seen by the bridge) equals the hook's stdin `session_id`. If it doesn't, fall back to keying the state file by project directory plus the bridge's process id.
-3. Whether a turn started by a channel message (a bus message) fires `UserPromptSubmit`. If it doesn't, `PreToolUse` covers it, but a turn that uses no tools would go from idle to idle. That is acceptable.
-4. Whether `claude-bus hook` should also take over the existing human-active hook: posting over the bridge's websocket instead of plain HTTP, matched by session instead of by a name guessed from the directory. It is tempting, but it's out of scope here.
+The spike ran an interactive Claude Code v2.1.289 session in tmux, with logging hooks, against a scratch bus.
+
+1. **Notification types.** Confirmed. The payload carries `notification_type` (`"permission_prompt"` with message "Claude needs your permission"; `"idle_prompt"` with "Claude is waiting for your input"). A `matcher` of `permission_prompt` ran only for the former. We still pass the type as an argument rather than parsing it.
+2. **Session id.** The hook stdin `session_id` equals the session id the bridge registers with (from `CLAUDE_CODE_SESSION_ID`). Keying the state file by session id stands.
+3. **Bus-message turns.** A turn started by a channel (bus) message **does** fire `UserPromptSubmit`.
+4. **Hook order around a permission prompt.** `UserPromptSubmit` → `PreToolUse` → `PermissionRequest` → (about 6 seconds later) `Notification[permission_prompt]` → *(human approves)* → `PostToolUse` → `Stop`. `PreToolUse` fires **before** the prompt, so it can't be what marks the end of the wait. The first signal after approval is `PostToolUse`. **Change:** `PostToolUse` and `PostToolUseFailure` also map to "working", or an approved long-running command would show "blocked" until it finished.
+5. **Take over the human-active hook?** Still out of scope.
+
+Also observed: this Claude Code version defaults to **auto** permission mode, which settles most permission prompts without asking. Blocked-on-human from permission prompts will therefore mostly come from sessions in manual mode, and from prompts auto mode escalates.

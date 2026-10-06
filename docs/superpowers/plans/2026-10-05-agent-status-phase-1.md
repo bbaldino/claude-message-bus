@@ -101,6 +101,8 @@ Expected:
 
 - [ ] **Step 4: Decide what changes**
 
+**Result (2026-10-06): done.** The ids match; bus-message turns fire `UserPromptSubmit`; `PreToolUse` fires *before* the prompt, so `PostToolUse`/`PostToolUseFailure` were added to Task 6's hook list. See the spec's resolved open items.
+
 - If the session ids **differ** or the bridge's is **absent**, change `status_key` in Task 4 to key on the project directory, then continue. Only that function changes; it is the one place both sides derive the key.
 - If `PreToolUse` fires **after** the `permission_prompt` notification for the same tool, then `PreToolUse` would clear the blocked state too early. In that case use `PostToolUse` as the "working" signal and drop `PreToolUse` from Task 6's hook list.
 
@@ -2076,7 +2078,7 @@ git commit -m "feat: bridge publishes status from hooks and the status tool, and
 - Produces:
 
 ```rust
-pub const HOOKS: [(&str, Option<&str>, &str); 6]; // (event, matcher, command)
+pub const HOOKS: [(&str, Option<&str>, &str); 8]; // (event, matcher, command)
 pub fn merge_hooks(existing: Value) -> (Value, Vec<String>) // merged, and labels of the entries added
 ```
 
@@ -2085,7 +2087,9 @@ The hook entries, in Claude Code's settings format:
 | Event | Matcher | Command |
 |---|---|---|
 | `UserPromptSubmit` | — | `claude-bus hook prompt-submit` |
-| `PreToolUse` | — | `claude-bus hook tool-use` (or `PostToolUse`, if Task 0 said so) |
+| `PreToolUse` | — | `claude-bus hook tool-use` |
+| `PostToolUse` | — | `claude-bus hook tool-use` |
+| `PostToolUseFailure` | — | `claude-bus hook tool-use` |
 | `Stop` | — | `claude-bus hook stop` |
 | `Notification` | `permission_prompt` | `claude-bus hook blocked permission_prompt` |
 | `Notification` | `elicitation_dialog` | `claude-bus hook blocked elicitation_dialog` |
@@ -2167,9 +2171,14 @@ mod hook_merge_tests {
 /// idle reminder (`idle_prompt`) from ever reaching us: only the prompt types that
 /// genuinely wait on the human are listed, and the type travels as an argument so
 /// no undocumented payload field is needed.
-pub const HOOKS: [(&str, Option<&str>, &str); 6] = [
+pub const HOOKS: [(&str, Option<&str>, &str); 8] = [
     ("UserPromptSubmit", None, "claude-bus hook prompt-submit"),
     ("PreToolUse", None, "claude-bus hook tool-use"),
+    // `PreToolUse` fires *before* a permission prompt (spike, 2026-10-06), so the first
+    // signal after the human approves is `PostToolUse`; without it, an approved
+    // long-running command would read "blocked" until it finished.
+    ("PostToolUse", None, "claude-bus hook tool-use"),
+    ("PostToolUseFailure", None, "claude-bus hook tool-use"),
     ("Stop", None, "claude-bus hook stop"),
     ("Notification", Some("permission_prompt"), "claude-bus hook blocked permission_prompt"),
     ("Notification", Some("elicitation_dialog"), "claude-bus hook blocked elicitation_dialog"),
@@ -2232,7 +2241,7 @@ Update the module doc's settings paragraph to mention that the status hooks are 
 - [ ] **Step 3: Run**
 
 Run: `cargo test --lib hook_merge_tests && cargo test --test init_dry_run --test init_conflict --test init_reproduction`
-Expected: PASS. Where an existing `init_*` test asserts the exact `added` count or the printed text, update its expectation to include the six hooks. The `HOOKS` table is the source; don't hand-copy the number into a test.
+Expected: PASS. Where an existing `init_*` test asserts the exact `added` count or the printed text, update its expectation to include the status hooks. The `HOOKS` table is the source; don't hand-copy the number into a test.
 
 Then add one case to `tests/init_dry_run.rs`: a dry run against a project with no settings file prints `hook Notification[permission_prompt]`. Follow that file's existing harness for running a dry run and capturing its output.
 
