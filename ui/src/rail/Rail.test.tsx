@@ -424,6 +424,48 @@ test('with nothing hidden there is no affordance at all', () => {
   expect(screen.queryByText(/hidden/)).toBeNull()
 })
 
+test('a blocked agent sorts first and shows its status line', () => {
+  const blocked = {
+    ...rail.agents[0],
+    name: 'needs-me',
+    online: true,
+    lastSeen: 0,
+    status: {
+      state: 'blocked_on_human' as const,
+      since: Date.now() - 120_000,
+      last_heartbeat: null,
+      reason: 'permission_prompt',
+      text: null,
+      text_at: null,
+      quiet: false,
+    },
+  }
+  renderWithStore(<Rail />, { rail: { ...rail, agents: [...rail.agents, blocked] } })
+  const names = screen.getAllByTestId('agent-name').map((n) => n.textContent)
+  expect(names[0]).toBe('needs-me')
+  expect(screen.getByTestId('agent-status-needs-me').textContent).toMatch(
+    /^blocked on human \(permission_prompt\)/,
+  )
+})
+
+test('status text is rendered as text, never as HTML', () => {
+  const a = {
+    ...rail.agents[1],
+    status: {
+      state: 'idle' as const,
+      since: Date.now(),
+      last_heartbeat: null,
+      reason: null,
+      text: '<img src=x onerror=alert(1)>',
+      text_at: Date.now(),
+      quiet: false,
+    },
+  }
+  const { container } = renderWithStore(<Rail />, { rail: { ...rail, agents: [a] } })
+  expect(container.querySelector('img')).toBeNull()
+  expect(screen.getByTestId(`agent-status-${a.name}`).textContent).toContain('<img')
+})
+
 test('the volume strip caption survives', () => {
   // `last 60 min` captions the strips in every row. The spec originally put the
   // hidden count in its place; it is a footer instead precisely so this stays.

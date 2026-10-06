@@ -144,6 +144,69 @@ test('a presence push flips an agent online', () => {
   expect(store.getState().rail?.agents[0].online).toBe(true)
 })
 
+test('a status push patches the matching rail agent, leaving the other untouched', () => {
+  const store = createStore({
+    setRoomHidden: noSetHidden,
+    live,
+    participant,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+  })
+  const otherStatus = {
+    state: 'idle' as const,
+    since: 1,
+    last_heartbeat: null,
+    reason: null,
+    text: null,
+    text_at: null,
+    quiet: false,
+  }
+  store.setState({
+    rail: {
+      rooms: [],
+      agents: [
+        {
+          name: 'caas',
+          host: 'h',
+          version: null,
+          online: true,
+          isHuman: false,
+          isRelayer: false,
+          lastSeen: 1,
+          buckets: [],
+          status: null,
+        },
+        {
+          name: 'other',
+          host: 'h',
+          version: null,
+          online: true,
+          isHuman: false,
+          isRelayer: false,
+          lastSeen: 1,
+          buckets: [],
+          status: otherStatus,
+        },
+      ],
+      relayers: [],
+    },
+  })
+  const newStatus = {
+    state: 'blocked_on_human' as const,
+    since: 2,
+    last_heartbeat: null,
+    reason: 'permission_prompt',
+    text: null,
+    text_at: null,
+    quiet: false,
+  }
+  live.emit('status', { type: 'status', name: 'caas', status: newStatus })
+  const agents = store.getState().rail?.agents
+  expect(agents?.find((a) => a.name === 'caas')?.status).toEqual(newStatus)
+  expect(agents?.find((a) => a.name === 'other')?.status).toEqual(otherStatus)
+})
+
 test('a dropped socket surfaces as disconnected', () => {
   const store = createStore({
     setRoomHidden: noSetHidden,

@@ -207,6 +207,20 @@ export function createStore(deps: {
     })
   })
 
+  deps.live.on('status', (p) => {
+    const frame = p as FromBus
+    if (frame.type !== 'status') return
+    if (!state.rail) return
+    setState({
+      rail: {
+        ...state.rail,
+        agents: state.rail.agents.map((a) =>
+          a.name === frame.name ? { ...a, status: frame.status } : a,
+        ),
+      },
+    })
+  })
+
   let timer: ReturnType<typeof setInterval> | null = null
   // Bumped by every `start()` and `stop()` so an in-flight `start()` can tell,
   // once its `fetchRail` await resolves, whether it has since been superseded.

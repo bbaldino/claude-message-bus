@@ -149,3 +149,32 @@ test('an agent that is not a relayer carries no relayer badge', async () => {
   await screen.findByTestId('agent-detail-name')
   expect(screen.queryByText('relayer')).toBeNull()
 })
+
+test('a detail with a status renders the status line', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    if (url.includes('/api/meta')) {
+      return new Response(JSON.stringify({ host: 'hardac', version: '0.3.3' }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(
+      JSON.stringify({
+        ...detail,
+        status: {
+          state: 'idle',
+          since: detail.lastSeen,
+          last_heartbeat: null,
+          reason: null,
+          text: 'wrote anchor.verified.json',
+          text_at: null,
+          quiet: false,
+        },
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    )
+  })
+  renderWithStore(<AgentScreen name="release-artifact-verifier#2@buildbox" />)
+  const el = await screen.findByTestId('agent-detail-status')
+  expect(el.textContent).toContain('wrote anchor.verified.json')
+})

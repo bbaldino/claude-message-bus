@@ -22,11 +22,22 @@ function sortRooms(rooms: RailRoom[]): RailRoom[] {
   )
 }
 
-/// Online first, each group by last seen descending, in one continuous list. An
-/// earlier design draft had a separate "offline" subheading and it was dropped as
-/// noise.
+/// Blocked first, then online, each group by last seen descending, in one
+/// continuous list. An earlier design draft had a separate "offline" subheading
+/// and it was dropped as noise.
+///
+/// A blocked agent is addressed to the human, like a "needs you" room — it is
+/// asking for an action, not reporting one, so it floats above everything else
+/// including other online agents. Only an *online* agent's blocked status
+/// counts: an offline agent cannot still be waiting on anyone.
+const blockedFirst = (a: RailAgent) => (a.online && a.status?.state === 'blocked_on_human' ? 0 : 1)
 function sortAgents(agents: RailAgent[]): RailAgent[] {
-  return [...agents].sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen)
+  return [...agents].sort(
+    (a, b) =>
+      blockedFirst(a) - blockedFirst(b) ||
+      Number(b.online) - Number(a.online) ||
+      b.lastSeen - a.lastSeen,
+  )
 }
 
 /// Case-insensitive substring on the name only — rooms and agents are all this

@@ -40,6 +40,7 @@ export function createLive(url: string) {
       if (msg.type === 'presence') emit('presence', msg)
       else if (msg.type === 'event') emit('event', msg)
       else if (msg.type === 'message') emit('message', msg)
+      else if (msg.type === 'status') emit('status', msg)
     }
 
     ws.onclose = () => {

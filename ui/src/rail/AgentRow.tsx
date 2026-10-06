@@ -2,6 +2,7 @@ import { Link, useMatch } from 'react-router-dom'
 import type { RailAgent } from '../types/RailAgent'
 import { Chip } from '../ui/Chip'
 import { age } from '../ui/time'
+import { statusText } from '../ui/statusText'
 import styles from './Rail.module.css'
 import { VolumeStrip } from './VolumeStrip'
 
@@ -32,6 +33,16 @@ export function AgentRow({ agent, now }: { agent: RailAgent; now: number }) {
           {age(agent.lastSeen, now)}
         </span>
       </div>
+      {agent.status && (
+        <div
+          className={`${styles.agentStatus} ${
+            agent.online && agent.status.state === 'blocked_on_human' ? styles.agentBlocked : ''
+          }`}
+          data-testid={`agent-status-${agent.name}`}
+        >
+          {statusText(agent.status, agent.online, now)}
+        </div>
+      )}
     </Link>
   )
 }

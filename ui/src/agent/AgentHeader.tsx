@@ -1,6 +1,7 @@
 import type { AgentDetail } from '../types/AgentDetail'
 import { Chip } from '../ui/Chip'
 import { age } from '../ui/time'
+import { statusText } from '../ui/statusText'
 import styles from './Agent.module.css'
 
 export function AgentHeader({ agent, now }: { agent: AgentDetail; now: number }) {
@@ -29,6 +30,11 @@ export function AgentHeader({ agent, now }: { agent: AgentDetail; now: number })
         agent · {agent.online ? 'seen' : 'last seen'} {age(agent.lastSeen, now)} ago
         {neverActive && ' · never active in a room'}
       </p>
+      {agent.status && (
+        <p className={styles.subtitle} data-testid="agent-detail-status">
+          {statusText(agent.status, agent.online, now)}
+        </p>
+      )}
     </header>
   )
 }
