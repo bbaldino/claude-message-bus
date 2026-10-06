@@ -26,7 +26,9 @@
 //! - The permission allowlist lives in `.claude/settings.json`, which has no
 //!   equivalent CLI. That one actually is ours to merge, carefully: it is
 //!   small, but it can hold unrelated keys (theme, hooks, model, ...) that
-//!   must survive untouched.
+//!   must survive untouched. The status hooks (`HOOKS`, merged by
+//!   `merge_hooks`) are merged into the same file for the same reason: so the
+//!   bus can show whether this session is working, idle, or waiting on you.
 //!
 //! The two halves are independent and each has two possible scopes, so
 //! "configured or not" is a 2x2-ish matrix, not a boolean. `plan_action`
@@ -158,9 +160,82 @@ pub fn merge_allowlist(existing: Option<Value>, tools: &[&str]) -> Value {
     root
 }
 
+/// The status hooks `init` installs. Matchers on `Notification` are what keep the
+/// idle reminder (`idle_prompt`) from ever reaching us: only the prompt types that
+/// genuinely wait on the human are listed, and the type travels as an argument so
+/// no undocumented payload field is needed.
+pub const HOOKS: [(&str, Option<&str>, &str); 8] = [
+    ("UserPromptSubmit", None, "claude-bus hook prompt-submit"),
+    ("PreToolUse", None, "claude-bus hook tool-use"),
+    // `PreToolUse` fires *before* a permission prompt (spike, 2026-10-06), so the first
+    // signal after the human approves is `PostToolUse`; without it, an approved
+    // long-running command would read "blocked" until it finished.
+    ("PostToolUse", None, "claude-bus hook tool-use"),
+    ("PostToolUseFailure", None, "claude-bus hook tool-use"),
+    ("Stop", None, "claude-bus hook stop"),
+    (
+        "Notification",
+        Some("permission_prompt"),
+        "claude-bus hook blocked permission_prompt",
+    ),
+    (
+        "Notification",
+        Some("elicitation_dialog"),
+        "claude-bus hook blocked elicitation_dialog",
+    ),
+    (
+        "Notification",
+        Some("elicitation_url_dialog"),
+        "claude-bus hook blocked elicitation_url_dialog",
+    ),
+];
+
+/// Add any missing status hook, keyed by its exact command string. Every other key,
+/// every other hook (including a user's own command on the same event), and the
+/// order of what was already there all survive untouched.
+pub fn merge_hooks(existing: Value) -> (Value, Vec<String>) {
+    let mut root = match existing {
+        Value::Object(m) => Value::Object(m),
+        _ => json!({}),
+    };
+    let map = root.as_object_mut().expect("object");
+    let hooks = map.entry("hooks").or_insert_with(|| json!({}));
+    if !hooks.is_object() {
+        *hooks = json!({});
+    }
+    let hooks = hooks.as_object_mut().expect("object");
+    let mut added = Vec::new();
+    for (event, matcher, command) in HOOKS {
+        let list = hooks.entry(event).or_insert_with(|| json!([]));
+        if !list.is_array() {
+            *list = json!([]);
+        }
+        let list = list.as_array_mut().expect("array");
+        let present = list.iter().any(|m| {
+            m["hooks"]
+                .as_array()
+                .is_some_and(|hs| hs.iter().any(|h| h["command"] == command))
+        });
+        if present {
+            continue;
+        }
+        let mut entry =
+            json!({ "hooks": [ { "type": "command", "command": command, "timeout": 5 } ] });
+        if let Some(m) = matcher {
+            entry["matcher"] = json!(m);
+        }
+        list.push(entry);
+        added.push(match matcher {
+            Some(m) => format!("hook {event}[{m}]"),
+            None => format!("hook {event}"),
+        });
+    }
+    (root, added)
+}
+
 /// The subset of `merge_allowlist`'s output relevant to what we print:
-/// which of `tools` were newly appended, and how many top-level keys already
-/// existed in the file before this merge touched anything.
+/// which of `tools`/status hooks were newly appended, and how many top-level
+/// keys already existed in the file before this merge touched anything.
 struct MergePlan {
     added: Vec<String>,
     existing_top_level_keys: usize,
@@ -181,7 +256,7 @@ fn plan_merge(existing: Option<Value>, tools: &[String]) -> MergePlan {
             .unwrap_or_default(),
         _ => HashSet::new(),
     };
-    let added = tools
+    let mut added: Vec<String> = tools
         .iter()
         .filter(|t| !already.contains(t.as_str()))
         .cloned()
@@ -189,6 +264,8 @@ fn plan_merge(existing: Option<Value>, tools: &[String]) -> MergePlan {
 
     let tool_refs: Vec<&str> = tools.iter().map(String::as_str).collect();
     let merged = merge_allowlist(existing, &tool_refs);
+    let (merged, hooks_added) = merge_hooks(merged);
+    added.extend(hooks_added);
 
     MergePlan {
         added,
@@ -197,9 +274,10 @@ fn plan_merge(existing: Option<Value>, tools: &[String]) -> MergePlan {
     }
 }
 
-/// How many of the target `permissions.allow` entries are already present,
-/// out of how many total. The only thing `plan_action` needs to know about
-/// the allowlist half.
+/// How many of the target entries — `permissions.allow` tools *and* status
+/// hooks together — are already present, out of how many total. The only
+/// thing `plan_action` needs to know about the settings half: "complete"
+/// means both the tools and the hooks are there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AllowlistStatus {
     present: usize,
@@ -431,9 +509,10 @@ fn build_scope_plan(
     let settings_path = scope.settings_path(project_dir);
     let existing_settings = read_json_file(&settings_path)?;
     let merge = plan_merge(existing_settings, tools);
+    let total = tools.len() + HOOKS.len();
     let allowlist = AllowlistStatus {
-        present: tools.len() - merge.added.len(),
-        total: tools.len(),
+        present: total - merge.added.len(),
+        total,
     };
     let mcp_state = match scope {
         Scope::Project => mcp_state_for_project_scope(project_has_mcp_entry, mcp_probe),
@@ -844,19 +923,10 @@ pub fn run(args: InitArgs) -> anyhow::Result<()> {
     println!();
     if will_merge_settings {
         println!("Will merge into {}:", chosen_plan.settings_path.display());
-        println!(
-            "  + permissions.allow    {} entries ({} … {})",
-            chosen_plan.merge.added.len(),
-            chosen_plan.merge.added.first().unwrap(),
-            chosen_plan.merge.added.last().unwrap()
-        );
-        println!(
-            "  {} existing top-level key(s) preserved.",
-            chosen_plan.merge.existing_top_level_keys
-        );
+        print_merge_body(&chosen_plan);
     } else {
         println!(
-            "permissions.allow already has all {} entries; {} left untouched.",
+            "Already has all {} entries (permissions and status hooks); {} left untouched.",
             chosen_plan.allowlist.total,
             chosen_plan.settings_path.display()
         );
@@ -923,7 +993,7 @@ fn print_dry_run_preview(plan: &ScopePlan, bus: &str, mcp_probe: &McpProbe) {
             );
             println!();
             println!(
-                "permissions.allow already has all {} entries; no changes needed.",
+                "Already has all {} entries (permissions and status hooks); no changes needed.",
                 plan.allowlist.total
             );
         }
@@ -976,18 +1046,45 @@ fn print_dry_run_preview(plan: &ScopePlan, bus: &str, mcp_probe: &McpProbe) {
     );
 }
 
-fn print_merge_preview(plan: &ScopePlan) {
-    println!("Would merge into {}:", plan.settings_path.display());
+/// The body shared by "Will merge into ...:" (a real apply) and "Would merge
+/// into ...:" (`--dry-run`) — only the verb in the header line differs, so
+/// callers print that themselves and share this for the rest. Permission
+/// entries (which can number in the single digits up to `BUS_TOOL_NAMES.len()`)
+/// are summarized as a count plus first/last; status hooks are few and fixed
+/// (`HOOKS.len()`), so each one newly added is named on its own line — which
+/// is also how a reader can confirm, e.g., that `Notification[permission_prompt]`
+/// specifically made it in.
+fn print_merge_body(plan: &ScopePlan) {
     println!(
-        "  + permissions.allow    {} entries ({} … {})",
-        plan.merge.added.len(),
-        plan.merge.added.first().unwrap(),
-        plan.merge.added.last().unwrap()
+        "  + {} entries (permissions and status hooks)",
+        plan.merge.added.len()
     );
+    let tools_added: Vec<&String> = plan
+        .merge
+        .added
+        .iter()
+        .filter(|a| !a.starts_with("hook "))
+        .collect();
+    if !tools_added.is_empty() {
+        println!(
+            "    permissions.allow  {} ({} … {})",
+            tools_added.len(),
+            tools_added.first().unwrap(),
+            tools_added.last().unwrap()
+        );
+    }
+    for hook in plan.merge.added.iter().filter(|a| a.starts_with("hook ")) {
+        println!("    {hook}");
+    }
     println!(
         "  {} existing top-level key(s) preserved.",
         plan.merge.existing_top_level_keys
     );
+}
+
+fn print_merge_preview(plan: &ScopePlan) {
+    println!("Would merge into {}:", plan.settings_path.display());
+    print_merge_body(plan);
 }
 
 #[cfg(test)]
@@ -1373,5 +1470,68 @@ mod tests {
         assert!(complete().is_complete());
         assert!(!partial().is_complete());
         assert!(!missing().is_complete());
+    }
+}
+
+#[cfg(test)]
+mod hook_merge_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn commands(v: &Value, event: &str) -> Vec<String> {
+        v["hooks"][event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|m| m["hooks"].as_array().into_iter().flatten())
+            .filter_map(|h| h["command"].as_str().map(String::from))
+            .collect()
+    }
+
+    #[test]
+    fn adds_all_hooks_to_an_empty_file() {
+        let (v, added) = merge_hooks(json!({}));
+        assert_eq!(added.len(), HOOKS.len());
+        assert_eq!(commands(&v, "Stop"), vec!["claude-bus hook stop"]);
+        assert_eq!(commands(&v, "Notification").len(), 3);
+        let perm = v["hooks"]["Notification"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["matcher"] == "permission_prompt")
+            .unwrap();
+        assert_eq!(perm["hooks"][0]["timeout"], 5);
+    }
+
+    #[test]
+    fn is_idempotent_and_keeps_unrelated_hooks_and_keys() {
+        let mine = json!({
+            "theme": "dark",
+            "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "notify-send done" } ] } ] }
+        });
+        let (once, _) = merge_hooks(mine);
+        let (twice, added) = merge_hooks(once.clone());
+        assert!(added.is_empty(), "second merge added {added:?}");
+        assert_eq!(once, twice);
+        assert_eq!(twice["theme"], "dark");
+        let stop = commands(&twice, "Stop");
+        assert!(stop.contains(&"notify-send done".to_string()));
+        assert!(stop.contains(&"claude-bus hook stop".to_string()));
+    }
+
+    #[test]
+    fn leaves_the_existing_human_active_hook_alone() {
+        let v = json!({ "hooks": { "UserPromptSubmit": [ { "hooks": [
+            { "type": "command", "command": "/path/to/human-active-hook.sh", "timeout": 5 } ] } ] } });
+        let (merged, _) = merge_hooks(v);
+        let ups = commands(&merged, "UserPromptSubmit");
+        assert_eq!(ups.len(), 2, "{ups:?}");
+    }
+
+    #[test]
+    fn a_non_object_hooks_key_is_replaced_not_crashed_on() {
+        let (v, added) = merge_hooks(json!({ "hooks": "garbage" }));
+        assert_eq!(added.len(), HOOKS.len());
+        assert!(v["hooks"].is_object());
     }
 }

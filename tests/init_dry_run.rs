@@ -97,6 +97,46 @@ fn dry_run_writes_nothing_and_prints_the_plan() {
 }
 
 #[test]
+fn dry_run_against_a_fresh_project_previews_a_status_hook_by_name() {
+    // The status hooks merge alongside the allowlist (Task 6); a dry run
+    // against a project with no settings file at all should preview them
+    // too, naming at least one by its exact label — not just a bare count —
+    // so a reader can confirm which hook is about to be installed.
+    let project_dir = tempfile::tempdir().unwrap();
+    let fake_claude = fake_claude_dir();
+    let path = format!(
+        "{}:{}",
+        fake_claude.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-bus"))
+        .args([
+            "init",
+            "--dry-run",
+            "--project",
+            "--bus",
+            "ws://127.0.0.1:7777/ws",
+        ])
+        .current_dir(project_dir.path())
+        .env("PATH", path)
+        .env("HOME", project_dir.path())
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .output()
+        .expect("run claude-bus init --dry-run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout: {stdout}");
+    assert!(
+        stdout.contains("hook Notification[permission_prompt]"),
+        "should preview the status hooks by name; stdout was:\n{stdout}"
+    );
+
+    // Still writes nothing — same guarantee as every other dry-run case.
+    assert!(!project_dir.path().join(".claude").exists());
+}
+
+#[test]
 fn dry_run_reports_pending_changes_even_when_a_settings_file_already_exists() {
     // Same guarantee, but starting from a settings.json that already has
     // unrelated content — dry run must still read (fine) without writing
@@ -132,9 +172,11 @@ fn dry_run_reports_pending_changes_even_when_a_settings_file_already_exists() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout: {stdout}");
+    let total = claude_bus::agent::handler::BUS_TOOL_NAMES.len() + claude_bus::init::HOOKS.len();
     assert!(
-        stdout.contains("permissions.allow") && stdout.contains("10 entries"),
-        "should describe the 10-entry permissions merge it would make; stdout was:\n{stdout}"
+        stdout.contains("permissions.allow") && stdout.contains(&format!("{total} entries")),
+        "should describe the {total}-entry permissions-and-hooks merge it would make; \
+         stdout was:\n{stdout}"
     );
 
     let after = std::fs::read_to_string(&settings_path).unwrap();
@@ -146,11 +188,12 @@ fn dry_run_reports_pending_changes_even_when_a_settings_file_already_exists() {
 
 #[test]
 fn dry_run_partial_configuration_offers_only_the_missing_half() {
-    // Someone followed half of DEPLOY.md by hand: the allowlist is already
-    // fully populated (via .claude/settings.json), but there's no msgbus MCP
-    // entry (the fake `claude` here always reports "not configured"). `init`
-    // should recognize this as "MCP only" — not re-describe the allowlist
-    // merge, since there's nothing left to merge.
+    // Someone followed half of DEPLOY.md by hand: the allowlist and status
+    // hooks are already fully populated (via .claude/settings.json), but
+    // there's no msgbus MCP entry (the fake `claude` here always reports
+    // "not configured"). `init` should recognize this as "MCP only" — not
+    // re-describe the allowlist/hooks merge, since there's nothing left to
+    // merge.
     let project_dir = tempfile::tempdir().unwrap();
     let fake_claude = fake_claude_dir();
     let path = format!(
@@ -178,9 +221,12 @@ fn dry_run_partial_configuration_offers_only_the_missing_half() {
             ]
         }
     });
+    // Build from the same `merge_hooks` the binary itself uses, rather than
+    // hand-copying the HOOKS table into a fixture that could drift from it.
+    let (full_settings, _) = claude_bus::init::merge_hooks(full_allowlist);
     std::fs::write(
         &settings_path,
-        serde_json::to_string_pretty(&full_allowlist).unwrap(),
+        serde_json::to_string_pretty(&full_settings).unwrap(),
     )
     .unwrap();
 
@@ -201,17 +247,20 @@ fn dry_run_partial_configuration_offers_only_the_missing_half() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout: {stdout}");
+    let total = claude_bus::agent::handler::BUS_TOOL_NAMES.len() + claude_bus::init::HOOKS.len();
     assert!(
-        stdout.contains("allowlist   project 10/10"),
-        "should show the allowlist as already complete; stdout was:\n{stdout}"
+        stdout.contains(&format!("allowlist   project {total}/{total}")),
+        "should show the allowlist and hooks as already complete; stdout was:\n{stdout}"
     );
     assert!(
         stdout.contains("claude mcp add --scope project msgbus"),
         "should still show the MCP entry it would add; stdout was:\n{stdout}"
     );
     assert!(
-        stdout.contains("already has all 10 entries; no changes needed"),
-        "should say the allowlist needs no changes rather than re-describing a merge; \
+        stdout.contains(&format!(
+            "Already has all {total} entries (permissions and status hooks); no changes needed"
+        )),
+        "should say the allowlist and hooks need no changes rather than re-describing a merge; \
          stdout was:\n{stdout}"
     );
     assert!(
@@ -222,7 +271,7 @@ fn dry_run_partial_configuration_offers_only_the_missing_half() {
     let after = std::fs::read_to_string(&settings_path).unwrap();
     assert_eq!(
         after,
-        serde_json::to_string_pretty(&full_allowlist).unwrap(),
+        serde_json::to_string_pretty(&full_settings).unwrap(),
         "dry run must not modify settings.json"
     );
 }
