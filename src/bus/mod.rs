@@ -771,7 +771,7 @@ async fn connection(socket: WebSocket, app: App) {
                     "blocked_on_human",
                     Some(&name),
                     None,
-                    json!({ "entered": false, "via": "disconnect" }),
+                    json!({ "entered": false, "reason": null, "via": "disconnect" }),
                 )
                 .await;
         }

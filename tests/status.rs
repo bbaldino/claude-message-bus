@@ -66,6 +66,13 @@ async fn entering_and_leaving_blocked_writes_exactly_two_events() {
         entered.contains(&true) && entered.contains(&false),
         "{ev:?}"
     );
+    for e in &ev {
+        let detail = e["detail"].as_object().unwrap();
+        let mut keys: Vec<&str> = detail.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["entered", "reason", "via"], "{ev:?}");
+        assert_eq!(detail["via"], "hook", "{ev:?}");
+    }
 }
 
 #[tokio::test]
@@ -88,6 +95,16 @@ async fn disconnecting_while_blocked_closes_the_wait_and_keeps_the_status() {
         .await,
         "a disconnect while blocked must close the wait"
     );
+    let ev = events_of(port, "blocked_on_human").await;
+    let exit = ev
+        .iter()
+        .find(|e| e["detail"]["via"] == "disconnect")
+        .unwrap();
+    let detail = exit["detail"].as_object().unwrap();
+    let mut keys: Vec<&str> = detail.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["entered", "reason", "via"], "{exit:?}");
+    assert!(detail["reason"].is_null(), "{exit:?}");
 }
 
 #[tokio::test]
