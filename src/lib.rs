@@ -5,6 +5,8 @@ pub mod config;
 pub mod init;
 pub mod launch;
 pub mod proto;
+pub mod status_cli;
+pub mod status_text;
 pub mod store;
 pub mod tail;
 pub(crate) mod web;

@@ -40,6 +40,7 @@ const rail: RailSummary = {
       isRelayer: false,
       lastSeen: 5,
       buckets: [0],
+      status: null,
     },
     {
       name: 'online-one',
@@ -50,6 +51,7 @@ const rail: RailSummary = {
       isRelayer: false,
       lastSeen: 1,
       buckets: [1],
+      status: null,
     },
   ],
   relayers: [],
@@ -142,6 +144,7 @@ test('an online agent name is styled distinguishably from an offline one', () =>
     isRelayer: false,
     lastSeen: 1,
     buckets: [0],
+    status: null,
   })
   const el = screen.getByTestId('agent-name')
   expect(el.classList.contains(styles.online)).toBe(true)
@@ -158,6 +161,7 @@ test('an offline agent name carries the offline class instead', () => {
     isRelayer: false,
     lastSeen: 1,
     buckets: [0],
+    status: null,
   })
   const el = screen.getByTestId('agent-name')
   expect(el.classList.contains(styles.offline)).toBe(true)
@@ -174,6 +178,7 @@ test('an agent flagged as human renders the human badge', () => {
     isRelayer: false,
     lastSeen: 1,
     buckets: [0],
+    status: null,
   })
   expect(screen.getByText('human')).toBeDefined()
 })
@@ -188,6 +193,7 @@ test('a non-human agent renders no human badge', () => {
     isRelayer: false,
     lastSeen: 1,
     buckets: [0],
+    status: null,
   })
   expect(screen.queryByText('human')).toBeNull()
 })
@@ -202,6 +208,7 @@ test('a configured relayer renders the relayer badge', () => {
     isRelayer: true,
     lastSeen: 1,
     buckets: [0],
+    status: null,
   })
   expect(screen.getByText('relayer')).toBeDefined()
   // A relayer is not a human, and must not be dressed as one.
@@ -218,6 +225,7 @@ test('an agent that is not a relayer renders no relayer badge', () => {
     isRelayer: false,
     lastSeen: 1,
     buckets: [0],
+    status: null,
   })
   expect(screen.queryByText('relayer')).toBeNull()
 })
@@ -293,6 +301,7 @@ test('an agent name containing # is percent-encoded in its link', () => {
     isRelayer: false,
     lastSeen: 1,
     buckets: [0],
+    status: null,
   })
   expect(container.querySelector('a')?.getAttribute('href')).toBe('/agents/network-debug%232')
 })
@@ -318,6 +327,7 @@ test('a room and an agent sharing a name are each selected only on their own rou
     isRelayer: false,
     lastSeen: 1,
     buckets: [0],
+    status: null,
   }
 
   const room1 = renderRoomRow(room, '/rooms/shared')

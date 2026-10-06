@@ -108,7 +108,6 @@ async fn disconnecting_while_blocked_closes_the_wait_and_keeps_the_status() {
 }
 
 #[tokio::test]
-#[ignore = "enabled in Task 3"]
 async fn deleting_an_agent_forgets_its_status() {
     let (_dir, port) = common::start_bus().await;
     let mut a = common::connect(port, "caas").await;
@@ -165,6 +164,54 @@ async fn status_never_counts_toward_the_exchange_cap() {
                 message,
             } => panic!("send refused: {message}"),
             _ => continue,
+        }
+    }
+}
+
+#[tokio::test]
+async fn every_reader_reports_the_status() {
+    let (_dir, port) = common::start_bus().await;
+    let mut a = common::connect(port, "caas").await;
+    common::next_event(&mut a).await;
+    let mut s = status(AgentState::Idle);
+    if let ToBus::Status { text, .. } = &mut s {
+        *text = Some("<script>alert(1)</script>".into());
+    }
+    common::send(&mut a, &s).await;
+    assert!(
+        common::wait_until(|| async {
+            common::get_json(port, "/api/agents").await[0]["status"]["state"] == "idle"
+        })
+        .await
+    );
+    let rail = common::get_json(port, "/api/rail").await;
+    assert_eq!(rail["agents"][0]["status"]["state"], "idle", "{rail}");
+    let detail = common::get_json(port, "/api/agents/caas").await;
+    assert_eq!(
+        detail["status"]["text"], "<script>alert(1)</script>",
+        "stored verbatim; escaping is the renderer's job: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn an_observer_can_list_agents_with_status() {
+    let (_dir, port) = common::start_bus().await;
+    let mut a = common::connect(port, "caas").await;
+    common::next_event(&mut a).await;
+    common::send(&mut a, &status(AgentState::Working)).await;
+    let mut obs = common::connect_observer(port, "status-cli").await;
+    common::send(&mut obs, &ToBus::ListAgents { req_id: 4 }).await;
+    loop {
+        if let FromBus::Reply {
+            req_id: 4,
+            result: claude_bus::proto::ReplyResult::Agents { agents },
+        } = common::next_event(&mut obs).await
+        {
+            let caas = agents.iter().find(|x| x.name == "caas").unwrap();
+            if caas.status.is_some() {
+                break;
+            }
+            common::send(&mut obs, &ToBus::ListAgents { req_id: 4 }).await;
         }
     }
 }

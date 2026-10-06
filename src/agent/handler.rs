@@ -159,7 +159,8 @@ impl rmcp::ServerHandler for Handler {
                          sessions are running a version that differs from this bus's own \
                          (an `unknown` version is a binary that predates version reporting \
                          entirely) — those sessions need restarting to pick up the current \
-                         binary.",
+                         binary. Also shows each agent's status (working, idle, blocked on \
+                         human), with how long it has been in that state and any text it set.",
                     ),
                     schema(json!({ "type": "object", "properties": {} })),
                 ),
@@ -367,13 +368,24 @@ impl rmcp::ServerHandler for Handler {
                             // When a name genuinely is qualified this renders
                             // `foo@bar — bar — …`. The repetition is the honest outcome; a
                             // rule to suppress it would reintroduce the ambiguity.
-                            format!(
+                            let base = format!(
                                 "{} — {} — {} — {}",
                                 a.name,
                                 a.host,
                                 if a.online { "online" } else { "offline" },
                                 a.version.as_deref().unwrap_or("unknown")
-                            )
+                            );
+                            match &a.status {
+                                Some(s) => format!(
+                                    "{base} — {}",
+                                    crate::status_text::render_status(
+                                        s,
+                                        a.online,
+                                        crate::store::now_ms()
+                                    )
+                                ),
+                                None => base,
+                            }
                         })
                         .collect::<Vec<_>>()
                         .join("\n"),

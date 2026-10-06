@@ -877,6 +877,8 @@ async fn handle_observer(
 
         ToBus::ListRooms { req_id } => commands::reply_list_rooms(app, control_tx, req_id).await,
 
+        ToBus::ListAgents { req_id } => commands::reply_list_agents(app, control_tx, req_id).await,
+
         ToBus::WatchPresence { req_id } => {
             app.registry.watch_presence(id).await;
             let _ = control_tx.try_send(FromBus::Reply {
@@ -900,8 +902,8 @@ async fn handle_observer(
         other => {
             let _ = control_tx.try_send(FromBus::Error {
                 req_id: req_id_of(&other),
-                message: "observers may only watch, list_rooms, or history — a viewer is not \
-                          a participant"
+                message: "observers may only watch, list_rooms, list_agents, or history — a \
+                          viewer is not a participant"
                     .into(),
             });
         }

@@ -39,6 +39,8 @@ pub struct Agent {
     /// ~1.8e12, far below Number.MAX_SAFE_INTEGER.
     #[ts(type = "number")]
     pub last_seen: i64,
+    /// See `proto::StatusView`. `None` until the agent first reports one.
+    pub status: Option<crate::proto::StatusView>,
 }
 
 /// Every agent the bus has ever seen, with liveness from the registry rather
@@ -56,9 +58,11 @@ pub(crate) async fn agents(State(app): State<App>) -> Result<Json<Vec<Agent>>, S
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     let mut out = Vec::with_capacity(rows.len());
+    let statuses = app.statuses.all(crate::store::now_ms()).await;
     for r in rows {
         let online = app.registry.is_online(&r.name).await;
         let is_relayer = app.relayers.contains(&r.name);
+        let status = statuses.get(&r.name).cloned();
         out.push(Agent {
             name: r.name,
             host: r.host,
@@ -69,6 +73,7 @@ pub(crate) async fn agents(State(app): State<App>) -> Result<Json<Vec<Agent>>, S
             is_relayer,
             version: r.version,
             last_seen: r.last_seen,
+            status,
         });
     }
     Ok(Json(out))
@@ -131,6 +136,8 @@ pub struct RailAgent {
     pub last_seen: i64,
     #[ts(type = "Array<number>")]
     pub buckets: Vec<i64>,
+    /// See `proto::StatusView`. `None` until the agent first reports one.
+    pub status: Option<crate::proto::StatusView>,
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -222,6 +229,7 @@ pub(crate) async fn rail(State(app): State<App>) -> Result<Json<RailSummary>, St
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut agents = Vec::with_capacity(agent_rows.len());
+    let statuses = app.statuses.all(now).await;
     for a in agent_rows {
         let buckets = app
             .store
@@ -233,6 +241,7 @@ pub(crate) async fn rail(State(app): State<App>) -> Result<Json<RailSummary>, St
             )
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let status = statuses.get(&a.name).cloned();
         agents.push(RailAgent {
             online: online.contains(&a.name),
             is_relayer: app.relayers.contains(&a.name),
@@ -242,6 +251,7 @@ pub(crate) async fn rail(State(app): State<App>) -> Result<Json<RailSummary>, St
             is_human: a.is_human,
             last_seen: a.last_seen,
             buckets,
+            status,
         });
     }
 
@@ -398,6 +408,8 @@ pub struct AgentDetail {
     /// The true count, not `events.len()`.
     #[ts(type = "number")]
     pub event_total: i64,
+    /// See `proto::StatusView`. `None` until the agent first reports one.
+    pub status: Option<crate::proto::StatusView>,
 }
 
 /// The event slice is capped; 50 is chosen, not derived — enough that a normal
@@ -441,6 +453,7 @@ pub(crate) async fn agent_detail(
         .agent_events(&name, AGENT_EVENT_LIMIT)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let status = app.statuses.view(&name, crate::store::now_ms()).await;
 
     Ok(Json(AgentDetail {
         name: row.name,
@@ -474,6 +487,7 @@ pub(crate) async fn agent_detail(
             })
             .collect(),
         event_total,
+        status,
     }))
 }
 

@@ -131,6 +131,7 @@ test('a presence push flips an agent online', () => {
           isRelayer: false,
           lastSeen: 1,
           buckets: [],
+          status: null,
         },
       ],
       relayers: [],

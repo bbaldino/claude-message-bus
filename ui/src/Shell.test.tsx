@@ -34,6 +34,7 @@ test('a populated rail renders the placeholder, not the new-bus state', () => {
           isRelayer: false,
           lastSeen: 5,
           buckets: [1],
+          status: null,
         },
       ],
       relayers: [],

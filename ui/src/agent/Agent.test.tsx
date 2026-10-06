@@ -17,6 +17,7 @@ const detail = {
   rooms: [],
   events: [],
   eventTotal: 0,
+  status: null,
 }
 
 beforeEach(() => {

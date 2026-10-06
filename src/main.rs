@@ -44,6 +44,7 @@ fn usage() -> ! {
          (non-interactive; e.g. add --continue)"
     );
     eprintln!("  claude-bus tail <room> [--bus ws://host:7777/ws]");
+    eprintln!("  claude-bus status [--bus ws://host:7777/ws]   # every agent's status");
     eprintln!("  claude-bus chat (<room> | --to <agent>) [--bus ws://host:7777/ws] [--name <n>]");
     eprintln!(
         "  claude-bus init [--user | --project] [--bus ws://host:7777/ws] [--dry-run] [--yes] \
@@ -97,6 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The room is the first positional argument after "tail".
             let room = args.get(2).filter(|a| !a.starts_with("--")).cloned();
             claude_bus::tail::run(bus, room).await?;
+            Ok(())
+        }
+        Some("status") => {
+            let bus = flag(&args, "--bus").unwrap_or_else(|| "ws://127.0.0.1:7777/ws".to_string());
+            claude_bus::status_cli::run(bus).await?;
             Ok(())
         }
         Some("chat") => {

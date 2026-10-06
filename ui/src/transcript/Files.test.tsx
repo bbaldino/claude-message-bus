@@ -26,6 +26,7 @@ const rail = {
       isRelayer: false,
       lastSeen: 5,
       buckets: [1],
+      status: null,
     },
   ],
   relayers: [],

@@ -85,6 +85,7 @@ test('the delivery preview counts the room members, not every agent', () => {
           isRelayer: false,
           lastSeen: 0,
           buckets: [],
+          status: null,
         },
         {
           name: 'ci-runner',
@@ -95,6 +96,7 @@ test('the delivery preview counts the room members, not every agent', () => {
           isRelayer: false,
           lastSeen: 0,
           buckets: [],
+          status: null,
         },
         {
           name: 'elsewhere',
@@ -105,6 +107,7 @@ test('the delivery preview counts the room members, not every agent', () => {
           isRelayer: false,
           lastSeen: 0,
           buckets: [],
+          status: null,
         },
       ],
       relayers: [],
@@ -148,6 +151,7 @@ test('alone in the room, the preview does not count the operator as a recipient'
           isRelayer: false,
           lastSeen: 0,
           buckets: [],
+          status: null,
         },
       ],
       relayers: [],

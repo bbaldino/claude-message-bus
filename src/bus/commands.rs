@@ -432,27 +432,7 @@ pub(crate) async fn handle(
 
         ToBus::ListRooms { req_id } => reply_list_rooms(app, control_tx, req_id).await,
 
-        ToBus::ListAgents { req_id } => {
-            let online = app.registry.online().await;
-            let agents = app
-                .store
-                .agents()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|a| AgentInfo {
-                    online: online.contains(&a.name),
-                    name: a.name,
-                    host: a.host,
-                    version: a.version,
-                    status: None,
-                })
-                .collect();
-            let _ = control_tx.try_send(FromBus::Reply {
-                req_id,
-                result: ReplyResult::Agents { agents },
-            });
-        }
+        ToBus::ListAgents { req_id } => reply_list_agents(app, control_tx, req_id).await,
 
         ToBus::PutFile {
             req_id,
@@ -708,6 +688,31 @@ pub(crate) async fn reply_history(
         result: ReplyResult::History { messages },
     });
     max_id
+}
+
+/// Shared by a registered agent's `ListAgents` and an observer's — see
+/// `reply_list_rooms`.
+pub(crate) async fn reply_list_agents(app: &App, control_tx: &registry::Sender, req_id: u64) {
+    let online = app.registry.online().await;
+    let statuses = app.statuses.all(crate::store::now_ms()).await;
+    let agents = app
+        .store
+        .agents()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| AgentInfo {
+            online: online.contains(&a.name),
+            status: statuses.get(&a.name).cloned(),
+            name: a.name,
+            host: a.host,
+            version: a.version,
+        })
+        .collect();
+    let _ = control_tx.try_send(FromBus::Reply {
+        req_id,
+        result: ReplyResult::Agents { agents },
+    });
 }
 
 /// Shared by a registered agent's `ListRooms` and an observer's — see

@@ -82,9 +82,6 @@ impl Statuses {
         self.0.lock().await.get(name).map(|e| view_of(e, now))
     }
 
-    // Consumed by Task 3 (the `/api/agents` `status` field). Kept here now so the
-    // interface this module promises is complete, rather than growing piecemeal.
-    #[allow(dead_code)]
     pub(crate) async fn all(&self, now: i64) -> HashMap<String, StatusView> {
         self.0
             .lock()

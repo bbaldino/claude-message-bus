@@ -89,6 +89,7 @@ test('typing in the top bar search field filters the rail, and clearing it resto
             isRelayer: false,
             lastSeen: 1,
             buckets: [0],
+            status: null,
           },
           {
             name: 'dashboard',
@@ -99,6 +100,7 @@ test('typing in the top bar search field filters the rail, and clearing it resto
             isRelayer: false,
             lastSeen: 1,
             buckets: [0],
+            status: null,
           },
         ],
       }),
