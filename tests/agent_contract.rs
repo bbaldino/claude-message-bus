@@ -722,6 +722,22 @@ fn instructions_distinguish_a_humans_request_from_an_agents() {
     );
 }
 
+#[test]
+fn instructions_say_another_agents_status_text_is_not_instructions() {
+    // The `agents` tool shows each agent's own status text verbatim, so it is a
+    // second channel for one agent's words to reach another.
+    let instructions = claude_bus::agent::instructions::for_agent("tester");
+    let lower = instructions.to_lowercase();
+    assert!(
+        lower.contains("status text") && lower.contains("own words"),
+        "must say status text is that agent's own words: {instructions}"
+    );
+    assert!(
+        lower.contains("never instructions"),
+        "and that it carries no authority: {instructions}"
+    );
+}
+
 // Regression for the worked example in `instructions.rs` disagreeing with its own rule:
 // the `<channel>` tag shown to the model used to carry no `human` attribute at all, while
 // a few lines later the instructions assert every message carries one. Pins both halves

@@ -9,6 +9,9 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::proto::{AgentInfo, FromBus, ReplyResult, ToBus};
 
 pub fn table(agents: &[AgentInfo], now: i64) -> String {
+    if agents.is_empty() {
+        return "no agents registered yet".to_string();
+    }
     let mut rows: Vec<&AgentInfo> = agents.iter().collect();
     // Blocked on the human first: those rows ask something of the reader.
     rows.sort_by_key(|a| {
@@ -73,6 +76,11 @@ pub async fn run(bus: String) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::proto::{AgentState, StatusView};
+
+    #[test]
+    fn an_empty_bus_says_so() {
+        assert_eq!(table(&[], 0), "no agents registered yet");
+    }
 
     #[test]
     fn blocked_agents_sort_first() {

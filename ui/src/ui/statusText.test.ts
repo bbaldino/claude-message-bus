@@ -27,3 +27,17 @@ test('matches the Rust renderer for the common cases', () => {
     statusText(sv({ state: 'blocked_on_human', reason: 'permission_prompt' }), true, 120_000),
   ).toBe('blocked on human (permission_prompt) 2m')
 })
+
+test('offline and quiet count from the last signal, like the Rust renderer', () => {
+  expect(
+    statusText(sv({ state: 'working', last_heartbeat: 30 * 60_000 }), false, 40 * 60_000),
+  ).toBe('offline, was working 10m ago')
+  expect(
+    statusText(
+      sv({ state: 'working', quiet: true, last_heartbeat: 10 * 60_000 }),
+      true,
+      25 * 60_000,
+    ),
+  ).toBe('working? (quiet) 15m')
+  expect(statusText(sv({ last_heartbeat: 4 * 60_000 }), true, 5 * 60_000)).toBe('idle 5m')
+})

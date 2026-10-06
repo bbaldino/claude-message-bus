@@ -25,10 +25,13 @@ fn state_word(s: AgentState) -> &'static str {
 
 pub fn render_status(s: &StatusView, online: bool, now: i64) -> String {
     let since = age(now - s.since);
+    // "Offline" and "quiet" are about how long since the agent was last heard from,
+    // which is the later of the state change and the last heartbeat.
+    let heard = age(now - s.last_heartbeat.unwrap_or(s.since).max(s.since));
     let mut out = if !online {
-        format!("offline, was {} {since} ago", state_word(s.state))
+        format!("offline, was {} {heard} ago", state_word(s.state))
     } else if s.quiet {
-        format!("working? (quiet) {since}")
+        format!("working? (quiet) {heard}")
     } else if let Some(r) = s
         .reason
         .as_deref()
@@ -96,6 +99,24 @@ mod tests {
     fn quiet_working_says_so() {
         let s = sv(AgentState::Working, 0, None, true);
         assert_eq!(render_status(&s, true, 25 * 60_000), "working? (quiet) 25m");
+    }
+
+    #[test]
+    fn offline_and_quiet_count_from_the_last_signal() {
+        // Working since 0, last heartbeat at 30m. "Offline" and "quiet" say how long
+        // since the agent was last heard from; "idle" stays time-in-state.
+        let mut s = sv(AgentState::Working, 0, None, false);
+        s.last_heartbeat = Some(30 * 60_000);
+        assert_eq!(
+            render_status(&s, false, 40 * 60_000),
+            "offline, was working 10m ago"
+        );
+        let mut q = sv(AgentState::Working, 0, None, true);
+        q.last_heartbeat = Some(10 * 60_000);
+        assert_eq!(render_status(&q, true, 25 * 60_000), "working? (quiet) 15m");
+        let mut i = sv(AgentState::Idle, 0, None, false);
+        i.last_heartbeat = Some(4 * 60_000);
+        assert_eq!(render_status(&i, true, 5 * 60_000), "idle 5m");
     }
 
     #[test]

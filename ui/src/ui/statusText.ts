@@ -22,10 +22,13 @@ const WORD: Record<StatusView['state'], string> = {
 
 export function statusText(s: StatusView, online: boolean, now: number): string {
   const since = age(now - s.since)
+  // "Offline" and "quiet" are about how long since the agent was last heard from,
+  // which is the later of the state change and the last heartbeat.
+  const heard = age(now - Math.max(s.last_heartbeat ?? s.since, s.since))
   let out = !online
-    ? `offline, was ${WORD[s.state]} ${since} ago`
+    ? `offline, was ${WORD[s.state]} ${heard} ago`
     : s.quiet
-      ? `working? (quiet) ${since}`
+      ? `working? (quiet) ${heard}`
       : s.state === 'blocked_on_human' && s.reason
         ? `${WORD[s.state]} (${s.reason}) ${since}`
         : `${WORD[s.state]} ${since}`
