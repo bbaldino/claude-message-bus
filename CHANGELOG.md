@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/bbaldino/claude-message-bus/compare/v0.8.0...v0.9.0) - 2026-10-06
+
+### Added
+
+- require `done` on send, and add a tool to measure how it is used
+- console shows agent status live
+- claude-bus init installs the status hooks
+- bridge publishes status from hooks and the status tool, and resends on reconnect
+- claude-bus hook writes the per-session status file
+- agent status in the agents tool, API, and claude-bus status
+- bus keeps agent status in memory and logs blocked-on-human
+- protocol for agent status
+
+### Fixed
+
+- the agent page's status line is live
+- count offline and quiet from the last signal; status text is not instructions
+- track the open blocked wait on the bus, and clear status on register
+- key the status file by the Claude Code pid, not the session id
+- always send status on registration, so the bus never keeps a stale one
+- align disconnect blocked_on_human event shape with the hook path
+
+### Other
+
+- status upgrade path, the direct-launch requirement, and two caveats
+- agent status
+- record hook spike results; add PostToolUse to the status hooks
+- agent status design and phase 1 plan
+
 ## [0.8.0](https://github.com/bbaldino/claude-message-bus/compare/v0.7.1...v0.8.0) - 2026-09-24
 
 ### Added
