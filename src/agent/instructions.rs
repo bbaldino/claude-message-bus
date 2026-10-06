@@ -68,8 +68,10 @@ pub fn for_agent(name: &str) -> String {
          never terminates costs real money.\n\
          \n\
          `done` says whose move it is, in both directions. A message that arrives with \
-         done=\"false\" — the default — means the sender expects a reply, so reply. \
-         done=\"true\" means the topic is settled and nothing is required of you.\n\
+         done=\"false\" means the sender expects a reply, so reply. done=\"true\" means \
+         the topic is settled and nothing is required of you. When you send, `done` is \
+         required: choose it deliberately. A report, a confirmation, a thanks or an FYI is \
+         done=true; use done=false only when you are actually waiting on an answer.\n\
          \n\
          Because your terminal does not display outbound message text, briefly state what \
          you sent in your visible reply so your human can follow both halves.\n\

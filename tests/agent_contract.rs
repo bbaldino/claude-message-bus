@@ -285,7 +285,7 @@ async fn send_reports_queued_when_the_recipient_is_offline() {
         &mut a,
         10,
         "send",
-        serde_json::json!({ "to": "nobody", "text": "hello?" }),
+        serde_json::json!({ "to": "nobody", "text": "hello?", "done": false }),
     )
     .await;
     assert!(
@@ -460,7 +460,7 @@ async fn send_to_a_room_reports_both_delivered_and_queued_members() {
         &mut a,
         20,
         "send",
-        serde_json::json!({ "room": "standup", "text": "daily update" }),
+        serde_json::json!({ "room": "standup", "text": "daily update", "done": false }),
     )
     .await;
     assert!(
@@ -672,7 +672,7 @@ async fn send_reports_the_pause_not_a_bus_outage() {
         &mut a,
         30,
         "send",
-        serde_json::json!({ "room": "loop", "text": "one" }),
+        serde_json::json!({ "room": "loop", "text": "one", "done": false }),
     )
     .await;
 
@@ -681,7 +681,7 @@ async fn send_reports_the_pause_not_a_bus_outage() {
         &mut a,
         31,
         "send",
-        serde_json::json!({ "room": "loop", "text": "two" }),
+        serde_json::json!({ "room": "loop", "text": "two", "done": false }),
     )
     .await;
     let elapsed = started.elapsed();
@@ -1216,6 +1216,36 @@ async fn the_send_schema_defines_both_directions_of_done() {
         done.contains("other side"),
         "must explain whose move it is, not just the settled case: {done}"
     );
+    // Required, with no default. Measured on the live bus (2026-10-06): agents marked
+    // only 15% of their messages done=true, and about a third of the done=false ones
+    // were closers or reports that never wanted a reply — a forgotten flag silently
+    // meant "I expect a reply". Requiring it makes every send a deliberate choice.
+    let required = send_tool["inputSchema"]["required"]
+        .as_array()
+        .expect("required list");
+    assert!(
+        required.iter().any(|r| r == "done"),
+        "done must be required, not defaulted: {required:?}"
+    );
+}
+
+#[tokio::test]
+async fn send_without_done_is_refused_and_says_how_to_choose() {
+    let mut a = InProcessAgent::start("ws://127.0.0.1:1/ws", "tester");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    let text = call_tool(
+        &mut a,
+        14,
+        "send",
+        serde_json::json!({ "to": "someone", "text": "no flag" }),
+    )
+    .await;
+    assert!(
+        text.contains("done") && text.contains("true") && text.contains("false"),
+        "must say done is required and what each value means: {text}"
+    );
 }
 
 #[test]
@@ -1500,7 +1530,7 @@ async fn an_old_bus_refusing_status_does_not_break_the_agent() {
         &mut a,
         8,
         "send",
-        serde_json::json!({"to": "b", "text": "hi"}),
+        serde_json::json!({"to": "b", "text": "hi", "done": false}),
     )
     .await;
     assert!(r.contains("delivered to b"), "{r}");

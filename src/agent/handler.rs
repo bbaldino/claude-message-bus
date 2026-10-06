@@ -132,9 +132,9 @@ impl rmcp::ServerHandler for Handler {
                             "to": { "type": "string", "description": "Recipient agent name (direct message)" },
                             "room": { "type": "string", "description": "Room name (broadcast to members)" },
                             "text": { "type": "string", "description": "The message body" },
-                            "done": { "type": "boolean", "description": "true when the topic is settled and no reply is expected. Omit it or pass false when you expect a reply — the next move is then the other side's." }
+                            "done": { "type": "boolean", "description": "Required. true when the topic is settled and no reply is expected — a report, a confirmation, a thanks, an FYI. false only when you expect a reply — the next move is then the other side's." }
                         },
-                        "required": ["text"]
+                        "required": ["text", "done"]
                     })),
                 ),
                 Tool::new(
@@ -276,7 +276,17 @@ impl rmcp::ServerHandler for Handler {
                         )]));
                     }
                 };
-                let done = args.get("done").and_then(Value::as_bool).unwrap_or(false);
+                // Required, with no default: a forgotten flag used to mean "I expect a
+                // reply", and on the live bus a third of those messages were closers
+                // that never wanted one. Checked after the target, so a send that is
+                // wrong in both ways still gets the target error first.
+                let Some(done) = args.get("done").and_then(Value::as_bool) else {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        "`done` is required: pass done=true when the topic is settled and no \
+                         reply is expected (a report, a confirmation, a thanks), or done=false \
+                         when you expect a reply",
+                    )]));
+                };
                 let reply = self
                     .request(|req_id| ToBus::Send {
                         req_id,
