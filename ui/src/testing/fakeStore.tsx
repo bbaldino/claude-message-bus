@@ -58,7 +58,13 @@ vi.mock('../useStore', () => ({
   store: storeActions,
 }))
 
-export function renderWithStore(ui: ReactElement, patch: Partial<State> = {}) {
+/// `route` is the URL the component starts at — for anything that reads the
+/// location, like the inbox's `?agent=` filter.
+export function renderWithStore(
+  ui: ReactElement,
+  patch: Partial<State> = {},
+  { route = '/' }: { route?: string } = {},
+) {
   setStoreState(patch)
-  return render(<MemoryRouter>{ui}</MemoryRouter>)
+  return render(<MemoryRouter initialEntries={[route]}>{ui}</MemoryRouter>)
 }

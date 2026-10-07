@@ -1,27 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Outlet, useMatch } from 'react-router-dom'
 import { EventsDock } from './dock/EventsDock'
-import { NewBus } from './empty/NewBus'
 import { Rail } from './rail/Rail'
 import { TopBar } from './TopBar'
-import { store, useStore } from './useStore'
+import { store } from './useStore'
 import styles from './Shell.module.css'
-
-/// The main pane for the index route — the only route with no screen of its
-/// own. The room and agent routes no longer land here; both have their own
-/// screens now, so `useParams().name` would never be set here.
-export function MainPlaceholder() {
-  const { rail } = useStore()
-  // Before the rail loads we know nothing; showing the new-bus state then
-  // would tell a populated bus's owner that nothing has joined it.
-  if (!rail) return null
-  if (rail.agents.length === 0) return <NewBus />
-  return (
-    <p className={styles.shellPlaceholder} data-testid="main-placeholder">
-      select a room or agent
-    </p>
-  )
-}
 
 export function Shell() {
   // Lifted here, not in the store: it's transient UI state private to this
@@ -53,7 +36,7 @@ export function Shell() {
       <div className={styles.shellBody}>
         <Rail query={query} />
         <main className={styles.shellMain}>
-          <Outlet />
+          <Outlet context={{ query }} />
         </main>
         <EventsDock />
       </div>

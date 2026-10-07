@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { BrowserRouter, Route, Routes, useParams } from 'react-router-dom'
 import { AgentScreen } from './agent/AgentScreen'
-import { MainPlaceholder, Shell } from './Shell'
+import { Inbox } from './inbox/Inbox'
+import { Shell } from './Shell'
 import { RoomScreen } from './transcript/RoomScreen'
 import { store } from './useStore'
 
@@ -35,7 +36,7 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Shell />}>
-          <Route index element={<MainPlaceholder />} />
+          <Route index element={<Inbox />} />
           <Route path="rooms/:name" element={<KeyedRoomScreen />} />
           <Route path="agents/:name" element={<KeyedAgentScreen />} />
         </Route>
