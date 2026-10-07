@@ -1,5 +1,5 @@
 import { beforeEach, expect, test, vi } from 'vitest'
-import { createStore } from './store'
+import { RAIL_EVENT_THROTTLE_MS, createStore } from './store'
 import { createParticipant } from './participant'
 import type { SendOutcome } from './participant'
 import { writeSendAs } from '../composer/identity'
@@ -1019,4 +1019,80 @@ test('a rejected setHidden propagates to the caller and does not refresh the rai
   await expect(store.setHidden('protocol', true)).rejects.toThrow('hide failed: 500')
   // A rail refresh here would claim the rail reflects a change that never happened.
   expect(fetchRailCalls).toBe(0)
+})
+
+const sentEvent = (id: number) => ({
+  type: 'event',
+  id,
+  kind: 'message_sent',
+  agent: 'a',
+  room: 'r',
+  detail: {},
+  created_at: 0,
+})
+
+test('a burst of message_sent events causes one immediate and one trailing rail refresh', async () => {
+  vi.useFakeTimers()
+  try {
+    const fetchRail = vi.fn(async () => emptyRail)
+    const store = makeStore({ fetchRail })
+    await store.start() // the start fetch
+    fetchRail.mockClear()
+    for (let i = 1; i <= 10; i++) live.emit('event', sentEvent(i))
+    expect(fetchRail).toHaveBeenCalledTimes(1) // immediate
+    await vi.advanceTimersByTimeAsync(RAIL_EVENT_THROTTLE_MS)
+    expect(fetchRail).toHaveBeenCalledTimes(2) // one trailing, not ten
+    store.stop()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('other event kinds do not refresh the rail', async () => {
+  const fetchRail = vi.fn(async () => emptyRail)
+  const store = makeStore({ fetchRail })
+  await store.start()
+  fetchRail.mockClear()
+  live.emit('event', { ...sentEvent(1), kind: 'ack' })
+  expect(fetchRail).not.toHaveBeenCalled()
+  store.stop()
+})
+
+test('a failing rail fetch during a burst keeps the previous rail and throws nothing', async () => {
+  vi.useFakeTimers()
+  try {
+    let fail = false
+    const fetchRail = vi.fn(async () => {
+      if (fail) throw new Error('down')
+      return emptyRail
+    })
+    const store = makeStore({ fetchRail })
+    await store.start()
+    const before = store.getState().rail
+    fail = true
+    for (let i = 1; i <= 5; i++) live.emit('event', sentEvent(i))
+    await vi.advanceTimersByTimeAsync(RAIL_EVENT_THROTTLE_MS * 3)
+    expect(store.getState().rail).toBe(before)
+    expect(fetchRail.mock.calls.length).toBeLessThanOrEqual(3) // start + immediate + trailing
+    store.stop()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('stopping the store cancels a pending trailing refresh', async () => {
+  vi.useFakeTimers()
+  try {
+    const fetchRail = vi.fn(async () => emptyRail)
+    const store = makeStore({ fetchRail })
+    await store.start()
+    fetchRail.mockClear()
+    live.emit('event', sentEvent(1))
+    live.emit('event', sentEvent(2)) // schedules the trailing refresh
+    store.stop()
+    await vi.advanceTimersByTimeAsync(RAIL_EVENT_THROTTLE_MS * 2)
+    expect(fetchRail).toHaveBeenCalledTimes(1) // only the immediate one
+  } finally {
+    vi.useRealTimers()
+  }
 })

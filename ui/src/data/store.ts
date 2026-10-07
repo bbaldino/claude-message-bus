@@ -74,6 +74,11 @@ function readDockOpen(): boolean {
 /// One store rather than per-screen hooks: presence and events feed the rail, the
 /// dock, the unseen badge and the transcript at once, and separate subscriptions
 /// to one stream would let them disagree about what is current.
+/// A message changes the inbox (last message, activity, flags), but a burst of
+/// sends must not become a burst of `/api/rail` fetches: at most one per this
+/// interval, plus one trailing fetch so the burst's last message always lands.
+export const RAIL_EVENT_THROTTLE_MS = 2000
+
 export function createStore(deps: {
   live: Live
   fetchRail: () => Promise<RailSummary>
@@ -156,6 +161,11 @@ export function createStore(deps: {
           ? [event, ...state.roomEvents].slice(0, 500)
           : state.roomEvents,
     })
+    // Keeps the inbox live without a protocol change. `refreshRailSoon` is
+    // defined further down this function body; it is looked up when an event
+    // arrives, long after that `const` has run — the same forward reference as
+    // `repairRoom` in the connection handler above.
+    if (event.kind === 'message_sent') refreshRailSoon()
   })
 
   deps.live.on('message', (p) => {
@@ -303,6 +313,23 @@ export function createStore(deps: {
       // Leave the previous rail in place; the connection pill already reports
       // trouble, and blanking the rail would read as an empty fleet.
     }
+  }
+
+  let lastEventRefresh = 0
+  let trailingRefresh: ReturnType<typeof setTimeout> | null = null
+  const refreshRailSoon = () => {
+    const wait = lastEventRefresh + RAIL_EVENT_THROTTLE_MS - Date.now()
+    if (wait <= 0) {
+      lastEventRefresh = Date.now()
+      void refreshRail()
+      return
+    }
+    if (trailingRefresh) return
+    trailingRefresh = setTimeout(() => {
+      trailingRefresh = null
+      lastEventRefresh = Date.now()
+      void refreshRail()
+    }, wait)
   }
 
   let clientIdSeq = 0
@@ -543,6 +570,10 @@ export function createStore(deps: {
       if (timer) {
         clearInterval(timer)
         timer = null
+      }
+      if (trailingRefresh) {
+        clearTimeout(trailingRefresh)
+        trailingRefresh = null
       }
       deps.live.stop()
     },
