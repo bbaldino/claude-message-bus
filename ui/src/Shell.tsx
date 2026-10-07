@@ -17,7 +17,7 @@ export function Shell() {
   // `Outlet`, so `useParams` here would see stale params from whatever route
   // last matched. Its `params.name` is already decoded, so a room like
   // `dm:caas|network-debug#2` reaches `selectRoom` as itself, not as the
-  // percent-encoded form the `Link` in RoomRow puts in the URL.
+  // percent-encoded form the `Link` in ConversationRow puts in the URL.
   //
   // Leaving the room route — to an agent route, or back to the index — passes
   // `null` rather than leaving the last room selected. The alternative (keep

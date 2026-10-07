@@ -1,26 +1,9 @@
 import { useState } from 'react'
 import { useStore } from '../useStore'
 import type { RailAgent } from '../types/RailAgent'
-import type { RailRoom } from '../types/RailRoom'
 import { useTicker } from '../ui/time'
 import { AgentRow } from './AgentRow'
-import { RoomRow } from './RoomRow'
 import styles from './Rail.module.css'
-
-/// Flagged rooms float to the top, `needs you` above `blocked`, then everything
-/// else by last activity. `needs you` outranks `blocked` because it is the state
-/// addressed to the operator — it asks for an action rather than reporting one.
-function rank(room: RailRoom): number {
-  if (room.flag?.kind === 'needsYou') return 0
-  if (room.flag?.kind === 'blocked') return 1
-  return 2
-}
-
-function sortRooms(rooms: RailRoom[]): RailRoom[] {
-  return [...rooms].sort(
-    (a, b) => rank(a) - rank(b) || (b.lastActivity ?? 0) - (a.lastActivity ?? 0),
-  )
-}
 
 /// Blocked first, then online, each group by last seen descending, in one
 /// continuous list. An earlier design draft had a separate "offline" subheading
@@ -40,32 +23,29 @@ function sortAgents(agents: RailAgent[]): RailAgent[] {
   )
 }
 
-/// Case-insensitive substring on the name only — rooms and agents are all this
-/// filters, matching the top bar's placeholder. An empty query matches
+/// Case-insensitive substring on the agent's name. (The inbox applies the same
+/// query to conversations, by room name and member.) An empty query matches
 /// everything, since `''.includes` is trivially true for every string.
 function matches(name: string, query: string): boolean {
   return name.toLowerCase().includes(query.trim().toLowerCase())
 }
 
+/// The rail is the agent list: who is connected and what each is doing. Rooms
+/// live in the landing view's inbox. Offline agents — mostly long-gone sessions
+/// on a busy bus — start collapsed so the live fleet stays above the fold; a
+/// search expands them, since a search that finds a match must show it.
 export function Rail({ query = '' }: { query?: string }) {
   const { rail } = useStore()
   const now = useTicker(1000)
+  const [showOffline, setShowOffline] = useState(false)
   const trimmedQuery = query.trim()
-  const rooms = sortRooms((rail?.rooms ?? []).filter((r) => matches(r.name, query)))
-  const [showHidden, setShowHidden] = useState(false)
-  const visibleRooms = rooms.filter((r) => !r.hidden)
-  const hiddenRooms = rooms.filter((r) => r.hidden)
   const agents = sortAgents((rail?.agents ?? []).filter((a) => matches(a.name, query)))
-  const online = agents.filter((a) => a.online).length
+  const online = agents.filter((a) => a.online)
+  const offline = agents.filter((a) => !a.online)
+  const offlineOpen = showOffline || trimmedQuery !== ''
   const relayers = rail?.relayers ?? []
-  // Only for a search that matches nothing at all — a query that matches
-  // agents but no rooms (or vice versa) still gets its normal empty section,
-  // header and all, since that's a real, legible statement about that half of
-  // the fleet. This is the "I was fooled during manual testing" case: both
-  // sections empty, with nothing on screen to say why.
-  const noMatches = trimmedQuery !== '' && rooms.length === 0 && agents.length === 0
 
-  if (noMatches) {
+  if (trimmedQuery !== '' && agents.length === 0) {
     return (
       <nav className={styles.rail}>
         <p className={styles.railEmpty}>nothing matched &quot;{trimmedQuery}&quot;</p>
@@ -75,42 +55,35 @@ export function Rail({ query = '' }: { query?: string }) {
 
   return (
     <nav className={styles.rail}>
-      <div className={styles.railHeader}>
-        <span className={styles.railLabel}>rooms</span>
-        <span className={styles.railCount}>last 60 min</span>
+      <div className={styles.railHeader} data-testid="agents-header">
+        <span className={styles.railLabel}>agents</span>
+        <span className={styles.railCount}>
+          {online.length} of {agents.length} online
+        </span>
       </div>
       <div className={styles.railRows}>
-        {visibleRooms.map((r) => (
-          <RoomRow key={r.name} room={r} />
+        {online.map((a) => (
+          <AgentRow key={a.name} agent={a} now={now} />
         ))}
       </div>
-
-      {hiddenRooms.length > 0 && (
+      {offline.length > 0 && (
         <>
-          <button className={styles.hiddenToggle} onClick={() => setShowHidden(!showHidden)}>
-            {hiddenRooms.length} hidden {showHidden ? '▴' : '▾'}
+          <button
+            className={styles.offlineToggle}
+            data-testid="rail-offline-toggle"
+            onClick={() => setShowOffline(!showOffline)}
+          >
+            {offlineOpen ? '▾' : '▸'} {offline.length} offline
           </button>
-          {showHidden && (
+          {offlineOpen && (
             <div className={styles.railRows}>
-              {hiddenRooms.map((r) => (
-                <RoomRow key={r.name} room={r} dimmed />
+              {offline.map((a) => (
+                <AgentRow key={a.name} agent={a} now={now} />
               ))}
             </div>
           )}
         </>
       )}
-
-      <div className={`${styles.railHeader} ${styles.agents}`} data-testid="agents-header">
-        <span className={styles.railLabel}>agents</span>
-        <span className={styles.railCount}>
-          {online} of {agents.length} online
-        </span>
-      </div>
-      <div className={styles.railRows}>
-        {agents.map((a) => (
-          <AgentRow key={a.name} agent={a} now={now} />
-        ))}
-      </div>
       {/* The configured set, stated even when empty. A mistyped `--relayer` flag
           marks no agent, which the badges alone cannot tell apart from a correct
           config whose relayer is not connected — this line is what can. */}

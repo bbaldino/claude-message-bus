@@ -12,10 +12,6 @@
   padding: 16px 16px 9px;
 }
 
-.railHeader.agents {
-  padding-top: 22px;
-}
-
 .railLabel {
   font-family: var(--font-mono);
   font-weight: 600;
@@ -74,38 +70,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.rowName {
-  font-family: var(--font-mono);
-  font-weight: 500;
-  font-size: 12px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.row.selected .rowName {
-  color: var(--text-primary);
-}
-
-.rowName.empty {
-  color: var(--text-quaternary);
-}
-
-.rowSubtitle {
-  margin-top: 3px;
-  font-size: 11px;
-  color: var(--text-quaternary-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.row.flagNeedsYou {
-  border-left-color: var(--attention);
 }
 
 .agentRow {
@@ -173,7 +137,7 @@
   color: var(--attention);
 }
 
-.hiddenToggle {
+.offlineToggle {
   display: block;
   width: 100%;
   padding: 6px 9px;
@@ -187,10 +151,29 @@
   cursor: pointer;
 }
 
-.hiddenToggle:hover {
+.offlineToggle:hover {
   color: var(--text-dim);
 }
 
-.rowHidden {
-  opacity: 0.55;
+/* Positions the selected agent's "details →" link over the row, as a sibling of
+ * the row's own link rather than nested inside it. */
+.agentRowWrap {
+  position: relative;
+}
+
+.details {
+  position: absolute;
+  top: 7px;
+  right: 12px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--row-selected);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-decoration: none;
+}
+
+.details:hover {
+  text-decoration: underline;
 }

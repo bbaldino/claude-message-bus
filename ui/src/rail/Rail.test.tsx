@@ -3,11 +3,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, test, vi } from 'vitest'
 import { renderWithStore } from '../testing/fakeStore'
 import { Rail } from './Rail'
-import { RoomRow } from './RoomRow'
 import { AgentRow } from './AgentRow'
 import styles from './Rail.module.css'
 import type { RailSummary } from '../types/RailSummary'
-import type { RailRoom } from '../types/RailRoom'
 import type { RailAgent } from '../types/RailAgent'
 
 const rail: RailSummary = {
@@ -71,14 +69,6 @@ function renderRail(query?: string) {
   return renderWithStore(<Rail query={query} />, { rail })
 }
 
-function renderRoomRow(room: RailRoom, path = '/') {
-  return render(
-    <MemoryRouter initialEntries={[path]}>
-      <RoomRow room={room} />
-    </MemoryRouter>,
-  )
-}
-
 function renderAgentRow(agent: RailAgent, now = Date.now(), path = '/') {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -93,27 +83,13 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-test('flagged rooms float above unflagged, needs-you above blocked', () => {
+test('online agents sort above offline, and offline agents start collapsed', () => {
   renderRail()
-  const names = screen.getAllByTestId('room-name').map((n) => n.textContent)
-  expect(names).toEqual(['stuck', 'waiting', 'quiet'])
-})
-
-test('a blocked room composes its subtitle from the flag data', () => {
-  // The server ships data, not sentences — this is where the sentence is written.
-  renderRail()
-  expect(screen.getByText('waiting on caas · 2 queued, 0 delivered')).toBeDefined()
-})
-
-test('a needs-you room states the exchange count', () => {
-  renderRail()
-  expect(screen.getByText('hit 20 exchanges · waiting on you')).toBeDefined()
-})
-
-test('online agents sort above offline', () => {
-  renderRail()
-  const names = screen.getAllByTestId('agent-name').map((n) => n.textContent)
-  expect(names).toEqual(['online-one', 'offline-one'])
+  const names = () => screen.getAllByTestId('agent-name').map((n) => n.textContent)
+  expect(names()).toEqual(['online-one'])
+  expect(screen.getByTestId('rail-offline-toggle').textContent).toMatch(/1 offline/)
+  fireEvent.click(screen.getByTestId('rail-offline-toggle'))
+  expect(names()).toEqual(['online-one', 'offline-one'])
 })
 
 test('the agent section counts how many are online', () => {
@@ -122,17 +98,20 @@ test('the agent section counts how many are online', () => {
   expect(within(header).getByText('1 of 2 online')).toBeDefined()
 })
 
-test('a query filters both rooms and agents by a case-insensitive substring match', () => {
+test('a query filters agents by a case-insensitive substring match', () => {
   renderRail('ONLINE')
   expect(screen.getAllByTestId('agent-name').map((n) => n.textContent)).toEqual(['online-one'])
-  // None of the room fixtures contain "online" — the rooms section empties out.
-  expect(screen.queryAllByTestId('room-name')).toEqual([])
 })
 
-test('an empty query restores every room and agent', () => {
-  renderRail('')
-  expect(screen.getAllByTestId('room-name')).toHaveLength(3)
-  expect(screen.getAllByTestId('agent-name')).toHaveLength(2)
+test('the rail lists agents only, no rooms', () => {
+  renderRail()
+  expect(screen.queryAllByTestId('room-name')).toEqual([])
+  expect(screen.queryByText('rooms')).toBeNull()
+})
+
+test('a search expands the offline group so matches are visible', () => {
+  renderRail('offline')
+  expect(screen.getAllByTestId('agent-name').map((n) => n.textContent)).toEqual(['offline-one'])
 })
 
 test('the agent count reflects the filtered list, not the full one', () => {
@@ -264,6 +243,7 @@ test('a shared ticker re-derives relative age on an interval, with no store upda
   vi.useFakeTimers()
   vi.setSystemTime(60_000)
   const { unmount } = renderRail()
+  fireEvent.click(screen.getByTestId('rail-offline-toggle'))
   const ages = () => screen.getAllByTestId('agent-age').map((el) => el.textContent)
 
   expect(ages()).toEqual(['59s', '59s'])
@@ -275,32 +255,6 @@ test('a shared ticker re-derives relative age on an interval, with no store upda
 
   unmount()
   expect(vi.getTimerCount()).toBe(0)
-})
-
-test('a room with no last activity renders its name as silent', () => {
-  renderRoomRow({
-    name: 'ghost',
-    members: ['a'],
-    lastActivity: null,
-    buckets: [0],
-    flag: null,
-    hidden: false,
-    lastMessage: null,
-  })
-  expect(screen.getByTestId('room-name').classList.contains(styles.empty)).toBe(true)
-})
-
-test('a room name with special characters is percent-encoded in its link', () => {
-  const { container } = renderRoomRow({
-    name: 'dm:a|b',
-    members: ['a', 'b'],
-    lastActivity: 5,
-    buckets: [0],
-    flag: null,
-    hidden: false,
-    lastMessage: null,
-  })
-  expect(container.querySelector('a')?.getAttribute('href')).toBe('/rooms/dm%3Aa%7Cb')
 })
 
 test('an agent name containing # is percent-encoded in its link', () => {
@@ -315,144 +269,50 @@ test('an agent name containing # is percent-encoded in its link', () => {
     buckets: [0],
     status: null,
   })
-  expect(container.querySelector('a')?.getAttribute('href')).toBe('/agents/network-debug%232')
+  expect(container.querySelector('a')?.getAttribute('href')).toBe('/?agent=network-debug%232')
 })
 
-test('a room and an agent sharing a name are each selected only on their own route', () => {
-  // Nothing in the data model stops a room and an agent from sharing a name,
-  // so the selected-row check has to key off which route family is active
-  // (via useMatch), not just compare a bare `:name` param.
-  const room: RailRoom = {
-    name: 'shared',
-    members: ['a'],
-    lastActivity: 1,
-    buckets: [0],
-    flag: null,
-    hidden: false,
-    lastMessage: null,
-  }
-  const agent: RailAgent = {
-    name: 'shared',
-    host: 'h',
-    version: null,
-    online: true,
-    isHuman: false,
-    isRelayer: false,
-    lastSeen: 1,
-    buckets: [0],
-    status: null,
-  }
+test('an agent row links to the inbox filter, and toggles off when selected', () => {
+  const a = { ...rail.agents[1], name: 'caas#2 &x?' }
+  const enc = encodeURIComponent('caas#2 &x?')
+  const { unmount } = renderAgentRow(a)
+  expect(screen.getByTestId('rail-agent-row').getAttribute('href')).toBe(`/?agent=${enc}`)
+  expect(screen.queryByTestId('rail-agent-details')).toBeNull()
+  unmount()
 
-  const room1 = renderRoomRow(room, '/rooms/shared')
-  expect(room1.container.querySelector('a')?.classList.contains(styles.selected)).toBe(true)
-  room1.unmount()
+  renderAgentRow(a, Date.now(), `/?agent=${enc}`)
+  const row = screen.getByTestId('rail-agent-row')
+  expect(row.getAttribute('href')).toBe('/')
+  expect(row.classList.contains(styles.selected)).toBe(true)
+  expect(screen.getByTestId('rail-agent-details').getAttribute('href')).toBe(`/agents/${enc}`)
+})
 
-  const agent1 = renderAgentRow(agent, Date.now(), '/rooms/shared')
-  expect(agent1.container.querySelector('a')?.classList.contains(styles.selected)).toBe(false)
-  agent1.unmount()
+test('the details link is never an anchor nested inside the row anchor', () => {
+  const a = { ...rail.agents[1], name: 'hub' }
+  renderAgentRow(a, Date.now(), '/?agent=hub')
+  const row = screen.getByTestId('rail-agent-row')
+  const details = screen.getByTestId('rail-agent-details')
+  expect(row.querySelector('a')).toBeNull()
+  expect(row.contains(details)).toBe(false)
+})
 
-  const agent2 = renderAgentRow(agent, Date.now(), '/agents/shared')
-  expect(agent2.container.querySelector('a')?.classList.contains(styles.selected)).toBe(true)
-  agent2.unmount()
-
-  const room2 = renderRoomRow(room, '/agents/shared')
-  expect(room2.container.querySelector('a')?.classList.contains(styles.selected)).toBe(false)
-  room2.unmount()
+test('an agent is not shown selected on a room page, and its link still filters', () => {
+  const a = { ...rail.agents[1], name: 'shared' }
+  renderAgentRow(a, Date.now(), '/rooms/shared?agent=shared')
+  const row = screen.getByTestId('rail-agent-row')
+  expect(row.classList.contains(styles.selected)).toBe(false)
+  expect(row.getAttribute('href')).toBe('/?agent=shared')
 })
 
 test('a query matching nothing at all shows a message referencing it, not two empty sections', () => {
   renderRail('zzz-no-such-thing')
   expect(screen.getByText('nothing matched "zzz-no-such-thing"')).toBeDefined()
-  expect(screen.queryByText('rooms')).toBeNull()
   expect(screen.queryByTestId('agents-header')).toBeNull()
-})
-
-test('a query matching only agents still shows the (empty) rooms section as normal', () => {
-  // Only the fully-empty case gets the message — a query that legibly narrows
-  // one section to nothing is a real result, not something to explain away.
-  renderRail('online-one')
-  expect(screen.queryByText(/nothing matched/)).toBeNull()
 })
 
 test('an empty query shows every room and agent with no "nothing matched" message', () => {
   renderRail('')
   expect(screen.queryByText(/nothing matched/)).toBeNull()
-})
-
-test('a hidden room is out of the list, and the footer says how many', () => {
-  renderWithStore(<Rail />, {
-    rail: {
-      rooms: [
-        {
-          name: 'visible',
-          members: [],
-          lastActivity: null,
-          buckets: [],
-          flag: null,
-          hidden: false,
-          lastMessage: null,
-        },
-        {
-          name: 'tidied',
-          members: [],
-          lastActivity: null,
-          buckets: [],
-          flag: null,
-          hidden: true,
-          lastMessage: null,
-        },
-      ],
-      agents: [],
-      relayers: [],
-    },
-  })
-  expect(screen.getByText('visible')).toBeDefined()
-  expect(screen.queryByText('tidied')).toBeNull()
-  expect(screen.getByText(/1 hidden/)).toBeDefined()
-})
-
-test('expanding the footer reveals them', () => {
-  renderWithStore(<Rail />, {
-    rail: {
-      rooms: [
-        {
-          name: 'tidied',
-          members: [],
-          lastActivity: null,
-          buckets: [],
-          flag: null,
-          hidden: true,
-          lastMessage: null,
-        },
-      ],
-      agents: [],
-      relayers: [],
-    },
-  })
-  fireEvent.click(screen.getByText(/1 hidden/))
-  expect(screen.getByText('tidied')).toBeDefined()
-})
-
-test('with nothing hidden there is no affordance at all', () => {
-  // The console does not advertise a state that does not exist.
-  renderWithStore(<Rail />, {
-    rail: {
-      rooms: [
-        {
-          name: 'visible',
-          members: [],
-          lastActivity: null,
-          buckets: [],
-          flag: null,
-          hidden: false,
-          lastMessage: null,
-        },
-      ],
-      agents: [],
-      relayers: [],
-    },
-  })
-  expect(screen.queryByText(/hidden/)).toBeNull()
 })
 
 test('a blocked agent sorts first and shows its status line', () => {
@@ -495,27 +355,4 @@ test('status text is rendered as text, never as HTML', () => {
   const { container } = renderWithStore(<Rail />, { rail: { ...rail, agents: [a] } })
   expect(container.querySelector('img')).toBeNull()
   expect(screen.getByTestId(`agent-status-${a.name}`).textContent).toContain('<img')
-})
-
-test('the volume strip caption survives', () => {
-  // `last 60 min` captions the strips in every row. The spec originally put the
-  // hidden count in its place; it is a footer instead precisely so this stays.
-  renderWithStore(<Rail />, {
-    rail: {
-      rooms: [
-        {
-          name: 'tidied',
-          members: [],
-          lastActivity: null,
-          buckets: [],
-          flag: null,
-          hidden: true,
-          lastMessage: null,
-        },
-      ],
-      agents: [],
-      relayers: [],
-    },
-  })
-  expect(screen.getByText('last 60 min')).toBeDefined()
 })
