@@ -306,9 +306,19 @@ export function createStore(deps: {
   // out the rest of the 25s interval. Failure is intentionally silent here too:
   // an explicit refresh that fails leaves the previous rail in place, same as a
   // missed poll tick, and the poll interval remains the backstop.
+  // Several fetches can be in flight at once (the poll, the event-driven refresh,
+  // setHidden), and responses can land out of order. Each fetch takes a number;
+  // a response older than one already applied is dropped, so a slow stale
+  // summary can never overwrite a newer one.
+  let railSeq = 0
+  let railApplied = 0
   const refreshRail = async () => {
+    const seq = ++railSeq
     try {
-      setState({ rail: await deps.fetchRail() })
+      const rail = await deps.fetchRail()
+      if (seq < railApplied) return
+      railApplied = seq
+      setState({ rail })
     } catch {
       // Leave the previous rail in place; the connection pill already reports
       // trouble, and blanking the rail would read as an empty fleet.

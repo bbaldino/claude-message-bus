@@ -81,3 +81,21 @@ test('display names: DMs by their members, rooms with a #, odd names never break
   expect(displayName(room({ name: 'protocol' }))).toBe('#protocol')
   expect(displayName(room({ name: 'dm:caas|network-debug#2' }))).toBe('caas ⇄ network-debug#2')
 })
+
+test('a flagged room stays in recent however old its last message is', () => {
+  // A room paused by the exchange cap gets no new messages, so its last activity
+  // freezes at the pause; "needs you" lasts until it is resumed. Burying it behind
+  // the "older" expander after 24h would hide the one signal the view exists for.
+  const old = NOW - 3 * RECENT_WINDOW_MS
+  const g = shape([
+    room({ name: 'paused', lastActivity: old, flag: { kind: 'needsYou', exchanges: 20 } }),
+    room({
+      name: 'stuck',
+      lastActivity: old,
+      flag: { kind: 'blocked', queued: 1, waitingOn: ['x'] },
+    }),
+    room({ name: 'stale', lastActivity: old }),
+  ])
+  expect(names(g.recent)).toEqual(['paused', 'stuck'])
+  expect(names(g.older)).toEqual(['stale'])
+})

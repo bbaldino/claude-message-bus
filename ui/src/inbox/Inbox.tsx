@@ -9,13 +9,16 @@ import styles from './Inbox.module.css'
 
 /// The landing view: recent conversations, one row per room, filtered by the
 /// `?agent=` URL parameter the rail's agent rows set.
-export function Inbox() {
+/// `query` is normally the top bar's search, handed down by the Shell through the
+/// router outlet; the prop lets a caller (or a test) supply it directly.
+export function Inbox({ query: queryProp }: { query?: string } = {}) {
   const { rail } = useStore()
   const now = useTicker(1000)
   const [params, setParams] = useSearchParams()
   const agent = params.get('agent')
   // Outside the Shell (component tests) there is no outlet context.
-  const query = useOutletContext<{ query: string } | undefined>()?.query ?? ''
+  const outletQuery = useOutletContext<{ query: string } | undefined>()?.query
+  const query = queryProp ?? outletQuery ?? ''
   const [showOlder, setShowOlder] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
 
@@ -50,7 +53,9 @@ export function Inbox() {
       </div>
       {recent.length === 0 && (
         <p className={styles.empty} data-testid="inbox-empty">
-          {trimmed !== ''
+          {/* "match" only when the search found nothing at all; older or hidden
+              matches still get the window wording, above their own expanders. */}
+          {trimmed !== '' && older.length === 0 && hidden.length === 0
             ? `no conversations match "${trimmed}"`
             : agent !== null
               ? `no conversations with ${agent} in the last 24h`

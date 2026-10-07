@@ -1096,3 +1096,20 @@ test('stopping the store cancels a pending trailing refresh', async () => {
     vi.useRealTimers()
   }
 })
+
+test('a slow, older rail response never overwrites a newer one', async () => {
+  // The poll, the event-driven refresh and setHidden can all have a fetch in
+  // flight at once; responses can land out of order.
+  const resolvers: Array<(r: RailSummary) => void> = []
+  const fetchRail = vi.fn(() => new Promise<RailSummary>((res) => resolvers.push(res)))
+  const store = makeStore({ fetchRail })
+  const first = store.refreshRail()
+  const second = store.refreshRail()
+  const older: RailSummary = { ...emptyRail, relayers: ['older'] }
+  const newer: RailSummary = { ...emptyRail, relayers: ['newer'] }
+  resolvers[1](newer)
+  await second
+  resolvers[0](older)
+  await first
+  expect(store.getState().rail).toBe(newer)
+})

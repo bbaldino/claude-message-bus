@@ -99,11 +99,20 @@
 }
 
 .preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-top: 3px;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-tertiary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preview > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }

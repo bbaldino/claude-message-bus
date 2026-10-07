@@ -140,3 +140,30 @@ test('a populated rail renders the inbox, not the new-bus state', () => {
   expect(rowNames()).toEqual(['a'])
   expect(screen.queryByText('The bus is running. Nothing has joined it.')).toBeNull()
 })
+
+test('a search that only matches older rooms does not claim nothing matched', () => {
+  renderWithStore(<Inbox query="old" />, {
+    rail: rail([room({ name: 'old-room', lastActivity: now - 3 * 86_400_000 })]),
+  })
+  expect(screen.getByTestId('inbox-empty').textContent).toMatch(/no conversations in the last 24h/)
+  expect(screen.getByTestId('inbox-older-toggle').textContent).toMatch(/1 older/)
+})
+
+test('a search matching nothing anywhere says so', () => {
+  renderWithStore(<Inbox query="zzz" />, { rail: rail([room({ name: 'a' })]) })
+  expect(screen.getByTestId('inbox-empty').textContent).toBe('no conversations match "zzz"')
+})
+
+test("a human's last message carries the human chip, like the transcript", () => {
+  renderWithStore(<Inbox />, {
+    rail: rail([
+      room({
+        name: 'protocol',
+        lastMessage: { from: 'bbaldino', excerpt: 'ship it', human: true },
+      }),
+    ]),
+  })
+  expect(screen.getByText('human')).toBeDefined()
+  expect(screen.queryByText(/\(human\)/)).toBeNull()
+  expect(screen.getByText(/bbaldino: ship it/)).toBeDefined()
+})

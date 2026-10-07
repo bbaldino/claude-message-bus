@@ -1,7 +1,7 @@
 import type { RailRoom } from '../types/RailRoom'
 
 /// Conversations active within this window are "recent"; the rest sit behind
-/// the "older" expander. Inclusive at exactly 24h.
+/// the "older" expander. Inclusive at exactly 24h. Flagged rooms are always recent.
 export const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000
 
 export type InboxGroups = { recent: RailRoom[]; older: RailRoom[]; hidden: RailRoom[] }
@@ -33,7 +33,12 @@ export function shapeInbox(
   const groups: InboxGroups = { recent: [], older: [], hidden: [] }
   for (const r of sorted) {
     if (r.hidden) groups.hidden.push(r)
-    else if (r.lastActivity !== null && now - r.lastActivity <= RECENT_WINDOW_MS)
+    // A flagged room is current whatever its age: a paused room's last message
+    // freezes at the pause, and the flag lasts until someone resumes it.
+    else if (
+      r.flag !== null ||
+      (r.lastActivity !== null && now - r.lastActivity <= RECENT_WINDOW_MS)
+    )
       groups.recent.push(r)
     else groups.older.push(r)
   }

@@ -14,8 +14,13 @@ import { VolumeStrip } from './VolumeStrip'
 export function AgentRow({ agent, now }: { agent: RailAgent; now: number }) {
   const onIndex = useMatch('/') !== null
   const [params] = useSearchParams()
-  const selected = onIndex && params.get('agent') === agent.name
-  const to = selected ? '/' : `/?agent=${encodeURIComponent(agent.name)}`
+  // Filtering by this agent: the click clears the filter, and "details →" shows.
+  const filtering = onIndex && params.get('agent') === agent.name
+  // On this agent's own page the row is highlighted too, so the rail still shows
+  // where you are — but without a details link pointing at the page you're on.
+  const onOwnPage = useMatch('/agents/:name')?.params.name === agent.name
+  const selected = filtering || onOwnPage
+  const to = filtering ? '/' : `/?agent=${encodeURIComponent(agent.name)}`
 
   return (
     <div className={styles.agentRowWrap}>
@@ -41,7 +46,7 @@ export function AgentRow({ agent, now }: { agent: RailAgent; now: number }) {
             {age(agent.lastSeen, now)}
           </span>
         </div>
-        {agent.status && (
+        {agent.status ? (
           <div
             className={`${styles.agentStatus} ${
               agent.online && agent.status.state === 'blocked_on_human' ? styles.agentBlocked : ''
@@ -50,9 +55,18 @@ export function AgentRow({ agent, now }: { agent: RailAgent; now: number }) {
           >
             {statusText(agent.status, agent.online, now)}
           </div>
+        ) : (
+          // A filtered row always has a second line: "details →" sits on it,
+          // instead of on top of the age and sparkline of a one-line row (every
+          // agent on a binary that predates status reporting).
+          filtering && (
+            <div className={styles.agentStatus} data-testid={`agent-status-${agent.name}`}>
+              no status reported
+            </div>
+          )
         )}
       </Link>
-      {selected && (
+      {filtering && (
         <Link
           to={`/agents/${encodeURIComponent(agent.name)}`}
           className={styles.details}

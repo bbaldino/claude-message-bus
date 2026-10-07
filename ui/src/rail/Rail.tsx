@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useStore } from '../useStore'
 import type { RailAgent } from '../types/RailAgent'
 import { useTicker } from '../ui/time'
@@ -42,7 +43,11 @@ export function Rail({ query = '' }: { query?: string }) {
   const agents = sortAgents((rail?.agents ?? []).filter((a) => matches(a.name, query)))
   const online = agents.filter((a) => a.online)
   const offline = agents.filter((a) => !a.online)
-  const offlineOpen = showOffline || trimmedQuery !== ''
+  // Opened by the toggle, by a search (a match must be visible), or by a filter
+  // naming an offline agent (the selection and its details link must be visible).
+  const [params] = useSearchParams()
+  const filtered = params.get('agent')
+  const offlineOpen = showOffline || trimmedQuery !== '' || offline.some((a) => a.name === filtered)
   const relayers = rail?.relayers ?? []
 
   if (trimmedQuery !== '' && agents.length === 0) {

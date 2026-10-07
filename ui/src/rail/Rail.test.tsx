@@ -356,3 +356,28 @@ test('status text is rendered as text, never as HTML', () => {
   expect(container.querySelector('img')).toBeNull()
   expect(screen.getByTestId(`agent-status-${a.name}`).textContent).toContain('<img')
 })
+
+test('a filter naming an offline agent opens the offline group so the selection shows', () => {
+  renderWithStore(<Rail />, { rail }, { route: '/?agent=offline-one' })
+  const row = screen
+    .getAllByTestId('rail-agent-row')
+    .find((r) => r.getAttribute('data-agent') === 'offline-one')
+  expect(row).toBeDefined()
+  expect(row?.classList.contains(styles.selected)).toBe(true)
+  expect(screen.getByTestId('rail-agent-details')).toBeDefined()
+})
+
+test("an agent's own page highlights its row, without a details link to itself", () => {
+  const a = { ...rail.agents[1], name: 'caas#2' }
+  renderAgentRow(a, Date.now(), `/agents/${encodeURIComponent('caas#2')}`)
+  const row = screen.getByTestId('rail-agent-row')
+  expect(row.classList.contains(styles.selected)).toBe(true)
+  expect(row.getAttribute('href')).toBe(`/?agent=${encodeURIComponent('caas#2')}`)
+  expect(screen.queryByTestId('rail-agent-details')).toBeNull()
+})
+
+test('a selected agent with no status still gets a second line for the details link', () => {
+  const a = { ...rail.agents[1], name: 'old-binary', status: null }
+  renderAgentRow(a, Date.now(), '/?agent=old-binary')
+  expect(screen.getByTestId('agent-status-old-binary').textContent).toBe('no status reported')
+})

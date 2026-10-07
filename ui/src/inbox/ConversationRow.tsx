@@ -48,7 +48,15 @@ export function ConversationRow({
       </div>
       {/* Plain text, never HTML: an agent's message is untrusted content. */}
       <div className={styles.preview}>
-        {m ? `${m.from}${m.human ? ' (human)' : ''}: ${m.excerpt}` : 'no messages yet'}
+        {m ? (
+          <>
+            {/* Marked the way the transcript marks a message with human authority. */}
+            {m.human && <Chip tone="human">human</Chip>}
+            <span>{`${m.from}: ${m.excerpt}`}</span>
+          </>
+        ) : (
+          'no messages yet'
+        )}
       </div>
       {detail && <div className={styles.detail}>{detail}</div>}
     </Link>
