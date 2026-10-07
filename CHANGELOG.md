@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2](https://github.com/bbaldino/claude-message-bus/compare/v0.9.1...v0.9.2) - 2026-10-07
+
+### Fixed
+
+- expired HTTP leases leave a deletable row, and a reserved-name takeover survives the old lease
+
 ## [0.9.1](https://github.com/bbaldino/claude-message-bus/compare/v0.9.0...v0.9.1) - 2026-10-07
 
 ### Added
