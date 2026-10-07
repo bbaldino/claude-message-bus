@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/bbaldino/claude-message-bus/compare/v0.9.0...v0.9.1) - 2026-10-07
+
+### Added
+
+- the inbox refreshes on message_sent events, throttled
+- the rail is the agent list, and clicking an agent filters the inbox
+- conversation inbox as the console landing view
+- inbox shaping for the console landing view
+- the rail summary carries each room's last message
+
+### Fixed
+
+- console inbox review findings
+
+### Other
+
+- the console's landing view; align the rail's offline toggle and details link
+- whole-app tests follow the agent rail and the inbox
+- console inbox implementation plan
+- console inbox design
+
 ## [0.9.0](https://github.com/bbaldino/claude-message-bus/compare/v0.8.0...v0.9.0) - 2026-10-06
 
 ### Added
