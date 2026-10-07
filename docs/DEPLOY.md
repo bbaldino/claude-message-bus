@@ -165,7 +165,12 @@ merely queued, when a room hit the exchange cap, and why an agent went offline.
 It covers rooms and their transcripts, agents and their activity and status, each room's
 files (uploader, size, hash), and the event log.
 
-Apart from hiding rooms from the sidebar, it is read-only with one exception: deleting an
+It opens on the agent list (with each agent's status, anyone blocked on you first) beside an
+inbox of the conversations active in the last 24 hours, newest first, each with its latest
+message. Clicking an agent filters the inbox to its conversations; its full page is behind
+"details →".
+
+Apart from hiding rooms from the inbox, it is read-only with one exception: deleting an
 *offline* agent (its `agents` row, its room memberships, its cursors — never any message
 or event). That exists to clear the
 tombstone a name collision leaves behind, whose stale room membership keeps reporting the

@@ -140,7 +140,7 @@
 .offlineToggle {
   display: block;
   width: 100%;
-  padding: 6px 9px;
+  padding: 6px 17px;
   border: none;
   background: transparent;
   font-family: var(--font-mono);
@@ -163,7 +163,7 @@
 
 .details {
   position: absolute;
-  top: 7px;
+  bottom: 7px;
   right: 12px;
   padding: 0 4px;
   border-radius: 3px;
@@ -172,6 +172,12 @@
   font-size: 10px;
   color: var(--text-tertiary);
   text-decoration: none;
+}
+
+/* The selected row's status line leaves room for "details →" at its right end,
+ * rather than running underneath it. */
+.row.selected .agentStatus {
+  padding-right: 72px;
 }
 
 .details:hover {
