@@ -338,6 +338,15 @@ pub async fn serve_on_full(
             loop {
                 tick.tick().await;
                 for (_token, name) in leases.expired().await {
+                    // Clear the persisted flag BEFORE leaving the registry, exactly
+                    // as the websocket teardown does (see `connection`): the two
+                    // must never disagree in the "online" direction, or
+                    // `forget_agent`'s `online = 0` guard refuses a delete the
+                    // registry has already approved — leaving an offline HTTP
+                    // participant's row undeletable.
+                    if let Err(e) = store.set_online(&name, false).await {
+                        eprintln!("could not mark {name} offline on lease expiry: {e}");
+                    }
                     registry.detach(&name).await;
                     registry
                         .notify_presence(FromBus::Presence {

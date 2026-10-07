@@ -112,11 +112,14 @@ pub(crate) async fn register(
     }
 
     // Reserved + authorized: take over any existing holder so the bare reserved
-    // name is kept rather than suffixed. `detach` here drops the prior lease's
-    // routing entry; its lease row is swept later (or is this same identity
-    // reconnecting).
-    if app.participants.is_reserved(&body.name) && app.registry.is_online(&body.name).await {
-        app.registry.detach(&body.name).await;
+    // name is kept rather than suffixed. `detach` drops the prior holder's routing
+    // entry; `revoke_name` drops its lease too. Leaving that lease to lapse on its
+    // own let the sweeper, which detaches by name, later detach *this* new holder.
+    if app.participants.is_reserved(&body.name) {
+        app.participants.revoke_name(&body.name).await;
+        if app.registry.is_online(&body.name).await {
+            app.registry.detach(&body.name).await;
+        }
     }
 
     let already = app.registry.is_online(&body.name).await;

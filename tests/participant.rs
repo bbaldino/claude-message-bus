@@ -311,6 +311,78 @@ async fn a_lease_that_stops_polling_goes_offline() {
 }
 
 #[tokio::test]
+async fn an_expired_lease_leaves_an_agent_that_can_be_deleted() {
+    // The sweeper detached an expired lease from the registry but never cleared
+    // the persisted `online` column, so the delete — whose store guard deletes only
+    // `online = 0` rows — refused with 409 forever, though every view showed the
+    // participant offline. (Found live with a throwaway "raven-dev".)
+    let cfg = ParticipantConfig {
+        lease_ttl: std::time::Duration::from_millis(150),
+        ..Default::default()
+    };
+    let (_d, port, _p) = common::start_bus_with_participants_dir(cfg).await;
+    post_json_headers(port, "/api/participants", json!({"name":"raven-dev"}), &[]).await;
+    assert!(
+        common::wait_until(|| async { !common::agent_is_online(port, "raven-dev").await }).await,
+        "the lease should expire"
+    );
+    assert_eq!(
+        common::delete_same_origin(port, "/api/agents/raven-dev").await,
+        204,
+        "an expired HTTP participant must be deletable"
+    );
+}
+
+#[tokio::test]
+async fn a_reserved_name_takeover_is_not_undone_when_the_old_lease_expires() {
+    // An authorized registration of a reserved name takes it over from the prior
+    // holder. The prior lease used to stay in the lease table, so when it lapsed
+    // the sweeper — which detaches by name — detached the *new*, actively polling
+    // holder: it went offline (and, with the online-flag fix, deletable) mid-session.
+    let cfg = ParticipantConfig {
+        relayer_secret: Some("s".into()),
+        reserved_names: ["raven".to_string()].into_iter().collect(),
+        lease_ttl: std::time::Duration::from_millis(1500),
+    };
+    let (_d, port, _p) = common::start_bus_with_participants_dir(cfg).await;
+    let auth = [("X-Relayer-Secret", "s")];
+    let reg = || async {
+        let (status, body) =
+            post_json_headers(port, "/api/participants", json!({"name":"raven"}), &auth).await;
+        assert_eq!(status, 200, "{body}");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["name"], "raven", "the reserved name is kept: {body}");
+        v["token"].as_str().unwrap().to_string()
+    };
+    let _old = reg().await; // the old client, which then goes silent
+    let new = reg().await; // a reconnect takes the name over
+
+    // The new holder keeps polling well past the old lease's expiry.
+    let poller = tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(3500);
+        while tokio::time::Instant::now() < deadline {
+            get_headers(
+                port,
+                "/api/participants/receive?timeout=1",
+                &[("X-Participant-Token", &new)],
+            )
+            .await;
+        }
+    });
+    poller.await.unwrap();
+
+    assert!(
+        common::agent_is_online(port, "raven").await,
+        "the live holder must still be online after the old lease expired"
+    );
+    assert_eq!(
+        common::delete_same_origin(port, "/api/agents/raven").await,
+        409,
+        "a live holder must not be deletable"
+    );
+}
+
+#[tokio::test]
 async fn human_mode_with_the_secret_is_a_full_human_proxy() {
     let cfg = ParticipantConfig {
         relayer_secret: Some("s".into()),

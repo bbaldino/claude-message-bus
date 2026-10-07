@@ -149,6 +149,13 @@ impl Leases {
         })
     }
 
+    /// Drop every lease held under `name`. A reserved-name takeover calls this so
+    /// the prior holder's lease cannot lapse later and have the sweeper — which
+    /// detaches by name — detach the new holder.
+    pub async fn revoke_name(&self, name: &str) {
+        self.inner.lock().await.retain(|_, l| l.name != name);
+    }
+
     /// Whether a lease with this effective name is currently held.
     pub async fn name_online(&self, name: &str) -> bool {
         self.inner.lock().await.values().any(|l| l.name == name)
