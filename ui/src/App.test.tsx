@@ -59,13 +59,15 @@ test('renders the three shell regions and routes to a room', async () => {
   window.history.pushState({}, '', '/rooms/protocol')
   render(<App />)
 
-  // The rail is outside the outlet, so it is present on a room route.
-  expect((await screen.findByTestId('room-name')).textContent).toBe('protocol')
+  // The rail (now the agent list) is outside the outlet, so it is present on a
+  // room route too.
+  expect(await screen.findByTestId('agents-header')).toBeDefined()
   // The main pane now renders the real room screen, not the placeholder.
   expect(await screen.findByRole('heading', { name: 'protocol' })).toBeDefined()
 })
 
-test('typing in the top bar search field filters the rail, and clearing it restores everything', async () => {
+test('typing in the top bar search field filters both the agents and the inbox', async () => {
+  const now = Date.now()
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input)
     if (url.includes('/api/meta')) {
@@ -76,8 +78,24 @@ test('typing in the top bar search field filters the rail, and clearing it resto
     return new Response(
       JSON.stringify({
         rooms: [
-          { name: 'protocol', members: ['caas'], lastActivity: 2, buckets: [0], flag: null },
-          { name: 'ops', members: ['caas'], lastActivity: 1, buckets: [0], flag: null },
+          {
+            name: 'protocol',
+            members: ['caas'],
+            lastActivity: now - 2_000,
+            buckets: [0],
+            flag: null,
+            hidden: false,
+            lastMessage: null,
+          },
+          {
+            name: 'ops',
+            members: ['dashboard'],
+            lastActivity: now - 1_000,
+            buckets: [0],
+            flag: null,
+            hidden: false,
+            lastMessage: null,
+          },
         ],
         agents: [
           {
@@ -103,6 +121,7 @@ test('typing in the top bar search field filters the rail, and clearing it resto
             status: null,
           },
         ],
+        relayers: [],
       }),
       { headers: { 'content-type': 'application/json' } },
     )
@@ -111,29 +130,32 @@ test('typing in the top bar search field filters the rail, and clearing it resto
   window.history.pushState({}, '', '/')
   render(<App />)
 
-  expect(await screen.findByText('protocol')).toBeDefined()
-  expect(screen.getByText('ops')).toBeDefined()
+  // Inbox (center) and agents (rail), unfiltered. The offline agent sits in the
+  // collapsed group; the header still counts it.
+  expect(await screen.findByText('#protocol')).toBeDefined()
+  expect(screen.getByText('#ops')).toBeDefined()
   expect(screen.getByText('caas')).toBeDefined()
-  expect(screen.getByText('dashboard')).toBeDefined()
   expect(within(screen.getByTestId('agents-header')).getByText('1 of 2 online')).toBeDefined()
 
   const search = screen.getByPlaceholderText(/search/)
-  fireEvent.change(search, { target: { value: 'proto' } })
 
-  expect(screen.getByText('protocol')).toBeDefined()
-  expect(screen.queryByText('ops')).toBeNull()
-  // Neither agent name contains "proto" — the agents section empties too, and
-  // its count must describe that empty set, not the original two.
+  // A member name narrows the inbox to that agent's rooms and the rail to it.
+  fireEvent.change(search, { target: { value: 'dash' } })
+  expect(screen.getByText('#ops')).toBeDefined()
+  expect(screen.queryByText('#protocol')).toBeNull()
+  expect(screen.getByText('dashboard')).toBeDefined() // search expands the offline group
   expect(screen.queryByText('caas')).toBeNull()
-  expect(screen.queryByText('dashboard')).toBeNull()
-  expect(within(screen.getByTestId('agents-header')).getByText('0 of 0 online')).toBeDefined()
+
+  // A room name matches no agent: the rail says so, the inbox keeps the room.
+  fireEvent.change(search, { target: { value: 'proto' } })
+  expect(screen.getByText('#protocol')).toBeDefined()
+  expect(screen.queryByText('#ops')).toBeNull()
+  expect(screen.getByText('nothing matched "proto"')).toBeDefined()
 
   fireEvent.change(search, { target: { value: '' } })
-
-  expect(screen.getByText('protocol')).toBeDefined()
-  expect(screen.getByText('ops')).toBeDefined()
+  expect(screen.getByText('#protocol')).toBeDefined()
+  expect(screen.getByText('#ops')).toBeDefined()
   expect(screen.getByText('caas')).toBeDefined()
-  expect(screen.getByText('dashboard')).toBeDefined()
   expect(within(screen.getByTestId('agents-header')).getByText('1 of 2 online')).toBeDefined()
 })
 
