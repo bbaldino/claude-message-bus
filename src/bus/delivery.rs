@@ -1,17 +1,35 @@
 //! Runaway guards. Two agents replying to each other will volley indefinitely,
 //! each reply triggering the other's channel. Overnight that is real money.
 //!
-//! The cap default of 20 comes from POC 3, where a real negotiation converged
-//! in eight messages. It is a backstop at ~2.5x observed length, not a working
-//! limit — the models already self-terminate when instructed to.
+//! The cap was originally 20, from POC 3, where a real negotiation converged in
+//! eight messages (a backstop at ~2.5x observed length). Raised to 50 on
+//! 2026-10-14: real relayed work threads (spec rounds, status reports, deploy
+//! loops) regularly ran 20-40 messages and kept tripping it. It is still a
+//! backstop, not a working limit; `serve --exchange-cap N` tunes it per bus.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-pub const DEFAULT_CAP: u32 = 20;
+pub const DEFAULT_CAP: u32 = 50;
 pub const DEFAULT_MIN_INTERVAL_MS: i64 = 2000;
+
+/// The `--exchange-cap` value for `serve`: absent means `DEFAULT_CAP`. Zero and
+/// non-numbers are refused rather than defaulted, so a typo cannot silently run
+/// the bus with a cap nobody chose (and zero would pause every room on its first
+/// agent message).
+pub fn parse_exchange_cap(raw: Option<&str>) -> Result<u32, String> {
+    match raw {
+        None => Ok(DEFAULT_CAP),
+        Some(v) => match v.parse::<u32>() {
+            Ok(n) if n > 0 => Ok(n),
+            _ => Err(format!(
+                "--exchange-cap must be a whole number of at least 1, got {v:?}"
+            )),
+        },
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum GuardVerdict {
@@ -279,7 +297,7 @@ mod tests {
     #[tokio::test]
     async fn default_cap_matches_the_spec() {
         let g = Guards::default();
-        for i in 0..20 {
+        for i in 0..50 {
             assert!(matches!(
                 g.check("r", "a", i * 10_000, false).await,
                 GuardVerdict::Allow { .. }
@@ -359,5 +377,15 @@ mod tests {
             g.check("paused", "caas", 3, false).await,
             GuardVerdict::Allow { .. }
         ));
+    }
+
+    #[test]
+    fn the_exchange_cap_flag_defaults_and_validates() {
+        assert_eq!(parse_exchange_cap(None), Ok(DEFAULT_CAP));
+        assert_eq!(parse_exchange_cap(Some("35")), Ok(35));
+        // Zero would pause every room on its first agent message: never a real intent.
+        assert!(parse_exchange_cap(Some("0")).is_err());
+        assert!(parse_exchange_cap(Some("lots")).is_err());
+        assert!(parse_exchange_cap(Some("-5")).is_err());
     }
 }

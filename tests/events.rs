@@ -444,7 +444,7 @@ async fn a_paused_room_is_recorded() {
     let mut a = connect(port, "caas").await;
     next_event(&mut a).await;
 
-    for i in 0..21 {
+    for i in 0..=claude_bus::bus::delivery::DEFAULT_CAP as u64 {
         send(
             &mut a,
             &ToBus::Send {

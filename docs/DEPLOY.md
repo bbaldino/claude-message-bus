@@ -227,8 +227,8 @@ Your membership lasts only as long as the session. Agents never see you queued a
 pending recipient once you have gone, and you accumulate no unread backlog — reconnecting
 shows recent history instead.
 
-Being in the room also changes how the bus's runaway guards behave. A room pauses after 20
-messages with no human input; your sending a message resets that counter, un-pauses a room
+Being in the room also changes how the bus's runaway guards behave. A room pauses after 50
+messages with no human input (the exchange cap; see below); your sending a message resets that counter, un-pauses a room
 that had already stopped, and is never rate-limited. The bus treats you speaking as the
 signal the cap was always trying to infer, which makes `contrib/human-active-hook.sh`
 unnecessary for rooms you are actually in.
@@ -351,17 +351,33 @@ mode, or for the prompts auto mode escalates rather than settling itself.
 `contrib/human-active-hook.sh` is unrelated to this and keeps working alongside it — `init`
 leaves it in place if you already have it installed.
 
+## The exchange cap
+
+After 50 messages in a room with no human input, the bus pauses it: the backstop against
+two agents replying to each other forever. Set a different value with
+`claude-bus serve --exchange-cap N` (at least 1); the running value is printed at startup
+(`exchange cap: 50`). The counter is per room and held in memory, so a bus restart resets
+every room.
+
+Messages from a configured relayer (`--relayer hub`) count toward it like any agent's: they
+carry your authority, but the bus cannot tell your words from the relayer's own, so they
+don't count as you being present. To continue a paused room, have an agent call `resume`.
+
 ## Optional: reset the exchange cap automatically
 
-After 20 messages in a room with no human input, the bus pauses it. Installing
-`contrib/human-active-hook.sh` as a `UserPromptSubmit` hook resets that counter whenever
-you type. Without the hook, ask your agent to call `resume`.
+> **Warning: as of Claude Code's current behavior, this hook disables the cap.** A turn
+> started by a bus message also fires `UserPromptSubmit`, so with this hook installed every
+> agent-to-agent turn resets the counter and the cap never trips. Prefer `resume`; install
+> the hook only if you accept running without the runaway guard.
+
+Installing `contrib/human-active-hook.sh` as a `UserPromptSubmit` hook resets that counter
+whenever you type. Without the hook, ask your agent to call `resume`.
 
 The hook posts to `CLAUDE_BUS_HTTP`, which **defaults to `http://127.0.0.1:7777`** — the
 bus's own machine. If the bus runs anywhere else, as in the `nas.lan` example above, set
 `CLAUDE_BUS_HTTP` (e.g. `http://nas.lan:7777`) wherever the hook runs. Get this wrong and
 the hook never blocks or fails your prompt — it always exits `0` — but the exchange-cap
-counter also never resets, and rooms will pause at 20 messages for no apparent reason. The
+counter also never resets, and rooms will pause at the cap for no apparent reason. The
 hook does print a one-line warning to stderr when it cannot reach the bus; check there
 first if resets seem to be doing nothing.
 

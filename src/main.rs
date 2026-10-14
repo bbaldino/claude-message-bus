@@ -36,7 +36,7 @@ fn usage() -> ! {
     eprintln!();
     eprintln!(
         "  claude-bus serve [--port 7777] [--data ./data] [--relayer <name>]... \
-         [--relayer-secret <s>] [--reserve-name <n>]..."
+         [--relayer-secret <s>] [--reserve-name <n>]... [--exchange-cap 50]"
     );
     eprintln!("  claude-bus agent [--bus ws://host:7777/ws] [--name <n>] [--name-template <t>]");
     eprintln!(
@@ -72,8 +72,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 reserved_names: flags(&args, "--reserve-name").into_iter().collect(),
                 ..Default::default()
             };
-            claude_bus::bus::serve(port, std::path::PathBuf::from(data), relayers, participants)
-                .await?;
+            let exchange_cap = match claude_bus::bus::delivery::parse_exchange_cap(
+                flag(&args, "--exchange-cap").as_deref(),
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("claude-bus serve: {e}");
+                    std::process::exit(2);
+                }
+            };
+            claude_bus::bus::serve(
+                port,
+                std::path::PathBuf::from(data),
+                relayers,
+                participants,
+                exchange_cap,
+            )
+            .await?;
             Ok(())
         }
         Some("launch") => {

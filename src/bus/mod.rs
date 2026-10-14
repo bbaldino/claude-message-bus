@@ -153,6 +153,7 @@ pub async fn serve(
     data_dir: PathBuf,
     relayers: Relayers,
     participants: ParticipantConfig,
+    exchange_cap: u32,
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     eprintln!("claude-bus listening on 0.0.0.0:{port}");
@@ -166,10 +167,13 @@ pub async fn serve(
     } else {
         eprintln!("relayers: {}", names.join(", "));
     }
+    // Logged for the same reason as the relayers: the running value is otherwise
+    // invisible, and "rooms pause at the wrong count" has no other trace.
+    eprintln!("exchange cap: {exchange_cap}");
     serve_on_full(
         listener,
         data_dir,
-        Guards::default(),
+        Guards::new(exchange_cap, delivery::DEFAULT_MIN_INTERVAL_MS),
         Keepalive::default(),
         Registry::new(),
         relayers,

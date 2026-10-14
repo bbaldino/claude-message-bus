@@ -622,8 +622,8 @@ async fn the_exchange_cap_pauses_a_runaway_room() {
     let mut a = connect(port, "caas").await;
     next_event(&mut a).await;
 
-    // Default cap is 20; the 21st send must be refused.
-    for i in 0..20 {
+    // Every send up to the default cap is allowed; the next one must be refused.
+    for i in 0..claude_bus::bus::delivery::DEFAULT_CAP as u64 {
         send(
             &mut a,
             &ToBus::Send {
@@ -1762,7 +1762,7 @@ async fn a_human_can_send_into_a_paused_room_and_unpauses_it() {
     next_event(&mut a).await;
 
     // Drive the room past the cap.
-    for i in 0..21 {
+    for i in 0..=claude_bus::bus::delivery::DEFAULT_CAP as u64 {
         send(
             &mut a,
             &ToBus::Send {
@@ -1775,7 +1775,7 @@ async fn a_human_can_send_into_a_paused_room_and_unpauses_it() {
             },
         )
         .await;
-        // The last of these 21 sends is itself the one that trips the cap, so
+        // The last of these sends (one past the cap) is itself the one that trips the cap, so
         // (like the explicit "still going" check below) it enqueues a second,
         // resolving `Error` behind its `Paused` notice. Drain that too so it
         // isn't mistaken later for the reply to an unrelated request.
@@ -2352,7 +2352,7 @@ async fn a_relayers_traffic_still_counts_toward_the_exchange_cap() {
     .await;
     next_event(&mut hub).await;
 
-    for i in 0..21 {
+    for i in 0..=claude_bus::bus::delivery::DEFAULT_CAP as u64 {
         send(
             &mut hub,
             &ToBus::Send {
