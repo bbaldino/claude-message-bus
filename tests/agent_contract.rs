@@ -1677,3 +1677,150 @@ async fn a_new_session_does_not_inherit_a_dead_sessions_blocked_state() {
         status_of(port, "caas").await
     );
 }
+
+async fn call_tool_raw(
+    a: &mut InProcessAgent,
+    id: u64,
+    name: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    a.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": { "name": name, "arguments": args }
+    }))
+    .await;
+    for _ in 0..50 {
+        let v = a.next_json().await;
+        if v["id"] == id {
+            return v["result"].clone();
+        }
+    }
+    panic!("no tool result for id {id}");
+}
+
+fn png_bytes(len: usize) -> Vec<u8> {
+    let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    v.resize(len, 7);
+    v
+}
+
+/// Stores `bytes` in room "shots" under `key` through the agent's own `put_file`.
+async fn put_via_tool(
+    a: &mut InProcessAgent,
+    id: u64,
+    key: &str,
+    bytes: &[u8],
+    content_type: Option<&str>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(key);
+    std::fs::write(&path, bytes).unwrap();
+    let mut args = serde_json::json!({ "room": "shots", "key": key, "path": path });
+    if let Some(ct) = content_type {
+        args["content_type"] = serde_json::json!(ct);
+    }
+    let text = call_tool(a, id, "put_file", args).await;
+    assert!(text.starts_with("stored"), "{text}");
+}
+
+async fn file_agent() -> (tempfile::TempDir, InProcessAgent) {
+    let (dir, port) = common::start_bus().await;
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "viewer");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    wait_until_online(port, "viewer").await;
+    (dir, a)
+}
+
+fn image_block(result: &serde_json::Value) -> Option<serde_json::Value> {
+    result["content"]
+        .as_array()?
+        .iter()
+        .find(|c| c["type"] == "image")
+        .cloned()
+}
+
+#[tokio::test]
+async fn get_file_returns_an_image_the_model_can_see() {
+    use base64::Engine;
+    let (_dir, mut a) = file_agent().await;
+    let png = png_bytes(2_000);
+    put_via_tool(&mut a, 70, "shot.png", &png, Some("image/png")).await;
+    let r = call_tool_raw(
+        &mut a,
+        71,
+        "get_file",
+        serde_json::json!({ "room": "shots", "key": "shot.png" }),
+    )
+    .await;
+    let img = image_block(&r).unwrap_or_else(|| panic!("no image block: {r}"));
+    assert_eq!(img["mimeType"], "image/png");
+    assert_eq!(
+        img["data"],
+        base64::engine::general_purpose::STANDARD.encode(&png),
+        "the image data must be the stored bytes"
+    );
+}
+
+#[tokio::test]
+async fn an_image_stored_without_a_content_type_is_recognized_by_its_bytes() {
+    let (_dir, mut a) = file_agent().await;
+    put_via_tool(&mut a, 72, "untyped", &png_bytes(500), None).await;
+    let r = call_tool_raw(
+        &mut a,
+        73,
+        "get_file",
+        serde_json::json!({ "room": "shots", "key": "untyped" }),
+    )
+    .await;
+    let img = image_block(&r).unwrap_or_else(|| panic!("no image block: {r}"));
+    assert_eq!(img["mimeType"], "image/png");
+}
+
+#[tokio::test]
+async fn non_image_binary_still_comes_back_as_a_size_note() {
+    let (_dir, mut a) = file_agent().await;
+    put_via_tool(&mut a, 74, "blob.bin", &[0xFF, 0x00, 0xFE, 0x01], None).await;
+    let r = call_tool_raw(
+        &mut a,
+        75,
+        "get_file",
+        serde_json::json!({ "room": "shots", "key": "blob.bin" }),
+    )
+    .await;
+    assert!(image_block(&r).is_none(), "{r}");
+    assert!(
+        r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("binary data"),
+        "{r}"
+    );
+}
+
+#[tokio::test]
+async fn an_image_too_large_to_show_inline_says_so_instead() {
+    let (_dir, mut a) = file_agent().await;
+    put_via_tool(
+        &mut a,
+        76,
+        "huge.png",
+        &png_bytes(4 * 1024 * 1024),
+        Some("image/png"),
+    )
+    .await;
+    let r = call_tool_raw(
+        &mut a,
+        77,
+        "get_file",
+        serde_json::json!({ "room": "shots", "key": "huge.png" }),
+    )
+    .await;
+    assert!(
+        image_block(&r).is_none(),
+        "an oversized image must not be inlined: {r}"
+    );
+    let text = r["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("too large to show"), "{text}");
+}

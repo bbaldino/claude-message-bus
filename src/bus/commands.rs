@@ -271,6 +271,33 @@ pub(crate) async fn do_send(
     }
 }
 
+/// Store a file in a room and record it in the audit log. Shared by the
+/// websocket `PutFile` command and the HTTP participant upload, so both paths
+/// store, cap and log identically.
+pub(crate) async fn store_file(
+    app: &App,
+    me: &str,
+    room: &str,
+    key: &str,
+    bytes: &[u8],
+    content_type: Option<&str>,
+) -> anyhow::Result<crate::store::FileRow> {
+    let f = app
+        .store
+        .put_file(room, key, bytes, content_type, me)
+        .await?;
+    let _ = app
+        .store
+        .append_event(
+            "file_stored",
+            Some(me),
+            Some(room),
+            json!({ "key": &f.key, "size": f.size, "sha256": &f.sha256 }),
+        )
+        .await;
+    Ok(f)
+}
+
 pub(crate) async fn handle(
     app: &App,
     me: &str,
@@ -451,21 +478,8 @@ pub(crate) async fn handle(
                     return;
                 }
             };
-            match app
-                .store
-                .put_file(&room, &key, &bytes, content_type.as_deref(), me)
-                .await
-            {
+            match store_file(app, me, &room, &key, &bytes, content_type.as_deref()).await {
                 Ok(f) => {
-                    let _ = app
-                        .store
-                        .append_event(
-                            "file_stored",
-                            Some(me),
-                            Some(&room),
-                            json!({ "key": &f.key, "size": f.size, "sha256": &f.sha256 }),
-                        )
-                        .await;
                     let _ = control_tx.try_send(FromBus::Reply {
                         req_id,
                         result: ReplyResult::FileStored {

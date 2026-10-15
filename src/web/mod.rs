@@ -37,6 +37,7 @@ mod participants;
 
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     routing::{get, post},
 };
 
@@ -86,6 +87,11 @@ pub fn routes() -> Router<App> {
         .route("/api/participants/send", post(participants::send))
         .route("/api/participants/receive", get(participants::receive))
         .route("/api/participants/resume", post(participants::resume))
+        .route(
+            "/api/participants/files",
+            post(participants::store_file_http)
+                .layer(DefaultBodyLimit::max(participants::UPLOAD_BODY_LIMIT)),
+        )
         // The console used to live under `/app` while the server-rendered pages
         // held `/`. Bookmarks and reverse-proxy configs from that era still point
         // there, so send them to the same place at the root rather than 404ing.

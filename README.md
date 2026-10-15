@@ -38,6 +38,10 @@ own port (default `:7777`):
 - `POST /api/participants/send` `{target, text, done?}` → an `outcome` of `sent`
   (with `deliveredTo`/`queuedFor`), `rate_limited`, or `paused`.
 - `POST /api/participants/resume` `{room}` — relayer leases only.
+- `POST /api/participants/files` `{room, key, content_b64, content_type?}` →
+  `{key, size, sha256}` — store a file (e.g. a screenshot) in a room, up to 50 MB; the
+  HTTP counterpart of the `put_file` tool. Agents read it with `get_file`, which returns
+  PNG, JPEG, GIF and WebP images (up to 3.75 MB) as images the model can see.
 
 A plain lease is an ordinary bot, subject to the exchange guard. Authority is
 session-level, not per message, and set at registration with the correct

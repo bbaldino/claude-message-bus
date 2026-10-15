@@ -40,6 +40,40 @@ pub const BUS_TOOL_NAMES: [&str; 10] = [
     "status",
 ];
 
+/// The largest image `get_file` returns inline. Claude accepts images up to
+/// 5 MB once base64-encoded; 3.75 MB of raw bytes is the most that stays under
+/// that after encoding. A larger image gets a size note instead.
+pub const INLINE_IMAGE_CAP: usize = 3_750_000;
+
+/// The image type of a stored file, if it is one the model can view: from the
+/// stored content type when it names one, otherwise from the file's leading
+/// bytes (an upload that gave no content type is still a picture).
+pub fn image_mime(content_type: Option<&str>, bytes: &[u8]) -> Option<&'static str> {
+    const VIEWABLE: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+    if let Some(ct) = content_type {
+        let ct = ct
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if let Some(m) = VIEWABLE.iter().find(|m| **m == ct) {
+            return Some(m);
+        }
+    }
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 #[derive(Clone)]
 pub struct Handler {
     pub name: String,
@@ -196,7 +230,11 @@ impl rmcp::ServerHandler for Handler {
                 ),
                 Tool::new(
                     Cow::Borrowed("get_file"),
-                    Cow::Borrowed("Retrieve an artifact's contents from a room"),
+                    Cow::Borrowed(
+                        "Retrieve an artifact's contents from a room. Text comes back as \
+                         text; a PNG, JPEG, GIF or WebP image (up to 3.75 MB) comes back as \
+                         an image you can see.",
+                    ),
                     schema(json!({
                         "type": "object",
                         "properties": {
@@ -504,8 +542,31 @@ impl rmcp::ServerHandler for Handler {
                     .await
                 {
                     Ok(ReplyResult::FileContent {
-                        key, content_b64, ..
+                        key,
+                        content_b64,
+                        content_type,
                     }) => match base64::engine::general_purpose::STANDARD.decode(&content_b64) {
+                        // An image comes back as an image block the model can see,
+                        // not a byte count — that is the point of sharing a screenshot.
+                        Ok(bytes) if image_mime(content_type.as_deref(), &bytes).is_some() => {
+                            let mime = image_mime(content_type.as_deref(), &bytes)
+                                .expect("checked by the guard");
+                            if bytes.len() > INLINE_IMAGE_CAP {
+                                text_of(format!(
+                                    "{key} is a {mime} image of {} bytes, too large to show \
+                                     inline (the limit is {INLINE_IMAGE_CAP} bytes)",
+                                    bytes.len()
+                                ))
+                            } else {
+                                Ok(CallToolResult::success(vec![
+                                    ContentBlock::text(format!(
+                                        "{key} ({mime}, {} bytes)",
+                                        bytes.len()
+                                    )),
+                                    ContentBlock::image(content_b64, mime),
+                                ]))
+                            }
+                        }
                         Ok(bytes) => match String::from_utf8(bytes) {
                             Ok(text) => text_of(text),
                             Err(e) => text_of(format!(
@@ -598,5 +659,39 @@ impl rmcp::ServerHandler for Handler {
                 None,
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::image_mime;
+
+    #[test]
+    fn image_types_are_recognized_by_their_leading_bytes() {
+        assert_eq!(
+            image_mime(None, &[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(image_mime(None, b"GIF89a......"), Some("image/gif"));
+        assert_eq!(
+            image_mime(None, b"RIFF\x10\x00\x00\x00WEBPVP8 "),
+            Some("image/webp")
+        );
+        assert_eq!(
+            image_mime(None, b"RIFF\x10\x00\x00\x00WAVEfmt "),
+            None,
+            "RIFF alone is not WebP"
+        );
+        assert_eq!(image_mime(None, b"plain text"), None);
+    }
+
+    #[test]
+    fn a_stored_content_type_wins_and_tolerates_parameters_and_case() {
+        assert_eq!(
+            image_mime(Some("Image/PNG; foo=bar"), b"not png bytes"),
+            Some("image/png")
+        );
+        // A non-viewable image type falls back to sniffing, which finds nothing here.
+        assert_eq!(image_mime(Some("image/svg+xml"), b"<svg/>"), None);
     }
 }

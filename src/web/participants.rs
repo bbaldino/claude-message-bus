@@ -20,7 +20,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::bus::App;
-use crate::bus::commands::{Authority, SendOutcome, do_send};
+use crate::bus::commands::{Authority, SendOutcome, do_send, store_file};
 use crate::bus::participant::{LeaseHandle, RelayerDecision};
 use crate::proto::Target;
 use crate::store::MessageRow;
@@ -416,4 +416,86 @@ pub(crate) async fn resume(
         )
         .await;
     StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct FileRequest {
+    room: String,
+    key: String,
+    /// The file's bytes, base64 — the same encoding the websocket `PutFile` uses.
+    content_b64: String,
+    #[serde(default)]
+    content_type: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct FileStoredDto {
+    key: String,
+    size: i64,
+    sha256: String,
+}
+
+/// The request body limit for `store_file`: the store's blob cap as base64
+/// (4/3 of it) plus room for the JSON around it. axum's default (2 MB) would
+/// refuse an ordinary screenshot once encoded.
+pub(crate) const UPLOAD_BODY_LIMIT: usize = crate::store::MAX_BLOB_BYTES / 3 * 4 + 1024 * 1024;
+
+/// `POST /api/participants/files` — store a file in a room: the HTTP
+/// counterpart of the `put_file` tool, so a participant like raven can share a
+/// screenshot. Same lease and same-origin rules as `send`; the store, its 50 MB
+/// cap and the `file_stored` audit event are shared with the websocket path.
+pub(crate) async fn store_file_http(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(body): Json<FileRequest>,
+) -> Response {
+    if !origin_ok(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(lease) = token_lease(&app, &headers).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    use base64::Engine;
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(&body.content_b64) {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("content_b64 is not valid base64: {e}"),
+            )
+                .into_response();
+        }
+    };
+    if bytes.len() > crate::store::MAX_BLOB_BYTES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "file is {} bytes; the limit is {} bytes",
+                bytes.len(),
+                crate::store::MAX_BLOB_BYTES
+            ),
+        )
+            .into_response();
+    }
+    match store_file(
+        &app,
+        &lease.name,
+        &body.room,
+        &body.key,
+        &bytes,
+        body.content_type.as_deref(),
+    )
+    .await
+    {
+        Ok(f) => Json(FileStoredDto {
+            key: f.key,
+            size: f.size,
+            sha256: f.sha256,
+        })
+        .into_response(),
+        Err(e) => {
+            eprintln!("POST /api/participants/files could not store it: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
 }

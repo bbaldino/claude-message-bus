@@ -542,3 +542,100 @@ async fn an_http_participant_does_not_inherit_a_previous_holders_status() {
     let detail = common::get_json(port, "/api/agents/raven").await;
     assert!(detail["status"].is_null(), "{detail}");
 }
+
+/// A tiny but genuine PNG: the 8-byte signature plus padding. Enough for the store
+/// (any bytes) and for get_file's magic-byte sniffing.
+fn png_bytes(len: usize) -> Vec<u8> {
+    let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    v.resize(len, 7);
+    v
+}
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+async fn register_token(port: u16, name: &str) -> String {
+    let (status, body) =
+        post_json_headers(port, "/api/participants", json!({ "name": name }), &[]).await;
+    assert_eq!(status, 200, "{body}");
+    serde_json::from_str::<Value>(&body).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_participant_can_store_a_file_in_a_room() {
+    let (_d, port, _p) = common::start_bus_with_participants_dir(Default::default()).await;
+    let token = register_token(port, "raven").await;
+    let png = png_bytes(1_000);
+    let (status, body) = post_json_headers(
+        port,
+        "/api/participants/files",
+        json!({ "room": "shots", "key": "a.png", "content_b64": b64(&png), "content_type": "image/png" }),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["key"], "a.png");
+    assert_eq!(v["size"], 1_000);
+    assert_eq!(v["sha256"].as_str().unwrap().len(), 64, "{body}");
+
+    let files = common::get_json(port, "/api/rooms/shots/files").await;
+    let f = files
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["key"] == "a.png")
+        .unwrap_or_else(|| panic!("not listed: {files}"));
+    assert_eq!(f["size"], 1_000);
+    assert_eq!(f["updatedBy"], "raven");
+    assert_eq!(f["contentType"], "image/png");
+}
+
+#[tokio::test]
+async fn a_screenshot_larger_than_the_default_body_limit_is_accepted() {
+    // A 3 MB PNG is ~4 MB of base64: well past axum's 2 MB default request limit.
+    let (_d, port, _p) = common::start_bus_with_participants_dir(Default::default()).await;
+    let token = register_token(port, "raven").await;
+    let (status, body) = post_json_headers(
+        port,
+        "/api/participants/files",
+        json!({ "room": "shots", "key": "big.png", "content_b64": b64(&png_bytes(3 * 1024 * 1024)), "content_type": "image/png" }),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+}
+
+#[tokio::test]
+async fn storing_a_file_needs_a_live_lease_same_origin_and_valid_base64() {
+    let (_d, port, _p) = common::start_bus_with_participants_dir(Default::default()).await;
+    let token = register_token(port, "raven").await;
+    let body = json!({ "room": "shots", "key": "a.png", "content_b64": b64(&png_bytes(10)) });
+    let (no_token, _) = post_json_headers(port, "/api/participants/files", body.clone(), &[]).await;
+    assert_eq!(no_token, 401);
+    let (cross, _) = post_json_headers(
+        port,
+        "/api/participants/files",
+        body,
+        &[
+            ("X-Participant-Token", &token),
+            ("Origin", "http://evil.example"),
+        ],
+    )
+    .await;
+    assert_eq!(cross, 403);
+    let (bad, msg) = post_json_headers(
+        port,
+        "/api/participants/files",
+        json!({ "room": "shots", "key": "a.png", "content_b64": "not base64!!" }),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(bad, 400, "{msg}");
+    assert!(msg.contains("base64"), "{msg}");
+}
