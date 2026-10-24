@@ -22,15 +22,15 @@ The core is a library function (`claude_bus::spawn::run`), so a later per-host s
 ## Usage
 
 ```
-claude-bus spawn <name> [--prompt "<first task>"] [--mode auto|unattended]
+claude-bus spawn <name> [--prompt "<first task>"] [--mode unattended|auto]
                         [--root <dir>] [--bus ws://host:7777/ws]
 ```
 
 - `<name>` must match `^[a-z0-9-]+$`. It becomes the directory, the tmux session and the agent name.
 - `--prompt`: the session's first message. Optional.
-- `--mode`: `auto` (the default) or `unattended`. Both forbid the tools that would wait on a terminal nobody is attached to (`AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`).
-  - `auto` adds `--permission-mode auto`. Claude Code settles most permission prompts itself, but risky actions still pause and show as "blocked on human" in agent status.
-  - `unattended` adds `--dangerously-skip-permissions`, exactly like `claude-bus launch` (hub's workers).
+- `--mode`: `unattended` (the default) or `auto`. Both forbid the tools that would wait on a terminal nobody is attached to (`AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`).
+  - `unattended` adds `--dangerously-skip-permissions`, so plain `spawn` starts the session exactly as `claude-bus launch` does (hub's workers). The human chose this default on 2026-10-24: a spawned session should be no different from a manually launched one.
+  - `auto` (opt-in) adds `--permission-mode auto`. Claude Code settles most permission prompts itself, but risky actions still pause and show as "blocked on human" in agent status.
 - `--root`: where projects are created. The default is `~/work`, and any value must be `~/work` or inside it.
 - `--bus`: used to check that the name is free, to wait for registration, and for `init` where it runs. The default is `ws://127.0.0.1:7777/ws`, like the other commands.
 
@@ -83,7 +83,7 @@ Rules for the keypress fallback:
 - **Who triggers it:** only the human's own words (directly, or through a relayer). This is hub's policy under the bus's existing `human="true"` rule; an agent's request is never enough.
 - **What it can create:** only a new directory under `~/work`, with a validated name. It never overwrites an existing directory, tmux session or agent name.
 - **What the new session can touch:** anything the user can. The directory restriction controls where a project is created, not what the session may do. Real confinement would need a container or a separate user, and is out of scope.
-- **Permission mode:** `auto` by default (see Usage). `unattended` must be asked for explicitly.
+- **Permission mode:** the same as `claude-bus launch` by default (prompts skipped). `auto` must be asked for explicitly.
 
 ## Not in v1
 

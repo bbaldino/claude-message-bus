@@ -44,7 +44,7 @@ fn usage() -> ! {
          (non-interactive; e.g. add --continue)"
     );
     eprintln!(
-        "  claude-bus spawn <name> [--prompt <task>] [--mode auto|unattended] [--root <dir>] \
+        "  claude-bus spawn <name> [--prompt <task>] [--mode unattended|auto] [--root <dir>] \
          [--bus ws://host:7777/ws]   # new project + session in tmux"
     );
     eprintln!("  claude-bus tail <room> [--bus ws://host:7777/ws]");
@@ -167,16 +167,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("spawn") => {
             let usage = "usage: claude-bus spawn <name> [--prompt \"<first task>\"] \
-                         [--mode auto|unattended] [--root <dir>] [--bus ws://host:7777/ws]";
+                         [--mode unattended|auto] [--root <dir>] [--bus ws://host:7777/ws]";
             let Some(name) = args.get(2).filter(|a| !a.starts_with("--")).cloned() else {
                 eprintln!("{usage}");
                 std::process::exit(2);
             };
-            let mode = match flag(&args, "--mode").as_deref() {
-                None | Some("auto") => claude_bus::launch::LaunchMode::Auto,
-                Some("unattended") => claude_bus::launch::LaunchMode::Unattended,
-                Some(other) => {
-                    eprintln!("claude-bus spawn: --mode must be auto or unattended, got {other:?}");
+            let mode = match claude_bus::spawn::parse_mode(flag(&args, "--mode").as_deref()) {
+                Ok(mode) => mode,
+                Err(e) => {
+                    eprintln!("claude-bus spawn: {e}");
                     std::process::exit(2);
                 }
             };

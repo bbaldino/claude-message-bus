@@ -217,6 +217,16 @@ pub fn dialog_in_home(pane: &str, dir: &Path, home: &Path) -> Option<Dialog> {
     }
 }
 
+/// Parses `--mode`. Without it, spawn starts the session exactly as
+/// `claude-bus launch` does; `auto` is an opt-in.
+pub fn parse_mode(arg: Option<&str>) -> Result<LaunchMode, String> {
+    match arg {
+        None | Some("unattended") => Ok(LaunchMode::Unattended),
+        Some("auto") => Ok(LaunchMode::Auto),
+        Some(other) => Err(format!("--mode must be unattended or auto, got {other:?}")),
+    }
+}
+
 fn mode_name(mode: LaunchMode) -> &'static str {
     match mode {
         LaunchMode::Auto => "auto",
@@ -508,6 +518,20 @@ mod tests {
         ] {
             assert!(validate_name(bad).is_err(), "{bad:?} must be refused");
         }
+    }
+
+    #[test]
+    fn plain_spawn_launches_exactly_like_claude_bus_launch() {
+        assert_eq!(parse_mode(None), Ok(LaunchMode::Unattended));
+        assert_eq!(parse_mode(Some("unattended")), Ok(LaunchMode::Unattended));
+        assert_eq!(parse_mode(Some("auto")), Ok(LaunchMode::Auto));
+        assert!(parse_mode(Some("manual")).is_err());
+        let cmd = claude_command("foo", parse_mode(None).unwrap(), None);
+        let env_end = cmd.iter().position(|a| a == "claude").unwrap();
+        assert_eq!(
+            cmd[env_end + 1..],
+            crate::launch::build_launch_args(&[])[..]
+        );
     }
 
     #[test]

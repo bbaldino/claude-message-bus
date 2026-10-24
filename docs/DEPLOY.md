@@ -218,7 +218,7 @@ but nothing prunes them.
 bus. Hub runs it on hardac when you ask (only on your own words, never another agent's):
 
 ```
-claude-bus spawn <name> [--prompt "<first task>"] [--mode auto|unattended] \
+claude-bus spawn <name> [--prompt "<first task>"] [--mode unattended|auto] \
                         [--root <dir>] [--bus ws://claude-msg-bus.home:7777/ws]
 ```
 
@@ -228,9 +228,10 @@ claude-bus spawn <name> [--prompt "<first task>"] [--mode auto|unattended] \
 - The session runs in your normal tmux server, in your usual layout: window 0 `claude`
   (the interactive TUI; attach and type into it), window 1 a shell. Attach with
   `tmux attach -t <name>`. tmux-resurrect saves it like any other session.
-- `--mode auto` (the default) lets Claude Code settle most permission prompts itself.
-  Risky actions still pause, and agent status shows them as "blocked on human".
-  `--mode unattended` skips every prompt, like `claude-bus launch`.
+- By default the session starts exactly as `claude-bus launch` would, with the same flags,
+  so it skips permission prompts. `--mode auto` is an opt-in that uses Claude Code's auto
+  permission mode instead: Claude Code settles most prompts itself, risky actions still
+  pause, and agent status shows them as "blocked on human".
 - `--root` must be `~/work` or inside it.
 - Spawn waits up to 30s for the new agent to come online, then runs `git init` in the
   project. Each attempt is logged to `~/.local/state/claude-bus/spawn.log`.
