@@ -212,6 +212,35 @@ doc promised that the build simply didn't get to:
 Events accumulate with no retention policy. At LAN volumes that is fine for a long time,
 but nothing prunes them.
 
+## Starting a new project from chat
+
+`claude-bus spawn` creates a project and starts a Claude Code session in it, already on the
+bus. Hub runs it on hardac when you ask (only on your own words, never another agent's):
+
+```
+claude-bus spawn <name> [--prompt "<first task>"] [--mode auto|unattended] \
+                        [--root <dir>] [--bus ws://claude-msg-bus.home:7777/ws]
+```
+
+- `<name>` uses lowercase letters, digits and dashes. It becomes the directory
+  (`~/work/<name>`), the tmux session and the agent name. Spawn refuses a name whose
+  directory, tmux session or agent already exists.
+- The session runs in your normal tmux server, in your usual layout: window 0 `claude`
+  (the interactive TUI; attach and type into it), window 1 a shell. Attach with
+  `tmux attach -t <name>`. tmux-resurrect saves it like any other session.
+- `--mode auto` (the default) lets Claude Code settle most permission prompts itself.
+  Risky actions still pause, and agent status shows them as "blocked on human".
+  `--mode unattended` skips every prompt, like `claude-bus launch`.
+- `--root` must be `~/work` or inside it.
+- Spawn waits up to 30s for the new agent to come online, then runs `git init` in the
+  project. Each attempt is logged to `~/.local/state/claude-bus/spawn.log`.
+- It answers the development-channels warning for you. It doesn't need to answer the
+  folder-trust prompt because `~/work` is trusted. If an unexpected dialog appears,
+  spawn stops after 30s, says so, and leaves the session up for you to attach.
+
+The new folder is a nested git repository, so the next time you start `claude` in it by
+hand, Claude Code asks once whether you trust it. That's normal.
+
 ## Joining a conversation yourself
 
 `claude-bus tail <room>` shows a room without joining it. To take part:

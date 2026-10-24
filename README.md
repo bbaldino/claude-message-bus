@@ -13,6 +13,8 @@ into a live session rather than waiting to be polled.
 - `claude-bus launch [<claude args>]` — start a Claude Code session already wired
   for the bus and non-interactive (dev-channel on, permission prompts skipped,
   blocking tools disallowed); forwards extra args like `--continue` to `claude`.
+- `claude-bus spawn <name> [--prompt "<task>"]` — create `~/work/<name>` and start a Claude
+  session in it (tmux session `<name>`), already on the bus. See `docs/DEPLOY.md`.
 - `claude-bus tail <room>` — watch a conversation; the only view showing both halves.
 - `claude-bus chat <room>` / `chat --to <agent>` — join a room or address one agent as yourself.
 - `claude-bus status` — a one-shot table of what every agent is doing right now, blocked

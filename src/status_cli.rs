@@ -38,7 +38,16 @@ pub fn table(agents: &[AgentInfo], now: i64) -> String {
 }
 
 pub async fn run(bus: String) -> anyhow::Result<()> {
-    let (ws, _) = tokio_tungstenite::connect_async(&bus).await?;
+    let agents = fetch_agents(&bus).await?;
+    println!("{}", table(&agents, crate::store::now_ms()));
+    Ok(())
+}
+
+/// Every agent the bus knows, read as an observer (no registration, no row in
+/// `agents`). Shared with `spawn`, which checks a name is free and then waits
+/// for the new session to come online.
+pub async fn fetch_agents(bus: &str) -> anyhow::Result<Vec<AgentInfo>> {
+    let (ws, _) = tokio_tungstenite::connect_async(bus).await?;
     let (mut sink, mut stream) = ws.split();
     for cmd in [
         ToBus::Observe {
@@ -62,10 +71,7 @@ pub async fn run(bus: String) -> anyhow::Result<()> {
             Ok(FromBus::Reply {
                 req_id: 1,
                 result: ReplyResult::Agents { agents },
-            }) => {
-                println!("{}", table(&agents, crate::store::now_ms()));
-                return Ok(());
-            }
+            }) => return Ok(agents),
             Ok(FromBus::Error { message, .. }) => anyhow::bail!("bus refused: {message}"),
             _ => continue,
         }

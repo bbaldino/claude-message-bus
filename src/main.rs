@@ -43,6 +43,10 @@ fn usage() -> ! {
         "  claude-bus launch [<claude args>...]   # start claude wired for the bus \
          (non-interactive; e.g. add --continue)"
     );
+    eprintln!(
+        "  claude-bus spawn <name> [--prompt <task>] [--mode auto|unattended] [--root <dir>] \
+         [--bus ws://host:7777/ws]   # new project + session in tmux"
+    );
     eprintln!("  claude-bus tail <room> [--bus ws://host:7777/ws]");
     eprintln!("  claude-bus status [--bus ws://host:7777/ws]   # every agent's status");
     eprintln!("  claude-bus chat (<room> | --to <agent>) [--bus ws://host:7777/ws] [--name <n>]");
@@ -160,6 +164,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             init::run(init_args)?;
             Ok(())
+        }
+        Some("spawn") => {
+            let usage = "usage: claude-bus spawn <name> [--prompt \"<first task>\"] \
+                         [--mode auto|unattended] [--root <dir>] [--bus ws://host:7777/ws]";
+            let Some(name) = args.get(2).filter(|a| !a.starts_with("--")).cloned() else {
+                eprintln!("{usage}");
+                std::process::exit(2);
+            };
+            let mode = match flag(&args, "--mode").as_deref() {
+                None | Some("auto") => claude_bus::launch::LaunchMode::Auto,
+                Some("unattended") => claude_bus::launch::LaunchMode::Unattended,
+                Some(other) => {
+                    eprintln!("claude-bus spawn: --mode must be auto or unattended, got {other:?}");
+                    std::process::exit(2);
+                }
+            };
+            let Some(home) = std::env::var_os("HOME") else {
+                eprintln!("claude-bus spawn: HOME is not set");
+                std::process::exit(2);
+            };
+            let req = claude_bus::spawn::SpawnRequest {
+                name,
+                prompt: flag(&args, "--prompt"),
+                mode,
+                root: flag(&args, "--root").map(std::path::PathBuf::from),
+                bus: flag(&args, "--bus").unwrap_or_else(|| "ws://127.0.0.1:7777/ws".to_string()),
+                home: std::path::PathBuf::from(home),
+            };
+            match claude_bus::spawn::run(&req, &claude_bus::spawn::RealSystem).await {
+                Ok(out) => {
+                    println!("spawned {}", out.name);
+                    println!("  directory     {}", out.dir.display());
+                    println!(
+                        "  tmux session  {}  (window 0: claude, window 1: shell)",
+                        out.tmux_session
+                    );
+                    println!("  attach        tmux attach -t {}", out.tmux_session);
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("claude-bus spawn: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         Some("hook") => {
             // Not a person-facing command: Claude Code invokes this directly, installed

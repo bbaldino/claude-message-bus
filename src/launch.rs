@@ -7,13 +7,24 @@
 //! caller appends — `--continue`, a `-p` prompt, whatever — is forwarded to
 //! `claude` verbatim, so the caller opts into those themselves.
 
-/// Build the argument vector passed to `claude`: the fixed flags first, then the
-/// caller's own args appended verbatim.
+/// How a session started for the bus handles permission prompts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaunchMode {
+    /// `--dangerously-skip-permissions`: nothing ever asks. What `claude-bus
+    /// launch` (hub's workers) uses.
+    Unattended,
+    /// `--permission-mode auto`: Claude Code settles most prompts itself, and a
+    /// risky action still pauses — visible as "blocked on human" in agent status.
+    Auto,
+}
+
+/// Build the argument vector passed to `claude` for `mode`: the fixed flags
+/// first, then the caller's own args appended verbatim.
 ///
-/// `--dangerously-skip-permissions` is placed *after* the `--disallowedTools`
-/// list so the variadic list is bounded by it — a caller's passthrough arg can
-/// never be swallowed as another disallowed-tool name.
-pub fn build_launch_args(extra: &[String]) -> Vec<String> {
+/// The permission flag comes *after* the `--disallowedTools` list, so the
+/// variadic list is bounded by it — a caller's passthrough arg can never be
+/// swallowed as another disallowed-tool name.
+pub fn build_claude_args(mode: LaunchMode, extra: &[String]) -> Vec<String> {
     let mut args: Vec<String> = [
         "--dangerously-load-development-channels",
         "server:msgbus",
@@ -21,13 +32,21 @@ pub fn build_launch_args(extra: &[String]) -> Vec<String> {
         "AskUserQuestion",
         "EnterPlanMode",
         "ExitPlanMode",
-        "--dangerously-skip-permissions",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
+    match mode {
+        LaunchMode::Unattended => args.push("--dangerously-skip-permissions".into()),
+        LaunchMode::Auto => args.extend(["--permission-mode".into(), "auto".into()]),
+    }
     args.extend(extra.iter().cloned());
     args
+}
+
+/// `claude-bus launch`'s argument vector: the unattended posture.
+pub fn build_launch_args(extra: &[String]) -> Vec<String> {
+    build_claude_args(LaunchMode::Unattended, extra)
 }
 
 /// Replace this process with `claude`, launched with the bus flags plus `extra`.
@@ -88,6 +107,35 @@ mod tests {
         assert!(
             disallow < skip && skip < cont,
             "the disallowed-tools list must be capped before passthrough: {args:?}"
+        );
+    }
+
+    #[test]
+    fn auto_mode_keeps_the_channel_and_tool_limits_but_lets_claude_settle_permissions() {
+        let args = build_claude_args(LaunchMode::Auto, &["first task".to_string()]);
+        assert_eq!(
+            args,
+            vec![
+                "--dangerously-load-development-channels",
+                "server:msgbus",
+                "--disallowedTools",
+                "AskUserQuestion",
+                "EnterPlanMode",
+                "ExitPlanMode",
+                "--permission-mode",
+                "auto",
+                "first task",
+            ]
+        );
+        assert!(!args.iter().any(|a| a == "--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn unattended_mode_is_exactly_what_launch_uses() {
+        let extra = vec!["--continue".to_string()];
+        assert_eq!(
+            build_claude_args(LaunchMode::Unattended, &extra),
+            build_launch_args(&extra)
         );
     }
 }

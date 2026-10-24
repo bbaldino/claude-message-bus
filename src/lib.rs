@@ -6,6 +6,7 @@ pub mod hook;
 pub mod init;
 pub mod launch;
 pub mod proto;
+pub mod spawn;
 pub mod status_cli;
 pub mod status_text;
 pub mod store;

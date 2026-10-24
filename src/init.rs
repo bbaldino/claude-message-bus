@@ -388,7 +388,7 @@ fn claude_mcp_add(scope: Scope, bus_url: &str) -> anyhow::Result<()> {
 /// unrecognized format, or the third `local` scope `init` doesn't offer),
 /// and is treated the same as "differs": ambiguous enough to need a human,
 /// not a value worth guessing at.
-fn parse_mcp_scope(raw: &str) -> Option<Scope> {
+pub(crate) fn parse_mcp_scope(raw: &str) -> Option<Scope> {
     if raw.contains("Project config") {
         Some(Scope::Project)
     } else if raw.contains("User config") {

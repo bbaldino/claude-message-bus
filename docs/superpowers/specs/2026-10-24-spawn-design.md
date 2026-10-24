@@ -1,6 +1,6 @@
 # `claude-bus spawn`: start a new project from chat
 
-Status: v1, approved by the human via hub (2026-10-24). The dialog handling (§ Dialogs) awaits the human's choice.
+Status: v1, approved by the human via hub (2026-10-24). Dialog handling decided: an official mechanism where one exists, keypresses otherwise (§ Dialogs). Verified live on hardac.
 
 ## Goal
 
@@ -39,7 +39,7 @@ On success, it prints the agent name, the directory, the tmux session, and `tmux
 ## Steps
 
 1. **Validate.** The name matches the pattern. `<root>/<name>` does not exist. The root resolves (symlinks followed) to `~/work` or below. No agent with that name is registered on the bus (checked with the observer `list_agents`, the same call `claude-bus status` uses). A tmux session of that name does not already exist.
-2. **Create** `<root>/<name>` and run `git init` in it.
+2. **Create** `<root>/<name>`. `git init` comes later (step 7) — see Dialogs.
 3. **Wire to the bus.** If `claude mcp get msgbus` reports a **user-scope** entry, skip this step: user scope already connects every project (hardac today). Otherwise run `claude-bus init --project --yes --bus <bus>` in the new directory.
    - `init --project` refuses when a user-scope entry exists, which is why the check comes first.
 4. **Start tmux** in the human's default server (no `-L` socket), matching the convention for every project on hardac:
@@ -50,26 +50,33 @@ On success, it prints the agent name, the directory, the tmux session, and `tmux
    - That clears the spawning session's own Claude Code variables, so the child can't inherit hub's identity, and pins the agent name.
 5. **Dialogs** (see below).
 6. **Wait** up to 30s for `<name>` to show as online on the bus.
-7. **Log** one JSON line per attempt to `$XDG_STATE_HOME/claude-bus/spawn.log` (default `~/.local/state/…`): time, name, directory, mode, result, and the error if any. The same line also goes to stderr.
+7. **`git init`** in the project, now that the session is running.
+8. **Log** one JSON line per attempt to `$XDG_STATE_HOME/claude-bus/spawn.log` (default `~/.local/state/…`): time, name, directory, mode, result, and the error if any. The same line also goes to stderr.
 
 ### Failure handling
 
 - **Before step 2:** nothing has been created.
 - **Failure in steps 2–4:** spawn removes the directory it created (it holds only what spawn put there) and kills the tmux session if it started one.
 - **Failure in steps 5–6** (a dialog not recognized, or registration timed out): the session is **left running**, so the human can attach and finish by hand. The error includes the last lines of the claude window.
+- **Failure in step 7:** the agent is already online. The error says so and leaves everything in place.
 
 ## Dialogs
 
-A brand-new project hits two interactive dialogs before the session reaches the bus. This was verified live on 2026-10-24:
-1. **Folder trust**: "Is this a project you created or one you trust?" It appears for every new git repository, even inside a trusted folder, because trust is per project root.
-2. **Development channels warning**: "I am using this for local development". It appears on every launch with `--dangerously-load-development-channels server:msgbus`.
+A brand-new project can hit two interactive dialogs before the session reaches the bus, and nobody is attached to answer them (verified live on 2026-10-24). The human chose: use a supported flag or setting where one exists, and otherwise answer by keypress, matched on exact text and failing safe. Claude Code's docs were checked for each.
 
-**Recommended (pending the human's choice):** spawn answers both by keypress through tmux.
-- It reads the claude window with `capture-pane`, and acts only when a dialog's identifying text matches exactly.
-- It accepts trust only for the directory it created in this run.
-- Unrecognized text is never guessed at: the run falls through to the 30s registration timeout with the window contents in the error.
+| Dialog | Supported way to avoid it? | What spawn does |
+|---|---|---|
+| **Folder trust**: "Is this a project you created or one you trust?" | No flag, env var or settings key. The only documented pre-trust is editing `~/.claude.json`, which this repo never does. **But trust is inherited:** trusting a folder "covers any subdirectory of that directory apart from a git repository nested inside it". | **Official route.** `~/work` is already trusted on hardac, so a new folder inside it is covered, *as long as it isn't yet a git repository*. So spawn starts the session first and runs `git init` only after the agent is online. Verified live: no trust dialog. |
+| | | **Fallback:** if a trust prompt does appear (an untrusted root, another host), spawn answers it by keypress only when it names the exact directory this run created, either as written or in its `~/…` form. |
+| **Development channels**: "WARNING: Loading development channels … I am using this for local development" | Only for a channel plugin on Anthropic's allowlist, or on an organization's `allowedChannelPlugins` (managed settings, Team/Enterprise). A local `server:msgbus` channel has no supported non-interactive acceptance. | **Keypress fallback:** Enter, which confirms the default "I am using this for local development". This is the same confirmation the human gives by hand when launching any bus worker. |
 
-The alternative is to stop after starting the session and have the human attach to answer the dialogs. Editing `~/.claude.json` to pre-trust the folder is ruled out: this repo never writes that file.
+Rules for the keypress fallback:
+- The claude window is read with `tmux capture-pane -p -J`. The `-J` flag joins wrapped lines, so a long path matches whole.
+- A dialog is answered only when its identifying text matches exactly.
+- Each dialog is answered at most once. If it is still on screen at the next poll, the TUI hasn't redrawn yet.
+- Text that isn't recognized, such as a reworded dialog after a Claude Code update, is never guessed at. The run falls through to the 30s timeout, with the window contents in the error and the session left up.
+
+**Known limit:** on a host *without* a user-scope `msgbus` entry, spawn runs `init --project`. That writes a project `.mcp.json`, which raises a third dialog ("New MCP server found in this project"). Spawn doesn't answer it, so the run times out with the attach hint. hardac uses user scope, so v1 isn't affected.
 
 ## Security
 
