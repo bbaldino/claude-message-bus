@@ -3206,3 +3206,124 @@ async fn a_send_naming_a_file_not_in_the_room_is_refused_and_not_sent() {
         "nothing was stored"
     );
 }
+
+async fn send_with_files(ws: &mut common::Ws, req_id: u64, files: Vec<String>) -> FromBus {
+    send(
+        ws,
+        &ToBus::Send {
+            req_id,
+            target: Target::Agent {
+                name: "dashboard".into(),
+            },
+            text: format!("try {req_id}"),
+            done: false,
+            files,
+        },
+    )
+    .await;
+    next_event(ws).await
+}
+
+#[tokio::test]
+async fn a_refused_attachment_spends_no_cap_or_rate_budget() {
+    // Cap 2 with no rate limit: three refused sends would pause the room if
+    // they counted.
+    let guards = claude_bus::bus::delivery::Guards::new(2, 0);
+    let (_d, port, _p) = start_bus_with_guards_dir(guards).await;
+    let mut a = connect(port, "caas").await;
+    let mut b = connect(port, "dashboard").await;
+    next_event(&mut a).await;
+    next_event(&mut b).await;
+    for i in 0..3 {
+        match send_with_files(&mut a, i, vec!["nope.png".into()]).await {
+            FromBus::Error { .. } => {}
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+    match send_with_files(&mut a, 9, vec![]).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { .. },
+            ..
+        } => {}
+        other => panic!("refusals must not count toward the cap: {other:?}"),
+    }
+
+    // A 5s minimum interval: a refusal that took the slot would rate-limit
+    // the valid send right after it.
+    let guards =
+        claude_bus::bus::delivery::Guards::new(claude_bus::bus::delivery::DEFAULT_CAP, 5_000);
+    let (_d, port, _p) = start_bus_with_guards_dir(guards).await;
+    let mut a = connect(port, "caas").await;
+    let mut b = connect(port, "dashboard").await;
+    next_event(&mut a).await;
+    next_event(&mut b).await;
+    match send_with_files(&mut a, 1, vec!["nope.png".into()]).await {
+        FromBus::Error { .. } => {}
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    match send_with_files(&mut a, 2, vec![]).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { .. },
+            ..
+        } => {}
+        other => panic!("a refusal must not take the rate slot: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn at_most_ten_files_and_repeats_collapse() {
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    let mut b = connect(port, "dashboard").await;
+    next_event(&mut a).await;
+    next_event(&mut b).await;
+    put(&mut a, "dm:caas|dashboard", "a.png", b"a").await;
+
+    let eleven = vec!["a.png".to_string(); 11];
+    match send_with_files(&mut a, 1, eleven).await {
+        FromBus::Error { message, .. } => assert!(message.contains("10"), "{message}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    match send_with_files(&mut a, 2, vec!["a.png".into(), "a.png".into()]).await {
+        FromBus::Reply {
+            result: ReplyResult::Sent { files, .. },
+            ..
+        } => assert_eq!(
+            files,
+            vec!["a.png".to_string()],
+            "the bus reports what it attached"
+        ),
+        other => panic!("expected Sent, got {other:?}"),
+    }
+    match next_message(&mut b).await {
+        FromBus::Message { files, .. } => assert_eq!(files.len(), 1),
+        other => panic!("expected Message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_send_frame_without_files_from_an_older_agent_still_sends() {
+    use futures_util::SinkExt;
+    let (_d, port) = start_bus().await;
+    let mut a = connect(port, "caas").await;
+    let mut b = connect(port, "dashboard").await;
+    next_event(&mut a).await;
+    next_event(&mut b).await;
+    let raw = serde_json::json!({
+        "type": "send", "req_id": 1,
+        "target": { "kind": "agent", "name": "dashboard" },
+        "text": "from an old binary", "done": false
+    });
+    a.send(tokio_tungstenite::tungstenite::Message::text(
+        raw.to_string(),
+    ))
+    .await
+    .unwrap();
+    match next_message(&mut b).await {
+        FromBus::Message { text, files, .. } => {
+            assert_eq!(text, "from an old binary");
+            assert!(files.is_empty());
+        }
+        other => panic!("expected Message, got {other:?}"),
+    }
+}

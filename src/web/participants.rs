@@ -203,6 +203,7 @@ pub(crate) enum SendOutcomeDto {
         msg_id: i64,
         delivered_to: Vec<String>,
         queued_for: Vec<String>,
+        files: Vec<String>,
     },
     RateLimited {
         retry_in_ms: i64,
@@ -251,11 +252,13 @@ pub(crate) async fn send(
             msg_id,
             delivered_to,
             queued_for,
+            files,
         } => Json(SendOutcomeDto::Sent {
             room,
             msg_id,
             delivered_to,
             queued_for,
+            files,
         })
         .into_response(),
         SendOutcome::RateLimited { retry_in_ms } => {
@@ -522,9 +525,9 @@ pub(crate) struct FetchFileQuery {
 /// a participant that received an attachment. The HTTP counterpart of the
 /// `get_file` tool.
 ///
-/// Only rooms the lease is a member of (403 otherwise): the bus's room files
-/// are otherwise readable by any agent, but a participant token is a narrower
-/// credential, and the attachments it is for always arrive in its own rooms.
+/// Only rooms the lease is a member of (403 otherwise), since the attachments
+/// it is for always arrive in its own rooms. This is scoping, not a security
+/// boundary: sending to a room joins it, and any agent can already `get_file`.
 /// `sha256`, when given, must still match: 409 means the key was overwritten
 /// after the message that attached it was sent.
 pub(crate) async fn fetch_file(
@@ -563,9 +566,12 @@ pub(crate) async fn fetch_file(
         )
             .into_response();
     }
+    // Whatever the uploader claimed, unvalidated on both upload paths. A value
+    // that is not a legal header must not make the file unfetchable.
     let content_type = row
         .content_type
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+        .and_then(|ct| axum::http::HeaderValue::from_str(&ct).ok())
+        .unwrap_or_else(|| axum::http::HeaderValue::from_static("application/octet-stream"));
     // The type is whatever the uploader claimed; nosniff keeps a browser from
     // second-guessing it into something executable.
     (
@@ -573,7 +579,7 @@ pub(crate) async fn fetch_file(
             (axum::http::header::CONTENT_TYPE, content_type),
             (
                 axum::http::header::X_CONTENT_TYPE_OPTIONS,
-                "nosniff".to_string(),
+                axum::http::HeaderValue::from_static("nosniff"),
             ),
         ],
         bytes,

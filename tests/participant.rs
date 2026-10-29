@@ -847,3 +847,53 @@ async fn a_participant_send_attaches_a_file_it_stored() {
         other => panic!("expected Message, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_file_stored_with_an_unusable_content_type_is_still_fetchable() {
+    use claude_bus::proto::{Target, ToBus};
+    let (_d, port, _p) = common::start_bus_with_participants_dir(Default::default()).await;
+    let token = register_token(port, "raven").await;
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    common::send(
+        &mut caas,
+        &ToBus::PutFile {
+            req_id: 1,
+            room: "dm:caas|raven".into(),
+            key: "odd.bin".into(),
+            content_b64: b64(b"bytes"),
+            content_type: Some("image/png\r\nX-Injected: yes".into()),
+        },
+    )
+    .await;
+    common::next_event(&mut caas).await; // FileStored
+    common::send(
+        &mut caas,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Agent {
+                name: "raven".into(),
+            },
+            text: "odd".into(),
+            done: false,
+            files: vec!["odd.bin".into()],
+        },
+    )
+    .await;
+    common::next_event(&mut caas).await; // Sent
+
+    let (status, head, body) = get_bytes(
+        port,
+        "/api/participants/files?room=dm:caas%7Craven&key=odd.bin",
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(body, b"bytes");
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-type: application/octet-stream"),
+        "{head}"
+    );
+    assert!(!head.contains("X-Injected"), "{head}");
+}

@@ -345,7 +345,7 @@ impl rmcp::ServerHandler for Handler {
                         )]));
                     }
                 };
-                let attached = files.join(", ");
+                let asked_to_attach = !files.is_empty();
                 let reply = self
                     .request(|req_id| ToBus::Send {
                         req_id,
@@ -360,6 +360,7 @@ impl rmcp::ServerHandler for Handler {
                         room,
                         delivered_to,
                         queued_for,
+                        files: attached,
                         ..
                     }) => {
                         // Echo the full text: Claude Code hides outbound channel
@@ -381,13 +382,18 @@ impl rmcp::ServerHandler for Handler {
                         if status.is_empty() {
                             status.push_str("nobody else is in this room yet");
                         }
-                        if attached.is_empty() {
-                            text_of(format!("[{room}] {status}\nsent: {body}"))
-                        } else {
-                            text_of(format!(
-                                "[{room}] {status}\nsent: {body}\nattached: {attached}"
-                            ))
+                        let mut out = format!("[{room}] {status}\nsent: {body}");
+                        if !attached.is_empty() {
+                            out.push_str(&format!("\nattached: {}", attached.join(", ")));
+                        } else if asked_to_attach {
+                            // Only a bus that predates attachments sends a plain
+                            // `Sent` for a send that named files.
+                            out.push_str(
+                                "\nNOT attached: this bus predates attachments and \
+                                 dropped `files`. The message went as text only.",
+                            );
                         }
+                        text_of(out)
                     }
                     Ok(other) => text_of(format!("unexpected reply: {other:?}")),
                     Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e)])),

@@ -51,6 +51,8 @@ pub(crate) enum SendOutcome {
         msg_id: i64,
         delivered_to: Vec<String>,
         queued_for: Vec<String>,
+        /// The keys attached, as the bus resolved them.
+        files: Vec<String>,
     },
     RateLimited {
         retry_in_ms: i64,
@@ -209,6 +211,7 @@ pub(crate) async fn do_send(
         let _ = app.store.join_room(&room, name).await;
     }
 
+    let attached: Vec<String> = attachments.iter().map(|a| a.key.clone()).collect();
     let msg_id = match app
         .store
         .append_message_with_files(&room, me, &text, done, has_human_authority, &attachments)
@@ -294,6 +297,7 @@ pub(crate) async fn do_send(
         msg_id,
         delivered_to,
         queued_for,
+        files: attached,
     }
 }
 
@@ -455,6 +459,7 @@ pub(crate) async fn handle(
                     msg_id,
                     delivered_to,
                     queued_for,
+                    files,
                 } => {
                     let _ = control_tx.try_send(FromBus::Reply {
                         req_id,
@@ -463,6 +468,7 @@ pub(crate) async fn handle(
                             msg_id,
                             delivered_to,
                             queued_for,
+                            files,
                         },
                     });
                 }

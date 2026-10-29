@@ -39,7 +39,8 @@ own port (default `:7777`):
   back as the next `after`. Each message has a `files` array (empty when it
   carries nothing) of `{key, contentType, size, sha256}`.
 - `POST /api/participants/send` `{target, text, done?, files?}` → an `outcome` of `sent`
-  (with `deliveredTo`/`queuedFor`), `rate_limited`, or `paused`. `files` lists keys
+  (with `deliveredTo`/`queuedFor`, and `files`: the keys attached), `rate_limited`, or
+  `paused`. `files` lists keys
   already stored in the target room (at most 10) to attach; an unknown key is a 422 and
   nothing is sent.
 - `POST /api/participants/resume` `{room}` — relayer leases only.

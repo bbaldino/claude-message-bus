@@ -4,4 +4,10 @@ import type { FileInfo } from "./FileInfo";
 import type { HistoryItem } from "./HistoryItem";
 import type { RoomInfo } from "./RoomInfo";
 
-export type ReplyResult = { "kind": "sent", room: string, msg_id: number, delivered_to: Array<string>, queued_for: Array<string>, } | { "kind": "joined", room: string, members: Array<string>, } | { "kind": "watching", room: string, } | { "kind": "history", messages: Array<HistoryItem>, } | { "kind": "rooms", rooms: Array<RoomInfo>, } | { "kind": "agents", agents: Array<AgentInfo>, } | { "kind": "file_stored", key: string, size: number, sha256: string, } | { "kind": "file_content", key: string, content_b64: string, content_type: string | null, } | { "kind": "files", files: Array<FileInfo>, } | { "kind": "resumed", room: string, };
+export type ReplyResult = { "kind": "sent", room: string, msg_id: number, delivered_to: Array<string>, queued_for: Array<string>, 
+/**
+ * The keys the bus attached, in order, repeats collapsed. Absent from
+ * a bus that predates attachments, which is how a newer agent can
+ * tell its `files` were dropped rather than delivered.
+ */
+files: Array<string>, } | { "kind": "joined", room: string, members: Array<string>, } | { "kind": "watching", room: string, } | { "kind": "history", messages: Array<HistoryItem>, } | { "kind": "rooms", rooms: Array<RoomInfo>, } | { "kind": "agents", agents: Array<AgentInfo>, } | { "kind": "file_stored", key: string, size: number, sha256: string, } | { "kind": "file_content", key: string, content_b64: string, content_type: string | null, } | { "kind": "files", files: Array<FileInfo>, } | { "kind": "resumed", room: string, };

@@ -1925,3 +1925,69 @@ async fn the_send_tool_says_how_to_attach_a_file() {
         "put_file must point at send's `files`"
     );
 }
+
+/// A bus that predates attachments: it registers the agent and answers every
+/// `send` with a `Sent` reply that has no `files` field.
+async fn bus_without_attachments(name: &str) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let name = name.to_string();
+    tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+            return;
+        };
+        let (mut sink, mut stream) = ws.split();
+        let _ = stream.next().await; // Register
+        let registered = FromBus::Registered {
+            name,
+            relayer: false,
+        };
+        let _ = sink
+            .send(Message::text(serde_json::to_string(&registered).unwrap()))
+            .await;
+        while let Some(Ok(frame)) = stream.next().await {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(frame.to_text().unwrap_or(""))
+            else {
+                continue;
+            };
+            if v["type"] != "send" {
+                continue;
+            }
+            let mut reply = serde_json::to_value(FromBus::Reply {
+                req_id: v["req_id"].as_u64().unwrap(),
+                result: claude_bus::proto::ReplyResult::Sent {
+                    room: "dm:me|peer".into(),
+                    msg_id: 1,
+                    delivered_to: vec!["peer".into()],
+                    queued_for: vec![],
+                    files: vec![],
+                },
+            })
+            .unwrap();
+            reply["result"].as_object_mut().unwrap().remove("files");
+            let _ = sink.send(Message::text(reply.to_string())).await;
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn an_old_bus_that_drops_files_is_reported_not_hidden() {
+    let port = bus_without_attachments("me").await;
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "me");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    let text = call_tool(
+        &mut a,
+        10,
+        "send",
+        serde_json::json!({ "to": "peer", "text": "see", "done": false, "files": ["x.png"] }),
+    )
+    .await;
+    assert!(text.contains("NOT attached"), "{text}");
+    assert!(!text.contains("attached: x.png"), "{text}");
+}

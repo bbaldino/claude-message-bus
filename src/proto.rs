@@ -267,6 +267,11 @@ pub enum ReplyResult {
         msg_id: i64,
         delivered_to: Vec<String>,
         queued_for: Vec<String>,
+        /// The keys the bus attached, in order, repeats collapsed. Absent from
+        /// a bus that predates attachments, which is how a newer agent can
+        /// tell its `files` were dropped rather than delivered.
+        #[serde(default)]
+        files: Vec<String>,
     },
     Joined {
         room: String,
@@ -442,6 +447,7 @@ mod tests {
                 msg_id: 42,
                 delivered_to: vec!["dashboard".into()],
                 queued_for: vec!["nas".into()],
+                files: vec![],
             },
         };
         let json = serde_json::to_string(&reply).unwrap();
