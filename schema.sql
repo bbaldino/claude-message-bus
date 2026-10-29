@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS messages (
   body       TEXT NOT NULL,
   done       INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  human      INTEGER NOT NULL DEFAULT 0
+  human      INTEGER NOT NULL DEFAULT 0,
+  -- JSON array of the attachments sent with the message, NULL when none.
+  files      TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_room_id ON messages(room, id);
 -- The rail's per-agent volume strip filters `from_agent = ? AND created_at > ?`,

@@ -81,6 +81,7 @@ const base: Partial<State> = {
       done: false,
       human: false,
       createdAt: 1_700_000_000_000,
+      files: [],
     },
     {
       id: 2,
@@ -90,6 +91,7 @@ const base: Partial<State> = {
       done: true,
       human: true,
       createdAt: 1_700_000_100_000,
+      files: [],
     },
   ],
   room: 'protocol',
@@ -273,6 +275,7 @@ test('a byline names the host a message came from, humans included', async () =>
         done: false,
         human: true,
         createdAt: 0,
+        files: [],
       },
       {
         id: 2,
@@ -282,6 +285,7 @@ test('a byline names the host a message came from, humans included', async () =>
         done: false,
         human: false,
         createdAt: 0,
+        files: [],
       },
     ],
   })
@@ -323,6 +327,7 @@ test('an already-qualified name is not qualified twice', async () => {
         done: false,
         human: true,
         createdAt: 0,
+        files: [],
       },
     ],
   })
@@ -344,6 +349,7 @@ test('a message from an agent no longer in the rail shows its bare name', async 
         done: false,
         human: false,
         createdAt: 0,
+        files: [],
       },
     ],
   })

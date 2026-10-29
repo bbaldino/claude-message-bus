@@ -439,6 +439,7 @@ async fn a_humans_message_clears_needs_you_on_the_rail() {
                 },
                 text: "still going".into(),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -464,6 +465,7 @@ async fn a_humans_message_clears_needs_you_on_the_rail() {
             },
             text: "carry on".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -499,6 +501,7 @@ async fn the_human_active_hook_clears_needs_you_on_the_rail() {
                 },
                 text: "still going".into(),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -746,6 +749,39 @@ async fn the_transcript_returns_a_rooms_messages() {
 }
 
 #[tokio::test]
+async fn the_transcript_carries_attachments() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_message_with_files(
+                "protocol",
+                "caas",
+                "see",
+                false,
+                false,
+                &[claude_bus::proto::Attachment {
+                    key: "shot.png".into(),
+                    content_type: Some("image/png".into()),
+                    size: 4,
+                    sha256: "ab".into(),
+                }],
+            )
+            .await
+            .unwrap();
+    }
+    let port = start(dir.path()).await;
+
+    let body = get(port, "/api/rooms/protocol/messages?limit=10").await;
+    assert!(
+        body.contains(
+            r#""files":[{"key":"shot.png","contentType":"image/png","size":4,"sha256":"ab"}]"#
+        ),
+        "got: {body}"
+    );
+}
+
+#[tokio::test]
 async fn the_transcript_pages_backward_with_before() {
     let dir = tempfile::tempdir().unwrap();
     {
@@ -948,6 +984,7 @@ async fn agent_detail_reports_rooms_with_counts_and_a_true_event_total() {
                 },
                 text: format!("m{i}"),
                 done: false,
+                files: vec![],
             },
         )
         .await;

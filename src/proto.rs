@@ -84,6 +84,11 @@ pub enum ToBus {
         target: Target,
         text: String,
         done: bool,
+        /// Keys of files already in the target room (put there with
+        /// `PutFile`) that this message carries. Absent on the wire means none,
+        /// so an agent binary that predates attachments keeps working.
+        #[serde(default)]
+        files: Vec<String>,
     },
     History {
         req_id: u64,
@@ -173,6 +178,9 @@ pub struct HistoryItem {
     /// path sends only an `Unread` summary, never a replay.
     #[serde(default)]
     pub human: bool,
+    /// The files the message carries, as snapshotted when it was sent.
+    #[serde(default)]
+    pub files: Vec<Attachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -214,6 +222,19 @@ pub struct StatusView {
     /// Working, but no hook has fired for longer than the quiet threshold. A soft
     /// hint, not a verdict: one long Bash command fires no hooks while it runs.
     pub quiet: bool,
+}
+
+/// A room file a message carries, snapshotted when the message was sent.
+/// `sha256` pins the version: if the key is overwritten later, a fetch that
+/// passes it can tell the file is no longer the one the message meant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+pub struct Attachment {
+    pub key: String,
+    pub content_type: Option<String>,
+    #[ts(type = "number")]
+    pub size: i64,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -334,6 +355,10 @@ pub enum FromBus {
         /// deserializing — the same constraint that governs `Register.human`.
         #[serde(default)]
         human: bool,
+        /// The files this message carries. Absent means none, for the same
+        /// reason as `human`.
+        #[serde(default)]
+        files: Vec<Attachment>,
     },
     /// Sent on reconnect instead of replaying the backlog. One event per
     /// connection, not per room — see `RoomUnread` — so a reconnecting
@@ -384,6 +409,7 @@ mod tests {
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("\"type\":\"send\""), "tagged by type: {json}");
@@ -394,7 +420,9 @@ mod tests {
                 target: Target::Agent { name },
                 text,
                 done,
+                files,
             } => {
+                assert!(files.is_empty());
                 assert_eq!(
                     (req_id, name.as_str(), text.as_str(), done),
                     (7, "dashboard", "hello", false)
@@ -515,6 +543,7 @@ mod tests {
             text: "hi".into(),
             done: false,
             human: false,
+            files: vec![],
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["type"], "message");

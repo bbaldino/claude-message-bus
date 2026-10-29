@@ -153,6 +153,7 @@ async fn status_never_counts_toward_the_exchange_cap() {
             target: claude_bus::proto::Target::Agent { name: "b".into() },
             text: "real".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;

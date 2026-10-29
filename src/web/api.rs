@@ -318,6 +318,32 @@ pub struct Message {
     pub human: bool,
     #[ts(type = "number")]
     pub created_at: i64,
+    /// The files the message carries; empty when none.
+    pub files: Vec<MessageFile>,
+}
+
+/// A message's attachment on the HTTP surfaces (the console transcript and a
+/// participant's `/receive`): `proto::Attachment` in this API's camelCase.
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../ui/src/types/")]
+#[serde(rename_all = "camelCase")]
+pub struct MessageFile {
+    pub key: String,
+    pub content_type: Option<String>,
+    #[ts(type = "number")]
+    pub size: i64,
+    pub sha256: String,
+}
+
+impl From<crate::proto::Attachment> for MessageFile {
+    fn from(a: crate::proto::Attachment) -> Self {
+        Self {
+            key: a.key,
+            content_type: a.content_type,
+            size: a.size,
+            sha256: a.sha256,
+        }
+    }
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -385,6 +411,7 @@ pub(crate) async fn room_messages(
                 done: m.done,
                 human: m.human,
                 created_at: m.created_at,
+                files: m.files.into_iter().map(MessageFile::from).collect(),
             })
             .collect(),
     ))

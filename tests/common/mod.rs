@@ -874,6 +874,7 @@ pub fn flood_message() -> FromBus {
         text: "x".into(),
         done: false,
         human: false,
+        files: vec![],
     }
 }
 

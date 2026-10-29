@@ -804,6 +804,7 @@ async fn history_marks_human_origin_messages_distinguishably_from_agent_origin()
             },
             text: "from the human".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -830,6 +831,7 @@ async fn history_marks_human_origin_messages_distinguishably_from_agent_origin()
             },
             text: "from an agent".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1068,6 +1070,7 @@ async fn an_ordinary_session_gets_no_grant_notice() {
             },
             text: "the-only-notification".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1823,4 +1826,102 @@ async fn an_image_too_large_to_show_inline_says_so_instead() {
     );
     let text = r["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("too large to show"), "{text}");
+}
+
+#[tokio::test]
+async fn files_travel_both_ways_through_the_agent_tools() {
+    use claude_bus::proto::{FromBus, Target, ToBus};
+    let (_dir, port) = common::start_bus().await;
+    let mut peer = common::connect(port, "peer").await;
+    common::next_event(&mut peer).await; // Registered
+
+    let mut a = InProcessAgent::start(format!("ws://127.0.0.1:{port}/ws"), "me");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    wait_until_online(port, "me").await;
+
+    // Outbound: put_file into the DM room, then attach it.
+    call_tool(
+        &mut a,
+        10,
+        "put_file",
+        serde_json::json!({ "room": "dm:me|peer", "key": "mock.txt", "content": "hi" }),
+    )
+    .await;
+    let text = call_tool(
+        &mut a,
+        11,
+        "send",
+        serde_json::json!({ "to": "peer", "text": "see attached", "done": false, "files": ["mock.txt"] }),
+    )
+    .await;
+    assert!(text.contains("attached: mock.txt"), "{text}");
+    match common::next_message(&mut peer).await {
+        FromBus::Message { files, .. } => assert_eq!(files[0].key, "mock.txt"),
+        other => panic!("expected Message, got {other:?}"),
+    }
+
+    // A bad key comes back as a tool error naming it.
+    let text = call_tool(
+        &mut a,
+        12,
+        "send",
+        serde_json::json!({ "to": "peer", "text": "x", "done": false, "files": ["nope.txt"] }),
+    )
+    .await;
+    assert!(text.contains("nope.txt"), "{text}");
+
+    // Inbound: the channel notification names the attached keys.
+    common::send(
+        &mut peer,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent { name: "me".into() },
+            text: "and back".into(),
+            done: true,
+            files: vec!["mock.txt".into()],
+        },
+    )
+    .await;
+    let note = a.next_notification("notifications/claude/channel").await;
+    assert_eq!(note["params"]["content"], "and back");
+    assert_eq!(note["params"]["meta"]["files"], "mock.txt", "{note}");
+
+    // History shows which messages carried files.
+    let text = call_tool(
+        &mut a,
+        13,
+        "history",
+        serde_json::json!({ "room": "dm:me|peer" }),
+    )
+    .await;
+    assert!(text.contains("[attached: mock.txt]"), "{text}");
+}
+
+#[tokio::test]
+async fn the_send_tool_says_how_to_attach_a_file() {
+    let mut a = InProcessAgent::start("ws://127.0.0.1:1/ws", "tester");
+    initialize(&mut a).await;
+    a.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    a.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/list", "params": {}
+    }))
+    .await;
+    let res = a.next_json().await;
+    let tools = res["result"]["tools"].as_array().expect("tools");
+    let tool = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
+    let send = tool("send");
+    let desc = send["description"].as_str().unwrap();
+    assert!(
+        desc.contains("`files`") && desc.contains("does not attach"),
+        "send must say that only `files` attaches: {desc}"
+    );
+    assert_eq!(send["inputSchema"]["properties"]["files"]["type"], "array");
+    let put = tool("put_file");
+    assert!(
+        put["description"].as_str().unwrap().contains("`files`"),
+        "put_file must point at send's `files`"
+    );
 }

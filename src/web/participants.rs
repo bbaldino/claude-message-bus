@@ -183,6 +183,9 @@ pub(crate) struct SendRequest {
     text: String,
     #[serde(default)]
     done: bool,
+    /// Keys of files already in the target room to attach. See `ToBus::Send`.
+    #[serde(default)]
+    files: Vec<String>,
 }
 
 /// The wire form of `commands::SendOutcome`'s deliverable cases. camelCase
@@ -238,6 +241,7 @@ pub(crate) async fn send(
         body.target,
         body.text,
         body.done,
+        body.files,
         authority,
     )
     .await
@@ -267,7 +271,9 @@ pub(crate) async fn send(
             reason,
         })
         .into_response(),
-        SendOutcome::UnknownAgent { message } | SendOutcome::Error { message } => {
+        SendOutcome::UnknownAgent { message }
+        | SendOutcome::BadAttachment { message }
+        | SendOutcome::Error { message } => {
             (StatusCode::UNPROCESSABLE_ENTITY, message).into_response()
         }
     }
@@ -290,6 +296,10 @@ pub(crate) struct MessageDto {
     done: bool,
     human: bool,
     created_at: i64,
+    /// Always present, empty when the message carries nothing, so a client can
+    /// iterate it without a presence check.
+    /// Fetch one's bytes with `GET /api/participants/files?room&key&sha256`.
+    files: Vec<crate::web::api::MessageFile>,
 }
 
 impl From<MessageRow> for MessageDto {
@@ -302,6 +312,7 @@ impl From<MessageRow> for MessageDto {
             done: m.done,
             human: m.human,
             created_at: m.created_at,
+            files: m.files.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -498,4 +509,74 @@ pub(crate) async fn store_file_http(
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct FetchFileQuery {
+    room: String,
+    key: String,
+    sha256: Option<String>,
+}
+
+/// `GET /api/participants/files?room&key[&sha256]` — a room file's bytes, for
+/// a participant that received an attachment. The HTTP counterpart of the
+/// `get_file` tool.
+///
+/// Only rooms the lease is a member of (403 otherwise): the bus's room files
+/// are otherwise readable by any agent, but a participant token is a narrower
+/// credential, and the attachments it is for always arrive in its own rooms.
+/// `sha256`, when given, must still match: 409 means the key was overwritten
+/// after the message that attached it was sent.
+pub(crate) async fn fetch_file(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(q): Query<FetchFileQuery>,
+) -> Response {
+    if !origin_ok(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(lease) = token_lease(&app, &headers).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    match app.store.member_rooms(&lease.name).await {
+        Ok(rooms) if rooms.contains(&q.room) => {}
+        Ok(_) => {
+            return (StatusCode::FORBIDDEN, "not a member of that room").into_response();
+        }
+        Err(e) => {
+            eprintln!("GET /api/participants/files could not read memberships: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+    let (row, bytes) = match app.store.get_file(&q.room, &q.key).await {
+        Ok(Some(found)) => found,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such file").into_response(),
+        Err(e) => {
+            eprintln!("GET /api/participants/files could not read it: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    if q.sha256.as_ref().is_some_and(|want| *want != row.sha256) {
+        return (
+            StatusCode::CONFLICT,
+            "the file under that key has changed since it was attached",
+        )
+            .into_response();
+    }
+    let content_type = row
+        .content_type
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    // The type is whatever the uploader claimed; nosniff keeps a browser from
+    // second-guessing it into something executable.
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (
+                axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                "nosniff".to_string(),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }

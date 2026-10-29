@@ -214,6 +214,7 @@ async fn receive_returns_a_dm_and_advances_the_cursor() {
             },
             text: "ping".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -638,4 +639,211 @@ async fn storing_a_file_needs_a_live_lease_same_origin_and_valid_base64() {
     .await;
     assert_eq!(bad, 400, "{msg}");
     assert!(msg.contains("base64"), "{msg}");
+}
+
+/// Like `get_headers`, but keeps the body as bytes and returns the headers,
+/// for endpoints that answer with a file rather than text.
+async fn get_bytes(port: u16, path: &str, headers: &[(&str, &str)]) -> (u16, String, Vec<u8>) {
+    let mut req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw).await.unwrap();
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a header terminator");
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    let status = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
+    (status, head, raw[split + 4..].to_vec())
+}
+
+/// caas (WS) DMs raven (HTTP) a message carrying `shot.png`. Returns raven's
+/// token, the attachment as raven received it, and the bytes caas stored.
+async fn dm_raven_an_attachment(port: u16) -> (String, Value, Vec<u8>) {
+    use claude_bus::proto::{Target, ToBus};
+    let token = register_token(port, "raven").await;
+    let png = png_bytes(500);
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+    common::send(
+        &mut caas,
+        &ToBus::PutFile {
+            req_id: 1,
+            room: "dm:caas|raven".into(),
+            key: "shot.png".into(),
+            content_b64: b64(&png),
+            content_type: Some("image/png".into()),
+        },
+    )
+    .await;
+    common::next_event(&mut caas).await; // FileStored
+    common::send(
+        &mut caas,
+        &ToBus::Send {
+            req_id: 2,
+            target: Target::Agent {
+                name: "raven".into(),
+            },
+            text: "the mockup".into(),
+            done: false,
+            files: vec!["shot.png".into()],
+        },
+    )
+    .await;
+    common::next_event(&mut caas).await; // Sent
+
+    let (status, body) = get_headers(
+        port,
+        "/api/participants/receive?after=0&timeout=2",
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    let msg = v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["body"] == "the mockup")
+        .unwrap_or_else(|| panic!("raven did not receive the DM: {body}"))
+        .clone();
+    let files = msg["files"].as_array().expect("a files array").clone();
+    assert_eq!(files.len(), 1, "{msg}");
+    (token, files[0].clone(), png)
+}
+
+#[tokio::test]
+async fn a_received_message_lists_its_attachments() {
+    let (_d, port, _p) = common::start_bus_with_participants_dir(Default::default()).await;
+    let (_token, file, _png) = dm_raven_an_attachment(port).await;
+    assert_eq!(file["key"], "shot.png");
+    assert_eq!(file["contentType"], "image/png");
+    assert_eq!(file["size"], 500);
+    assert_eq!(file["sha256"].as_str().unwrap().len(), 64, "{file}");
+}
+
+#[tokio::test]
+async fn a_member_fetches_an_attachments_bytes() {
+    let (_d, port, _p) = common::start_bus_with_participants_dir(Default::default()).await;
+    let (token, file, png) = dm_raven_an_attachment(port).await;
+    let sha = file["sha256"].as_str().unwrap();
+    let (status, head, body) = get_bytes(
+        port,
+        &format!("/api/participants/files?room=dm:caas%7Craven&key=shot.png&sha256={sha}"),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(body, png, "the exact stored bytes");
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-type: image/png"),
+        "{head}"
+    );
+    // Without sha256 it serves the current version.
+    let (status, _, body) = get_bytes(
+        port,
+        "/api/participants/files?room=dm:caas%7Craven&key=shot.png",
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body, png);
+}
+
+#[tokio::test]
+async fn fetching_a_file_is_refused_outside_the_rules() {
+    let (_d, port, _p) = common::start_bus_with_participants_dir(Default::default()).await;
+    let (token, _file, _png) = dm_raven_an_attachment(port).await;
+    let path = "/api/participants/files?room=dm:caas%7Craven&key=shot.png";
+
+    let (no_token, _, _) = get_bytes(port, path, &[]).await;
+    assert_eq!(no_token, 401);
+    let (cross, _, _) = get_bytes(
+        port,
+        path,
+        &[
+            ("X-Participant-Token", &token),
+            ("Origin", "http://evil.example"),
+        ],
+    )
+    .await;
+    assert_eq!(cross, 403);
+
+    let other = register_token(port, "outsider").await;
+    let (not_member, _, _) = get_bytes(port, path, &[("X-Participant-Token", &other)]).await;
+    assert_eq!(not_member, 403, "only rooms the lease is a member of");
+
+    let (unknown, _, _) = get_bytes(
+        port,
+        "/api/participants/files?room=dm:caas%7Craven&key=nope.png",
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(unknown, 404);
+
+    let (stale, _, _) = get_bytes(
+        port,
+        &format!("{path}&sha256={}", "0".repeat(64)),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(stale, 409, "the key no longer holds the attached version");
+}
+
+#[tokio::test]
+async fn a_participant_send_attaches_a_file_it_stored() {
+    use claude_bus::proto::FromBus;
+    let (_d, port, _p) = common::start_bus_with_participants_dir(Default::default()).await;
+    let token = register_token(port, "raven").await;
+    let mut caas = common::connect(port, "caas").await;
+    common::next_event(&mut caas).await; // Registered
+
+    let (status, body) = post_json_headers(
+        port,
+        "/api/participants/files",
+        json!({ "room": "dm:caas|raven", "key": "photo.png", "content_b64": b64(&png_bytes(20)), "content_type": "image/png" }),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    let (bad, msg) = post_json_headers(
+        port,
+        "/api/participants/send",
+        json!({ "target": {"kind":"agent","name":"caas"}, "text": "see", "files": ["missing.png"] }),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(bad, 422, "{msg}");
+    assert!(msg.contains("missing.png"), "{msg}");
+
+    let (status, body) = post_json_headers(
+        port,
+        "/api/participants/send",
+        json!({ "target": {"kind":"agent","name":"caas"}, "text": "see", "files": ["photo.png"] }),
+        &[("X-Participant-Token", &token)],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    match common::next_message(&mut caas).await {
+        FromBus::Message { text, files, .. } => {
+            assert_eq!(text, "see", "the refused send must not have been delivered");
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].key, "photo.png");
+        }
+        other => panic!("expected Message, got {other:?}"),
+    }
 }

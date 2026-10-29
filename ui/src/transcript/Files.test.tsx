@@ -130,6 +130,7 @@ test('an appended message still counts toward unseen when the transcript measure
     done: true,
     human: false,
     createdAt: 1,
+    files: [],
   }
   const { rerender } = renderWithStore(<RoomScreen />, {
     rail,
@@ -151,6 +152,7 @@ test('an appended message still counts toward unseen when the transcript measure
         done: true,
         human: false,
         createdAt: 2,
+        files: [],
       },
     ],
   })

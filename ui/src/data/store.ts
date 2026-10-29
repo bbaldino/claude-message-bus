@@ -197,6 +197,13 @@ export function createStore(deps: {
       done: frame.done,
       human: frame.human,
       createdAt: Date.now(),
+      // A bus that predates attachments omits the field entirely.
+      files: (frame.files ?? []).map((f) => ({
+        key: f.key,
+        contentType: f.content_type,
+        size: f.size,
+        sha256: f.sha256,
+      })),
     }
     // Appended, never scrolled to: the design requires a "3 new below" affordance
     // rather than yanking a reader who has scrolled up, so the scroll decision
@@ -458,6 +465,8 @@ export function createStore(deps: {
       // reason: the ack carries no timestamp. A refetch replaces it with the
       // authoritative value.
       createdAt: Date.now(),
+      // The console's composer attaches nothing.
+      files: [],
     }
     setState({
       pending: state.pending.filter((p) => p.clientId !== clientId),

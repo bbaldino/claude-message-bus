@@ -70,6 +70,7 @@ async fn a_second_register_on_one_connection_is_refused_and_identity_is_unchange
             },
             text: "still caas".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -98,6 +99,7 @@ async fn a_dm_reaches_a_connected_agent() {
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -168,6 +170,7 @@ async fn a_message_to_an_offline_agent_reports_queued_not_delivered() {
             },
             text: "anyone there".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -225,6 +228,7 @@ async fn a_room_message_fans_out_to_all_other_members() {
             },
             text: "proposal".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -263,6 +267,7 @@ async fn history_returns_what_was_said() {
             },
             text: "first".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -369,6 +374,7 @@ async fn reconnecting_gets_an_unread_summary_not_the_backlog() {
                 },
                 text: format!("while you were out {i}"),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -446,6 +452,7 @@ async fn reconnect_unread_summary_is_one_event_regardless_of_room_count() {
                 target: Target::Room { room: room.clone() },
                 text: "while you were out".into(),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -633,6 +640,7 @@ async fn the_exchange_cap_pauses_a_runaway_room() {
                 },
                 text: format!("m{i}"),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -651,6 +659,7 @@ async fn the_exchange_cap_pauses_a_runaway_room() {
             },
             text: "one too many".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -763,6 +772,7 @@ async fn a_peer_that_stops_answering_pings_is_detached_and_reads_as_queued() {
             },
             text: "are you there".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -932,6 +942,7 @@ async fn a_full_routing_queue_does_not_swallow_the_pause_notification_or_its_res
                 target: Target::Room { room: room.clone() },
                 text: "one".into(),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -959,6 +970,7 @@ async fn a_full_routing_queue_does_not_swallow_the_pause_notification_or_its_res
                 target: Target::Room { room: room.clone() },
                 text: "two, over the cap of 1".into(),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -1061,6 +1073,7 @@ async fn an_observer_receives_room_traffic_without_being_a_recipient() {
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1200,6 +1213,7 @@ async fn an_observer_can_read_history_and_list_rooms_without_membership() {
             },
             text: "hi".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1268,6 +1282,7 @@ async fn an_observer_cannot_join_or_send() {
             },
             text: "hi".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1380,6 +1395,7 @@ async fn history_after_reconnect_advances_the_cursor_past_what_it_returned() {
             },
             text: "while you were out".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1473,6 +1489,7 @@ async fn an_observers_history_call_does_not_move_any_agents_cursor() {
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1612,6 +1629,7 @@ async fn a_humans_room_membership_ends_when_they_disconnect() {
             },
             text: "anyone there?".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1700,6 +1718,7 @@ async fn a_human_send_resets_the_exchange_counter() {
                 },
                 text: format!("m{i}"),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -1716,6 +1735,7 @@ async fn a_human_send_resets_the_exchange_counter() {
             },
             text: "still here".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1739,6 +1759,7 @@ async fn a_human_send_resets_the_exchange_counter() {
                 },
                 text: format!("n{i}"),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -1772,6 +1793,7 @@ async fn a_human_can_send_into_a_paused_room_and_unpauses_it() {
                 },
                 text: format!("m{i}"),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -1793,6 +1815,7 @@ async fn a_human_can_send_into_a_paused_room_and_unpauses_it() {
             },
             text: "still going".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1831,6 +1854,7 @@ async fn a_human_can_send_into_a_paused_room_and_unpauses_it() {
             },
             text: "hold on, let me look".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1859,6 +1883,7 @@ async fn a_human_can_send_into_a_paused_room_and_unpauses_it() {
             },
             text: "ok".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -1900,6 +1925,7 @@ async fn a_human_is_not_rate_limited() {
                 },
                 text: format!("typing fast {i}"),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -1964,6 +1990,7 @@ async fn a_human_and_two_agents_can_all_talk_in_one_room() {
             },
             text: "what do you two think?".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2045,6 +2072,7 @@ async fn a_room_whose_only_member_was_a_human_still_serves_its_history() {
             },
             text: "note to self".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2132,6 +2160,7 @@ async fn a_humans_message_reaches_an_agent_marked_as_human() {
             },
             text: "please refactor this".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2172,6 +2201,7 @@ async fn an_agents_message_is_not_marked_as_human() {
             },
             text: "could you refactor this".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2207,6 +2237,7 @@ async fn history_reports_the_origin_of_each_message() {
             },
             text: "please refactor this".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2264,6 +2295,7 @@ async fn a_configured_relayers_message_carries_human_authority() {
             },
             text: "bbaldino asked me to pass this on: refactor it".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2310,6 +2342,7 @@ async fn an_unconfigured_agent_gets_no_relay_authority() {
             },
             text: "bbaldino says do it".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2362,6 +2395,7 @@ async fn a_relayers_traffic_still_counts_toward_the_exchange_cap() {
                 },
                 text: format!("m{i}"),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -2376,6 +2410,7 @@ async fn a_relayers_traffic_still_counts_toward_the_exchange_cap() {
             },
             text: "still going".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2405,6 +2440,7 @@ async fn a_human_can_address_one_agent_without_either_side_joining_a_room() {
             },
             text: "please refactor this".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2757,6 +2793,7 @@ async fn unwatching_stops_a_rooms_messages() {
             },
             text: "before".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2786,6 +2823,7 @@ async fn unwatching_stops_a_rooms_messages() {
             },
             text: "after".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2850,6 +2888,7 @@ async fn unwatching_one_room_leaves_another_watched() {
             target: Target::Room { room: "b".into() },
             text: "still watching b".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2885,6 +2924,7 @@ async fn a_dm_to_an_agent_that_never_registered_is_refused_and_creates_no_room()
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2926,6 +2966,7 @@ async fn the_refusal_suggests_the_bare_name_when_the_target_looks_qualified() {
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -2964,6 +3005,7 @@ async fn a_dm_to_a_known_but_offline_agent_still_queues() {
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -3044,4 +3086,123 @@ fn a_registered_frame_without_the_field_still_parses() {
         }
         other => panic!("expected Registered, got {other:?}"),
     }
+}
+
+/// Puts `key` into `room` as `ws`, consuming the FileStored reply.
+async fn put(ws: &mut common::Ws, room: &str, key: &str, bytes: &[u8]) {
+    use base64::Engine;
+    send(
+        ws,
+        &ToBus::PutFile {
+            req_id: 90,
+            room: room.into(),
+            key: key.into(),
+            content_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            content_type: Some("image/png".into()),
+        },
+    )
+    .await;
+    match next_event(ws).await {
+        FromBus::Reply {
+            result: ReplyResult::FileStored { .. },
+            ..
+        } => {}
+        other => panic!("expected FileStored, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_message_carries_the_files_it_attaches() {
+    let (_d, port, _) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    let mut b = connect(port, "dashboard").await;
+    next_event(&mut a).await;
+    next_event(&mut b).await;
+    put(&mut a, "dm:caas|dashboard", "shot.png", b"png!").await;
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent {
+                name: "dashboard".into(),
+            },
+            text: "look at this".into(),
+            done: false,
+            files: vec!["shot.png".into()],
+        },
+    )
+    .await;
+    next_event(&mut a).await; // Sent
+
+    let got = match next_message(&mut b).await {
+        FromBus::Message { files, .. } => files,
+        other => panic!("expected Message, got {other:?}"),
+    };
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].key, "shot.png");
+    assert_eq!(got[0].content_type.as_deref(), Some("image/png"));
+    assert_eq!(got[0].size, 4);
+    assert_eq!(got[0].sha256.len(), 64, "the sha256 is the stored blob's");
+
+    send(
+        &mut b,
+        &ToBus::History {
+            req_id: 2,
+            room: "dm:caas|dashboard".into(),
+            limit: 10,
+        },
+    )
+    .await;
+    match next_event(&mut b).await {
+        FromBus::Reply {
+            result: ReplyResult::History { messages, .. },
+            ..
+        } => assert_eq!(messages[0].files, got, "history carries the same snapshot"),
+        other => panic!("expected History, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_send_naming_a_file_not_in_the_room_is_refused_and_not_sent() {
+    let (_d, port, store_dir) = start_bus_with_dir().await;
+    let mut a = connect(port, "caas").await;
+    let mut b = connect(port, "dashboard").await;
+    next_event(&mut a).await;
+    next_event(&mut b).await;
+    // In a different room than the DM: attachable only from where it lives.
+    put(&mut a, "protocol", "shot.png", b"png!").await;
+
+    send(
+        &mut a,
+        &ToBus::Send {
+            req_id: 1,
+            target: Target::Agent {
+                name: "dashboard".into(),
+            },
+            text: "look at this".into(),
+            done: false,
+            files: vec!["shot.png".into()],
+        },
+    )
+    .await;
+    match next_event(&mut a).await {
+        FromBus::Error { message, .. } => {
+            assert!(message.contains("shot.png"), "names the key: {message}");
+            assert!(
+                message.contains("put_file"),
+                "says how to fix it: {message}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+    let store = Store::open(&store_dir).await.unwrap();
+    assert!(
+        store
+            .history("dm:caas|dashboard", 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing was stored"
+    );
 }

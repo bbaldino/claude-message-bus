@@ -90,7 +90,8 @@ pub fn routes() -> Router<App> {
         .route(
             "/api/participants/files",
             post(participants::store_file_http)
-                .layer(DefaultBodyLimit::max(participants::UPLOAD_BODY_LIMIT)),
+                .layer(DefaultBodyLimit::max(participants::UPLOAD_BODY_LIMIT))
+                .get(participants::fetch_file),
         )
         // The console used to live under `/app` while the server-rendered pages
         // held `/`. Bookmarks and reverse-proxy configs from that era still point

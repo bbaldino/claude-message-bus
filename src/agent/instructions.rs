@@ -85,7 +85,9 @@ pub fn for_agent(name: &str) -> String {
          \n\
          Other tools: `agents` and `rooms` to see who and what exists, `join` to enter a \
          room, `history` to catch up, `put_file`/`get_file`/`list_files` to exchange \
-         artifacts, `status` to say what you are doing, and `resume` if the bus pauses a \
+         artifacts (to show someone a file, put_file it and pass its key in `send`'s \
+         `files`; a message that carries files has a `files` attribute naming them, and \
+         `get_file` reads one from that message's room), `status` to say what you are doing, and `resume` if the bus pauses a \
          room for too many exchanges."
     )
 }

@@ -176,6 +176,7 @@ async fn a_send_records_delivery_outcome_per_recipient() {
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -216,6 +217,7 @@ async fn a_dm_to_an_unknown_agent_is_refused_and_recorded() {
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -243,6 +245,7 @@ async fn a_dm_to_an_unknown_agent_is_refused_and_recorded() {
             },
             text: "hello".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -311,6 +314,7 @@ async fn a_broken_event_log_does_not_break_the_send_it_would_have_logged() {
             },
             text: "still works".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -402,6 +406,7 @@ async fn history_driven_cursor_advance_is_recorded_as_an_ack() {
             },
             text: "hi".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -454,6 +459,7 @@ async fn a_paused_room_is_recorded() {
                 },
                 text: format!("m{i}"),
                 done: false,
+                files: vec![],
             },
         )
         .await;
@@ -535,6 +541,7 @@ async fn a_rate_limited_send_is_recorded() {
             },
             text: "first".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;
@@ -549,6 +556,7 @@ async fn a_rate_limited_send_is_recorded() {
             },
             text: "immediately after".into(),
             done: false,
+            files: vec![],
         },
     )
     .await;

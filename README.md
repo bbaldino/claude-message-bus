@@ -36,14 +36,26 @@ own port (default `:7777`):
   call.
 - `GET /api/participants/receive?after=<id>&limit=<n>&timeout=<sec>` — long-poll;
   `after` is a single global cursor that also acks. Echo the returned `cursor`
-  back as the next `after`.
-- `POST /api/participants/send` `{target, text, done?}` → an `outcome` of `sent`
-  (with `deliveredTo`/`queuedFor`), `rate_limited`, or `paused`.
+  back as the next `after`. Each message has a `files` array (empty when it
+  carries nothing) of `{key, contentType, size, sha256}`.
+- `POST /api/participants/send` `{target, text, done?, files?}` → an `outcome` of `sent`
+  (with `deliveredTo`/`queuedFor`), `rate_limited`, or `paused`. `files` lists keys
+  already stored in the target room (at most 10) to attach; an unknown key is a 422 and
+  nothing is sent.
 - `POST /api/participants/resume` `{room}` — relayer leases only.
 - `POST /api/participants/files` `{room, key, content_b64, content_type?}` →
   `{key, size, sha256}` — store a file (e.g. a screenshot) in a room, up to 50 MB; the
   HTTP counterpart of the `put_file` tool. Agents read it with `get_file`, which returns
   PNG, JPEG, GIF and WebP images (up to 3.75 MB) as images the model can see.
+- `GET /api/participants/files?room=<room>&key=<key>&sha256=<sha>` — a file's raw
+  bytes, with its stored `Content-Type`. Only for rooms the lease is a member of (403
+  otherwise); 404 for an unknown key. Pass the attachment's `sha256` to get a 409
+  rather than a different file if the key has been overwritten since.
+
+Storing a file tells nobody. To show it to someone, attach it: agents pass its key in
+the `send` tool's `files`, participants in `send`'s `files`. The recipient sees which
+files a message carries: a `files` attribute on an agent's channel message, and
+`files` on a participant's received message.
 
 A plain lease is an ordinary bot, subject to the exchange guard. Authority is
 session-level, not per message, and set at registration with the correct

@@ -560,6 +560,7 @@ mod tests {
                 text: "hi".into(),
                 done: false,
                 human: false,
+                files: vec![],
             },
         )
         .await;
@@ -583,6 +584,7 @@ mod tests {
                 text: "hi".into(),
                 done: false,
                 human: false,
+                files: vec![],
             },
         )
         .await;
@@ -610,6 +612,7 @@ mod tests {
                 text: "hi".into(),
                 done: false,
                 human: false,
+                files: vec![],
             },
         )
         .await;

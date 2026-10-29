@@ -244,6 +244,43 @@ test('a pushed message is normalised into the stored message shape', () => {
   expect(typeof m.createdAt).toBe('number')
 })
 
+test('a pushed message keeps its attachments in the stored shape', () => {
+  const store = createStore({
+    setRoomHidden: noSetHidden,
+    live,
+    participant,
+    fetchRail: async () => emptyRail,
+    fetchMessages: noMessages,
+    fetchEvents: noEvents,
+  })
+  store.selectRoom('protocol')
+  live.emit('message', {
+    type: 'message',
+    id: 8,
+    room: 'protocol',
+    from: 'caas',
+    text: 'see',
+    done: false,
+    human: false,
+    files: [{ key: 'shot.png', content_type: 'image/png', size: 4, sha256: 'ab' }],
+  })
+  // A bus that predates attachments sends no `files` at all.
+  live.emit('message', {
+    type: 'message',
+    id: 9,
+    room: 'protocol',
+    from: 'caas',
+    text: 'plain',
+    done: false,
+    human: false,
+  })
+  const [withFile, plain] = store.getState().messages
+  expect(withFile.files).toEqual([
+    { key: 'shot.png', contentType: 'image/png', size: 4, sha256: 'ab' },
+  ])
+  expect(plain.files).toEqual([])
+})
+
 test('a pushed message for another room never enters the transcript', () => {
   // The socket keeps a `Watch` for every room the operator has visited and the
   // protocol has no `Unwatch`, so pushes for rooms other than the open one keep
@@ -305,7 +342,16 @@ test('subscribers are notified when state changes', () => {
 
 test('selecting a room loads its history and its events', async () => {
   const messages = [
-    { id: 1, room: 'protocol', from: 'caas', body: 'hi', done: false, human: false, createdAt: 1 },
+    {
+      id: 1,
+      room: 'protocol',
+      from: 'caas',
+      body: 'hi',
+      done: false,
+      human: false,
+      createdAt: 1,
+      files: [],
+    },
   ]
   const events = [
     { id: 9, kind: 'message_sent', agent: 'caas', room: 'protocol', detail: {}, createdAt: 1 },
@@ -391,6 +437,7 @@ function msg(id: number) {
     done: false,
     human: false,
     createdAt: id,
+    files: [],
   }
 }
 
@@ -464,6 +511,7 @@ test('loadOlder in flight when the room changes clears loadingOlder and a later 
     done: false,
     human: false,
     createdAt: id,
+    files: [],
   })
   const store = createStore({
     setRoomHidden: noSetHidden,

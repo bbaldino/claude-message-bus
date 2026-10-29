@@ -220,6 +220,8 @@ impl Store {
             .await?;
         self.add_column_if_missing("rooms", "hidden", "INTEGER NOT NULL DEFAULT 0")
             .await?;
+        self.add_column_if_missing("messages", "files", "TEXT")
+            .await?;
         Ok(())
     }
 
@@ -596,6 +598,20 @@ impl Store {
             .await
     }
 
+    /// `append_message` for a message that carries attachments.
+    pub async fn append_message_with_files(
+        &self,
+        room: &str,
+        from: &str,
+        body: &str,
+        done: bool,
+        human: bool,
+        files: &[crate::proto::Attachment],
+    ) -> anyhow::Result<i64> {
+        self.insert_message(room, from, body, done, human, files, now_ms())
+            .await
+    }
+
     /// `append_message` with an explicit timestamp.
     ///
     /// Exists because bucket and flag logic is time-dependent, and a test that
@@ -610,10 +626,30 @@ impl Store {
         human: bool,
         created_at: i64,
     ) -> anyhow::Result<i64> {
+        self.insert_message(room, from, body, done, human, &[], created_at)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_message(
+        &self,
+        room: &str,
+        from: &str,
+        body: &str,
+        done: bool,
+        human: bool,
+        files: &[crate::proto::Attachment],
+        created_at: i64,
+    ) -> anyhow::Result<i64> {
         self.ensure_room(room).await?;
+        let files = if files.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(files)?)
+        };
         let res = sqlx::query(
-            "INSERT INTO messages (room, from_agent, body, done, created_at, human)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO messages (room, from_agent, body, done, created_at, human, files)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )
         .bind(room)
         .bind(from)
@@ -621,6 +657,7 @@ impl Store {
         .bind(done as i64)
         .bind(created_at)
         .bind(human)
+        .bind(files)
         .execute(self.pool())
         .await?;
         // A message brings a hidden room back. Guarded on `hidden = 1` so the
@@ -653,7 +690,7 @@ impl Store {
     pub async fn history(&self, room: &str, limit: i64) -> anyhow::Result<Vec<MessageRow>> {
         let rows = sqlx::query(
             "SELECT * FROM (
-               SELECT id, room, from_agent, body, done, created_at, human
+               SELECT id, room, from_agent, body, done, created_at, human, files
                FROM messages WHERE room = ?1 ORDER BY id DESC LIMIT ?2
              ) ORDER BY id ASC",
         )
@@ -679,7 +716,7 @@ impl Store {
     ) -> anyhow::Result<Vec<MessageRow>> {
         let rows = sqlx::query(
             "SELECT * FROM (
-               SELECT id, room, from_agent, body, done, created_at, human
+               SELECT id, room, from_agent, body, done, created_at, human, files
                FROM messages WHERE room = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3
              ) ORDER BY id ASC",
         )
@@ -736,7 +773,7 @@ impl Store {
     pub async fn undelivered(&self, room: &str, agent: &str) -> anyhow::Result<Vec<MessageRow>> {
         let cursor = self.cursor(room, agent).await?;
         let rows = sqlx::query(
-            "SELECT id, room, from_agent, body, done, created_at, human
+            "SELECT id, room, from_agent, body, done, created_at, human, files
              FROM messages WHERE room = ?1 AND id > ?2 AND from_agent != ?3 ORDER BY id ASC",
         )
         .bind(room)
@@ -769,7 +806,7 @@ impl Store {
         limit: i64,
     ) -> anyhow::Result<Vec<MessageRow>> {
         let rows = sqlx::query(
-            "SELECT m.id, m.room, m.from_agent, m.body, m.done, m.created_at, m.human
+            "SELECT m.id, m.room, m.from_agent, m.body, m.done, m.created_at, m.human, m.files
              FROM messages m
              JOIN room_members rm ON rm.room = m.room AND rm.agent_name = ?1
              LEFT JOIN cursors c ON c.room = m.room AND c.agent_name = ?1
@@ -995,6 +1032,7 @@ pub struct MessageRow {
     pub done: bool,
     pub created_at: i64,
     pub human: bool,
+    pub files: Vec<crate::proto::Attachment>,
 }
 
 fn message_row(r: &sqlx::sqlite::SqliteRow) -> MessageRow {
@@ -1006,5 +1044,11 @@ fn message_row(r: &sqlx::sqlite::SqliteRow) -> MessageRow {
         done: r.get::<i64, _>("done") != 0,
         created_at: r.get("created_at"),
         human: r.get::<i64, _>("human") != 0,
+        // A row this binary cannot parse shows no attachments rather than
+        // failing the whole read: the message text still matters.
+        files: r
+            .get::<Option<String>, _>("files")
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default(),
     }
 }

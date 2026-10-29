@@ -258,23 +258,26 @@ async fn dispatch(
             text,
             done,
             human,
+            files,
         } => {
             eprintln!("[agent] recv ← {from} in {room} (msg {id})");
-            let injected = inject(
-                peer,
-                &text,
-                json!({
-                    // meta keys must be identifiers: letters, digits, underscores
-                    "room": room,
-                    "from": from,
-                    "msg_id": id.to_string(),
-                    "done": done.to_string(),
-                    // The one signal that tells the model whether its human asked, or
-                    // another agent did. `instructions` splits its restraint on this.
-                    "human": human.to_string(),
-                }),
-            )
-            .await;
+            let mut meta = json!({
+                // meta keys must be identifiers: letters, digits, underscores
+                "room": room,
+                "from": from,
+                "msg_id": id.to_string(),
+                "done": done.to_string(),
+                // The one signal that tells the model whether its human asked, or
+                // another agent did. `instructions` splits its restraint on this.
+                "human": human.to_string(),
+            });
+            // Only when there are some, so an ordinary message's tag is unchanged.
+            // The keys are in this room: `get_file` with `room` and a key reads one.
+            if !files.is_empty() {
+                let keys: Vec<&str> = files.iter().map(|f| f.key.as_str()).collect();
+                meta["files"] = json!(keys.join(", "));
+            }
+            let injected = inject(peer, &text, meta).await;
             // Only advance the delivery cursor for messages that actually
             // reached the transport; if injection failed, the model never
             // saw it, so it must still show up as unread on the next

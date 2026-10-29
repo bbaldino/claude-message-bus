@@ -1,3 +1,4 @@
+use claude_bus::proto::Attachment;
 use claude_bus::store::{MAX_BLOB_BYTES, MessageRow, Store};
 
 async fn temp_store() -> (tempfile::TempDir, Store) {
@@ -751,6 +752,10 @@ async fn the_migration_adds_the_message_origin_column_to_an_older_database() {
     assert_eq!(rows.len(), 1, "existing data must survive the migration");
     assert_eq!(rows[0].body, "from before the column existed");
     assert!(!rows[0].human, "a pre-existing row defaults to not human");
+    assert!(
+        rows[0].files.is_empty(),
+        "a pre-existing row has no attachments"
+    );
 }
 
 #[tokio::test]
@@ -1443,4 +1448,33 @@ async fn undelivered_for_participant_merges_rooms_in_id_order_and_respects_curso
     assert_eq!(rest.iter().map(|m| m.id).collect::<Vec<_>>(), vec![m2]);
 
     assert_eq!(store.member_rooms("raven").await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn attachments_round_trip_on_a_message() {
+    let (_d, store) = seeded().await;
+    let att = Attachment {
+        key: "shot.png".into(),
+        content_type: Some("image/png".into()),
+        size: 3,
+        sha256: "abc".into(),
+    };
+    store
+        .append_message_with_files(
+            "protocol",
+            "caas",
+            "look",
+            false,
+            false,
+            std::slice::from_ref(&att),
+        )
+        .await
+        .unwrap();
+    store
+        .append_message("protocol", "caas", "plain", false, false)
+        .await
+        .unwrap();
+    let msgs = store.history("protocol", 10).await.unwrap();
+    assert_eq!(msgs[0].files, vec![att]);
+    assert!(msgs[1].files.is_empty());
 }

@@ -125,6 +125,7 @@ pub async fn run(bus_url: String, target: ChatTarget, name: String) -> anyhow::R
                     target: send_target.clone(),
                     text: line,
                     done: false,
+                    files: Vec::new(),
                 })?))
                 .await?;
             }

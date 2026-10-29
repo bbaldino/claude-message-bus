@@ -66,6 +66,11 @@ pub(crate) enum SendOutcome {
     UnknownAgent {
         message: String,
     },
+    /// `files` named something that cannot be attached (not in the room, or
+    /// too many). Nothing was sent; the `send_refused` event is recorded.
+    BadAttachment {
+        message: String,
+    },
     /// A storage or verification failure — nothing was sent.
     Error {
         message: String,
@@ -92,6 +97,7 @@ pub(crate) async fn do_send(
     target: Target,
     text: String,
     done: bool,
+    files: Vec<String>,
     authority: Authority,
 ) -> SendOutcome {
     let room = rooms::resolve(&target, me);
@@ -132,6 +138,24 @@ pub(crate) async fn do_send(
             };
         }
     }
+
+    // Attachments are checked before the guards for the same reason as the
+    // DM target: a send that can never succeed must not spend cap budget.
+    let attachments = match resolve_attachments(app, &room, &files).await {
+        Ok(a) => a,
+        Err(message) => {
+            let _ = app
+                .store
+                .append_event(
+                    "send_refused",
+                    Some(me),
+                    Some(&room),
+                    json!({ "files": &files, "reason": "bad_attachment" }),
+                )
+                .await;
+            return SendOutcome::BadAttachment { message };
+        }
+    };
 
     let cleared_pause = match app
         .guards
@@ -187,7 +211,7 @@ pub(crate) async fn do_send(
 
     let msg_id = match app
         .store
-        .append_message(&room, me, &text, done, has_human_authority)
+        .append_message_with_files(&room, me, &text, done, has_human_authority, &attachments)
         .await
     {
         Ok(id) => id,
@@ -209,6 +233,7 @@ pub(crate) async fn do_send(
             text: text.clone(),
             done,
             human: has_human_authority,
+            files: attachments.clone(),
         };
         if app.registry.send_to(member, event).await {
             delivered_to.push(member.clone());
@@ -229,6 +254,7 @@ pub(crate) async fn do_send(
                 text,
                 done,
                 human: has_human_authority,
+                files: attachments,
             },
         )
         .await;
@@ -269,6 +295,51 @@ pub(crate) async fn do_send(
         delivered_to,
         queued_for,
     }
+}
+
+/// The most files one message may carry. Each becomes a separate fetch and
+/// upload on the receiving side; a message is not a bulk-transfer mechanism.
+pub const MAX_ATTACHMENTS: usize = 10;
+
+/// Snapshot the files `keys` names in `room`, in order, or say why not.
+async fn resolve_attachments(
+    app: &App,
+    room: &str,
+    keys: &[String],
+) -> Result<Vec<crate::proto::Attachment>, String> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    if keys.len() > MAX_ATTACHMENTS {
+        return Err(format!(
+            "a message can carry at most {MAX_ATTACHMENTS} files; this one names {}",
+            keys.len()
+        ));
+    }
+    let in_room = app
+        .store
+        .list_files(room)
+        .await
+        .map_err(|e| format!("could not read the files in {room:?}: {e}"))?;
+    let mut out: Vec<crate::proto::Attachment> = Vec::with_capacity(keys.len());
+    for key in keys {
+        if out.iter().any(|a| &a.key == key) {
+            continue;
+        }
+        let Some(f) = in_room.iter().find(|f| &f.key == key) else {
+            return Err(format!(
+                "no file {key:?} in room {room:?}; put_file it into that room first, \
+                 then pass its key in `files`"
+            ));
+        };
+        out.push(crate::proto::Attachment {
+            key: f.key.clone(),
+            content_type: f.content_type.clone(),
+            size: f.size,
+            sha256: f.sha256.clone(),
+        });
+    }
+    Ok(out)
 }
 
 /// Store a file in a room and record it in the audit log. Shared by the
@@ -370,6 +441,7 @@ pub(crate) async fn handle(
             target,
             text,
             done,
+            files,
         } => {
             // The send core is shared with the HTTP participant path via
             // `do_send`; this arm only translates the typed outcome onto the WS
@@ -377,7 +449,7 @@ pub(crate) async fn handle(
             // itself and the `message_sent`/`rate_limited`/`room_paused`/
             // `send_refused`/`resumed` events — happens inside `do_send`, so both
             // transports produce an identical audit trail.
-            match do_send(app, me, target, text, done, authority).await {
+            match do_send(app, me, target, text, done, files, authority).await {
                 SendOutcome::Sent {
                     room,
                     msg_id,
@@ -422,7 +494,9 @@ pub(crate) async fn handle(
                         ),
                     });
                 }
-                SendOutcome::UnknownAgent { message } | SendOutcome::Error { message } => {
+                SendOutcome::UnknownAgent { message }
+                | SendOutcome::BadAttachment { message }
+                | SendOutcome::Error { message } => {
                     let _ = control_tx.try_send(FromBus::Error {
                         req_id: Some(req_id),
                         message,
@@ -692,6 +766,7 @@ pub(crate) async fn reply_history(
             done: m.done,
             created_at: m.created_at,
             human: m.human,
+            files: m.files,
         })
         .collect();
     let _ = control_tx.try_send(FromBus::Reply {

@@ -158,7 +158,12 @@ impl rmcp::ServerHandler for Handler {
                     Cow::Borrowed("send"),
                     Cow::Borrowed(
                         "Send a message to another agent (to) or a room (room). Waits for \
-                         the bus to confirm whether it was delivered or queued.",
+                         the bus to confirm whether it was delivered or queued. To show \
+                         someone a file (a screenshot, a mockup, a log), put_file it into \
+                         the room this message goes to, then pass its key in `files`: only \
+                         attached files reach the recipient as files, and a relay such as \
+                         raven shows attached images to the human. Naming a file in `text` \
+                         does not attach it.",
                     ),
                     schema(json!({
                         "type": "object",
@@ -166,7 +171,8 @@ impl rmcp::ServerHandler for Handler {
                             "to": { "type": "string", "description": "Recipient agent name (direct message)" },
                             "room": { "type": "string", "description": "Room name (broadcast to members)" },
                             "text": { "type": "string", "description": "The message body" },
-                            "done": { "type": "boolean", "description": "Required. true when the topic is settled and no reply is expected — a report, a confirmation, a thanks, an FYI. false only when you expect a reply — the next move is then the other side's." }
+                            "done": { "type": "boolean", "description": "Required. true when the topic is settled and no reply is expected — a report, a confirmation, a thanks, an FYI. false only when you expect a reply — the next move is then the other side's." },
+                            "files": { "type": "array", "items": { "type": "string" }, "description": "Keys of files to attach, already put_file'd into the room this message goes to (for `to`, the dm:<a>|<b> room, names sorted). At most 10." }
                         },
                         "required": ["text", "done"]
                     })),
@@ -214,7 +220,9 @@ impl rmcp::ServerHandler for Handler {
                     Cow::Borrowed("put_file"),
                     Cow::Borrowed(
                         "Store an artifact in a room. Provide exactly one of `content` \
-                         (inline text) or `path` (read from local disk).",
+                         (inline text) or `path` (read from local disk). Storing a file \
+                         tells nobody: to show it to someone, also pass its key in send's \
+                         `files`.",
                     ),
                     schema(json!({
                         "type": "object",
@@ -325,12 +333,26 @@ impl rmcp::ServerHandler for Handler {
                          when you expect a reply",
                     )]));
                 };
+                let files: Vec<String> = match args.get("files") {
+                    None | Some(Value::Null) => Vec::new(),
+                    Some(Value::Array(items)) if items.iter().all(Value::is_string) => items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect(),
+                    Some(_) => {
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
+                            "`files` must be an array of file keys",
+                        )]));
+                    }
+                };
+                let attached = files.join(", ");
                 let reply = self
                     .request(|req_id| ToBus::Send {
                         req_id,
                         target,
                         text: body.clone(),
                         done,
+                        files,
                     })
                     .await;
                 match reply {
@@ -359,7 +381,13 @@ impl rmcp::ServerHandler for Handler {
                         if status.is_empty() {
                             status.push_str("nobody else is in this room yet");
                         }
-                        text_of(format!("[{room}] {status}\nsent: {body}"))
+                        if attached.is_empty() {
+                            text_of(format!("[{room}] {status}\nsent: {body}"))
+                        } else {
+                            text_of(format!(
+                                "[{room}] {status}\nsent: {body}\nattached: {attached}"
+                            ))
+                        }
                     }
                     Ok(other) => text_of(format!("unexpected reply: {other:?}")),
                     Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(e)])),
@@ -388,12 +416,20 @@ impl rmcp::ServerHandler for Handler {
                         messages
                             .into_iter()
                             .map(|m| {
+                                let attached = if m.files.is_empty() {
+                                    String::new()
+                                } else {
+                                    let keys: Vec<&str> =
+                                        m.files.iter().map(|f| f.key.as_str()).collect();
+                                    format!(" [attached: {}]", keys.join(", "))
+                                };
                                 format!(
-                                    "[{}] {}{}: {}",
+                                    "[{}] {}{}: {}{}",
                                     m.id,
                                     m.from,
                                     if m.human { " (human)" } else { "" },
-                                    m.text
+                                    m.text,
+                                    attached
                                 )
                             })
                             .collect::<Vec<_>>()
